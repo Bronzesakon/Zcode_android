@@ -1,0 +1,23 @@
+[package]
+name = "zemote-protocol"
+description = "ZCode 远程控制协议（Rust 移植自 Reference_code/lib/protocol 的 Dart 实现）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+
+[lib]
+# **只出 rlib**：本 crate 是纯逻辑库，由 `zemote-ffi` 静态链接进去；带 JNI 入口的 cdylib 在那边。
+#
+# 早先这里还留着 `cdylib`，后果是 `target/<triple>/release/libzemote_protocol.so` 一直存在，
+# 而 `cargo ndk -o <dir>` 会把目标目录里**所有** cdylib 都拷过去 —— 于是一个没有任何入口符号的
+# 336 KB 空壳每次构建都会被重新塞进 jniLibs，最终白占 APK 体积。别加回来。
+crate-type = ["rlib"]

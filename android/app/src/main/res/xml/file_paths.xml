@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 的可用路径白名单。**只暴露更新下载用的目录**，不要写 <root-path/>：
+  那等于把整个文件系统开一个只读口子给任何拿到 URI 的组件。
+
+  - files-path  ：更新包下完先落在 getFilesDir()/updates
+  - cache-path  ：断点续传的 .part 临时文件
+  两者必须与 UpdateInstaller 里实际使用的目录一一对应，否则 install 会抛
+  IllegalArgumentException（"Failed to find configured root"）。
+-->
 <paths>
-    <files-path name="update" path="update/"/>
+    <files-path
+        name="updates"
+        path="updates/" />
+    <cache-path
+        name="update-cache"
+        path="updates/" />
 </paths>

@@ -1,46 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <uses-permission android:name="android.permission.CAMERA"/>
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 通知：Android 13+ 运行时权限；POST_PROMOTED_NOTIFICATIONS 是 Android 16
+         Live Updates（ColorOS 16 流体云）的**非运行时**权限。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!--
+      应用内更新要拉起系统安装器。targetSdk 26 起，发起安装的应用必须声明这条，
+      否则会被系统拒绝（旧 Flutter 实现同样声明了它）。
+      注意：它**不是**"静默安装"权限——用户仍要手动为 Zemote 打开"安装未知应用"。
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- 扫码配对。required=false：没有摄像头的设备（部分平板）也应该能装，用手动粘贴 URL 的路径。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <application
-        android:label="Zemote"
-        android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
-        android:fullBackupContent="false">
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Zemote">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-            android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
-            <meta-data
-              android:name="io.flutter.embedding.android.NormalTheme"
-              android:resource="@style/NormalTheme"
-              />
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:theme="@style/Theme.Zemote">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN"/>
-                <category android:name="android.intent.category.LAUNCHER"/>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
-        <meta-data
-            android:name="flutterEmbedding"
-            android:value="2" />
-        <!-- FileProvider for handing the downloaded APK to the system
-             installer (see MainActivity.kt / res/xml/file_paths.xml). -->
+
+        <!--
+          前台服务：保持 relay 连接。specialUse 是 Android 14+ 的类型要求；
+          PROPERTY_SPECIAL_USE_FGS_SUBTYPE 给系统审核用。
+        -->
+        <service
+            android:name=".notify.ZemoteForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the remote control relay connection alive" />
+        </service>
+
+        <!-- 通知上的动作按钮：完成卡的「知道了」、下载的暂停/取消。均不导出。 -->
+        <receiver
+            android:name=".notify.CardDismissReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".notify.DownloadPauseReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".notify.DownloadCancelReceiver"
+            android:exported="false" />
+
+        <!--
+          应用内更新要装自己下载的 APK。Android 7 起 file:// 会被 FileUriExposedException 拦下，
+          必须走 FileProvider。authorities 用 ${applicationId} 占位，这样 debug 包
+          （applicationId 带 .debug 后缀）不会和 release 包撞车。
+        -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -48,35 +78,8 @@
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths"/>
+                android:resource="@xml/file_paths" />
         </provider>
-        <!-- Foreground service: keeps the relay alive while backgrounded and
-             shows the ongoing "running tasks" notification. -->
-        <service
-            android:name=".ZemoteNotificationService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync"/>
-        <receiver
-            android:name=".UpdateCleanupReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
-            </intent-filter>
-        </receiver>
     </application>
-    <!-- Required to query activities that can process text, see:
-         https://developer.android.com/training/package-visibility and
-         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
-         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT"/>
-            <data android:mimeType="text/plain"/>
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW"/>
-            <data android:mimeType="application/vnd.android.package-archive"/>
-        </intent>
-    </queries>
 </manifest>

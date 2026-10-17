@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动/底色主题：真正的视觉由 Compose 主题负责，这里只保证冷启动不闪白。 -->
+    <style name="Theme.Zemote" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

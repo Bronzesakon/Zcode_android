@@ -1,56 +1,54 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
-.dart_tool/
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-/build/
-/coverage/
-
-# Symbolication related
-app.*.symbols
-
-# Obfuscation related
-app.*.map.json
-
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
-**/build/
-
-# Secrets & local config — never commit remote-control URLs or credentials.
+# ============================================================
+# 密钥与本地材料 —— 绝不入库
+# ============================================================
+/scratch/
+*.p12
+*.jks
+*.keystore
+key.properties
 .env
 *.remote.*
 .remote_url
 /remote_url.txt
 
-# Local screenshots / scratch
+# ============================================================
+# Rust
+# ============================================================
+/target/
+**/target/
+*.rs.bk
+**/*.rs.bk
+
+# ============================================================
+# Gradle / Android / Kotlin
+# ============================================================
+.gradle/
+**/.gradle/
+build/
+**/build/
+/local.properties
+**/local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.cxx/
+*.iml
+.idea/
+/.kotlin/
+**/.kotlin/
+/captures/
+
+# ============================================================
+# 本地截图与一次性日志
+# ============================================================
 /screenshots/
-/scratch/
+*.log
+/.adb-bridge/
+
+# ============================================================
+# 网页快照参照（公开部署的 JS 归档，沿用 Docs/ 既有约定：仅本机保留）
+# 想让进库就删掉这一行。
+# ============================================================
+/Reference_web/

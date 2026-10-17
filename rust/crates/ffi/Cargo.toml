@@ -1,0 +1,17 @@
+[package]
+name = "zemote-ffi"
+description = "FFI 绑定层：把纯逻辑的协议核心（zemote-protocol）以「JSON 进 / JSON 出」的方式暴露给 Kotlin 宿主（契约见 docs/FFI.md）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zemote-protocol = { path = "../protocol" }
+serde_json.workspace = true
+base64.workspace = true
+jni = "0.21"
+
+[lib]
+# cdylib 供 Android 产出 libzemote_ffi.so（`System.loadLibrary("zemote_ffi")`）；
+# rlib 供主机侧单元测试直接调用（测试不经过 JNI）。
+crate-type = ["cdylib", "rlib"]

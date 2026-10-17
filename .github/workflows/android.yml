@@ -1,0 +1,484 @@
+# =============================================================================
+# Android APK 构建 / 发布  —— Rust 核心 + 原生 Kotlin/Compose 外壳
+#
+# 这是重写后的工作流，取代了旧的 Flutter 工作流（flutter-android.yml，已删）。
+# 与旧版的关键差异：
+#   1. 不再用 Flutter。构建 = ① cargo 交叉编译 Rust 核心为 arm64-v8a 的 .so
+#      ② gradlew assembleRelease 打包 Compose 外壳并把 .so 打进 jniLibs。
+#   2. 只出 arm64-v8a 单包（旧版 --split-per-abi 出三种 ABI）。本机真机全是
+#      arm64，Rust 侧也只编这一份，少一条 ABI 就少一份维护面。
+#      由此也不再需要 Flutter 的 ABI 偏移：versionCode 就是裸的 yyMMddHH。
+#   3. 版本号基准从 pubspec.yaml 改为仓库根目录的 VERSION 文件（单行）。
+#
+# 保留自旧版的设计（这些是踩过坑才定下来的，不要顺手改掉）：
+#
+# A. 版本号取自构建时间，不用 run_number：
+#      versionCode = yyMMddHH（UTC+8，北京）。时钟只向前走，所以每一次构建都能
+#        覆盖安装此前任何构建；同一小时内两次构建共用同一个 code，Android 仍视
+#        为可更新。
+#      versionName = "<VERSION>-dev.<yyyyMMdd.HHmm>"（分支构建）；
+#        tag 构建时取 tag 自身的版本号，因为 CHANGELOG 段要跟 tag 对上。
+#      UTC+8 是算出来的（epoch + 28800），不依赖 runner 的 tz 数据库——旧版就
+#        是因为 TZ=Asia/Shanghai 在不同 runner 上表现不一致才改成算术。
+#
+# B. main 分支 -> 滚动预发布（tag 固定为 android-pre，资产名固定 + --clobber）：
+#      用户手上那条下载链接永远指向最新构建，不会因为新构建而失效。
+#      代价是 tag 不再标识某一次构建，所以标题里带应用内 versionName 和构建时间。
+#      注意 tag 不能带 v 前缀，否则会命中本工作流自己的 v* 触发器，跑第二遍。
+#
+# C. paths 过滤器对 tag 推送**不生效**（GitHub 官方文档明确说明），所以打 tag
+#    一定会触发构建，不会因为"只改了文档"而被跳过。
+#
+# D. 签名：本项目专属 keystore（别名 zemote），不复用 android-shell 的——共用
+#    签名只对同一个 applicationId 有意义，而 applicationId 是 app.zemote。
+#    缺 Secrets 时构建仍成功但回退 debug 签名，并**显式告警**；此时 APK 无法
+#    覆盖安装正式签名版本。若 Secrets 齐全却仍签成 debug，下面的校验步骤会
+#    直接失败（宁可红，不要发一个用户装不上的包）。
+#
+# 需要仓库 Secrets：ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD /
+#                  ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS
+# =============================================================================
+
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'rust/**'
+      - 'android/**'
+      - 'VERSION'
+      - '.github/workflows/android.yml'
+      - '.github/scripts/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'rust/**'
+      - 'android/**'
+      - 'VERSION'
+      - '.github/workflows/android.yml'
+      - '.github/scripts/**'
+  workflow_dispatch:
+
+# 同一分支/同一 tag 上的多次推送只保留最新一次：滚动预发布是"覆写"语义，
+# 两个 run 并发覆写同一个 tag 只会互相打架。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 与本地开发环境一致（E:\AndroidSdk\ndk\28.2.13676358）。固定版本，避免
+  # runner 镜像自带的 NDK 升级后悄悄改变 .so 的编译结果。
+  NDK_VERSION: 28.2.13676358
+  # cargo 交叉编译目标：只编 arm64-v8a（对应 aarch64-linux-android）。
+  RUST_TARGET: aarch64-linux-android
+  # minSdk 26 -> NDK 的 clang wrapper 名带 API level。
+  ANDROID_API_LEVEL: 26
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 纯主机测试：协议 crate 是纯逻辑（无 I/O、无时钟、无平台依赖），所以能在
+  # 普通 runner 上直接跑，不必等交叉编译。放在最前面，几秒钟就能挡掉回归。
+  # ---------------------------------------------------------------------------
+  # Rust 侧测试。**跑整个 workspace**，不是只跑协议 crate —— FFI 层（`crates/ffi`）也有
+  # 自己的一批测试（信封、事件映射、端到端回喂），它们同样不该在 CI 上被跳过。
+  # 全是纯逻辑，普通 runner 上几秒钟跑完，不必等交叉编译。
+  # ---------------------------------------------------------------------------
+  rust-test:
+    name: Rust 测试（全 workspace）
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: cargo test
+        working-directory: rust
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # 构建：Rust .so -> jniLibs -> assembleRelease -> 重命名 + MD5 -> 上传 artifact。
+  # ---------------------------------------------------------------------------
+  build:
+    name: 构建 arm64-v8a APK
+    needs: [rust-test]
+    runs-on: ubuntu-latest
+    outputs:
+      # 发布任务读这两个值，而不是自己再算一遍：构建任务已经用它们产出 APK，
+      # 发布任务在几分钟后运行，而版本方案基于时间，重算就会对不上。
+      version_code: ${{ steps.version.outputs.version_code }}
+      version_name: ${{ steps.version.outputs.version_name }}
+      signed: ${{ steps.signing.outputs.signed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # 必须 JDK 17：AGP 编译 compileSdk>=31 时要用 jlink 生成
+      # core-for-system-modules.jar。精简运行时（如只带 JRE 的镜像）没有 jlink，
+      # 会以 "jlink executable ... does not exist" 失败。temurin 是完整 JDK。
+      - name: Setup JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Add Android target
+        run: rustup target add "$RUST_TARGET"
+
+      # NDK 用于两件事：① 交叉编译 Rust（clang/llvm-ar 作为 linker 和 CC）
+      # ② AGP 打包时 strip 掉 .so 的调试符号。平台包显式装，避免 AGP 自动下载
+      # 在 license 环节出问题。
+      - name: Install Android NDK and platform
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --install \
+            "ndk;$NDK_VERSION" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      # 编的是 **ffi crate**，不是协议 crate：只有 `zemote-ffi` 是 cdylib 且带 JNI 入口
+      # （`Java_app_zemote_core_NativeCore_*`）。协议 crate 是纯逻辑的 rlib，它那个 .so 是空的。
+      - name: Build Rust core (arm64-v8a)
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$toolchain/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          export AR_aarch64_linux_android="$toolchain/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          cargo build --release --target "$RUST_TARGET" -p zemote-ffi
+          # jniLibs 是构建产物，不入库（见 android/.gitignore），AGP 会自动把它
+          # 打进 APK 的 lib/<abi>/ 下。名字必须与 Kotlin 侧 System.loadLibrary("zemote_ffi") 一致。
+          dest=../android/app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$dest"
+          cp "target/$RUST_TARGET/release/libzemote_ffi.so" "$dest/"
+          # 导出表自检：JNI 符号名对不上时，APK 能装能起，但一调 native 就 UnsatisfiedLinkError。
+          # 这种错误在单测里发现不了（单测用的是假 bridge），所以在这里挡一道。
+          if ! "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" \
+              --dynamic "$dest/libzemote_ffi.so" | grep -q "Java_app_zemote_core_NativeCore_nativeCreate"; then
+            echo "::error::libzemote_ffi.so 里找不到 JNI 入口符号，Kotlin 侧调用会 UnsatisfiedLinkError"
+            exit 1
+          fi
+          ls -l "$dest"
+
+      - name: Compute version
+        id: version
+        run: |
+          set -euo pipefail
+          # 见文件头 A 段：算术换算到 UTC+8，不依赖 runner 的 tz 数据库。
+          cst() {  # $1 = ISO 时间戳（空串表示"现在"）；$2 = date 格式
+            local epoch
+            if [ -n "$1" ]; then epoch=$(date -u -d "$1" +%s); else epoch=$(date -u +%s); fi
+            date -u -d "@$((epoch + 28800))" "$2"
+          }
+
+          base=$(tr -d '[:space:]' < VERSION)
+          if [ -z "$base" ]; then
+            echo "::error::VERSION 文件为空"
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            name="${GITHUB_REF_NAME#v}"
+          else
+            name="${base}-dev.$(cst '' '+%Y%m%d.%H%M')"
+          fi
+          code=$(cst '' '+%y%m%d%H')
+
+          {
+            echo "ZCODE_VERSION_CODE=$code"
+            echo "ZCODE_VERSION_NAME=$name"
+          } >> "$GITHUB_ENV"
+          {
+            echo "version_code=$code"
+            echo "version_name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "versionCode=$code versionName=$name"
+
+      # 签名材料只在构建期落到磁盘，且用 env 传值：heredoc 里写 ${{ secrets.X }}
+      # 会被 Actions 在脚本生成阶段做文本替换，密码里若含 $ 或反引号就会被 shell
+      # 再展开一次。走环境变量则值始终是数据，不会被二次解析。
+      - name: Write signing material
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::未配置签名 Secrets —— release 将回退 debug 签名，产物无法覆盖安装正式版本"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/ci-release.p12
+          cat > android/key.properties <<EOF
+          storeFile=ci-release.p12
+          storeType=PKCS12
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          EOF
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
+      # Kotlin 宿主层的单测（引擎 / 持久化 / 更新 / 配对 / 表现层）。跑在 JVM 上，不需要设备。
+      # 放在打包之前：单测挂了就没必要再花两分钟编译 APK。
+      - name: Run Kotlin unit tests
+        working-directory: android
+        run: ./gradlew :app:testDebugUnitTest --console=plain
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew :app:assembleRelease --console=plain
+
+      # 宁可红，也不要发一个用户装不上的包：Secrets 齐全时必须是正式签名。
+      - name: Verify signature
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$apksigner" verify --print-certs "$apk" | tee certs.txt
+          if grep -q "CN=Android Debug" certs.txt; then
+            echo "::error::配置了签名 Secrets，但产物是 debug 签名 —— 检查 Secrets 名称与 key.properties 内容"
+            exit 1
+          fi
+
+      - name: Rename artifacts and compute MD5
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk dist/zemote-arm64-v8a.apk
+          cd dist
+          md5sum zemote-arm64-v8a.apk | awk '{print $1}' > zemote-arm64-v8a.apk.md5
+          cat zemote-arm64-v8a.apk.md5
+          ls -l
+
+      # 应用内更新检测读的版本清单。滚动预发布的 tag 恒为 android-pre，靠 tag 判不出
+      # 新旧；标题里虽然带 versionName 和构建时间，但那是给人看的文本，格式一变更新器
+      # 就瞎。这里把 versionCode 写成数字，更新器只做一次整数比较
+      # （android/app/src/main/kotlin/app/zemote/update/UpdateChecker.kt）。
+      # 它必须和 APK 走同一个 artifact：清单里的 sizeBytes / md5Asset 要和这个包对得上。
+      - name: Generate version manifest
+        run: |
+          set -euo pipefail
+          if [ -z "${ZCODE_VERSION_CODE:-}" ] || [ -z "${ZCODE_VERSION_NAME:-}" ]; then
+            echo "::error::ZCODE_VERSION_CODE / ZCODE_VERSION_NAME 未设置"
+            exit 1
+          fi
+          size=$(stat -c%s dist/zemote-arm64-v8a.apk)
+          printf '{"versionCode": %s, "versionName": "%s", "abi": "arm64-v8a", "apkAsset": "zemote-arm64-v8a.apk", "md5Asset": "zemote-arm64-v8a.apk.md5", "sizeBytes": %s}\n' \
+            "$ZCODE_VERSION_CODE" "$ZCODE_VERSION_NAME" "$size" > dist/zemote-version.json
+          cat dist/zemote-version.json
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: zemote-apk-${{ github.sha }}
+          path: |
+            dist/zemote-arm64-v8a.apk
+            dist/zemote-arm64-v8a.apk.md5
+            dist/zemote-version.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # main 分支 -> 滚动预发布。见文件头 B 段。
+  # 与 build 分开是因为发布需要写 token，而 build 会跑不可信代码（PR）。
+  # ---------------------------------------------------------------------------
+  prerelease:
+    name: 发布滚动预发布
+    if: github.ref == 'refs/heads/main'
+    needs: [rust-test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: zemote-apk-${{ github.sha }}
+          path: dist
+
+      # 单独一步组装标题与正文，并 echo 到日志：万一之后 release 编辑出问题，
+      # 能直接从 run 日志里读到当时的确切文本。
+      - name: Compose title and notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          name="${{ needs.build.outputs.version_name }}"
+          code="${{ needs.build.outputs.version_code }}"
+          if [ -z "$name" ] || [ -z "$code" ]; then
+            echo "::error::build 任务没有导出 version_name/version_code"
+            exit 1
+          fi
+          # 不带 v 前缀：v* 会命中本工作流自己的 release 触发器，跑出第二遍。
+          tag="android-pre"
+          notes="$GITHUB_WORKSPACE/pre-notes.md"
+          round="$GITHUB_WORKSPACE/round.txt"
+
+          cst() {
+            local epoch
+            if [ -n "$1" ]; then epoch=$(date -u -d "$1" +%s); else epoch=$(date -u +%s); fi
+            date -u -d "@$((epoch + 28800))" "$2"
+          }
+
+          # 推送时间取自 commit，而不是"现在"，这样重跑时正文里两个时间仍然有意义。
+          push_time=$(cst "$(git log -1 --pretty=%cI)" '+%Y-%m-%d %H:%M:%S')
+          build_time=$(cst '' '+%Y-%m-%d %H:%M:%S')
+          stamp=$(cst '' '+%m-%d %H:%M')
+
+          # 本轮变更 = 相对滚动发布当前指向的 commit 新增的提交。走 compare API，
+          # 因为这里只有浅克隆；首次运行（还没有 tag）或 rebase/force-push 之后
+          # 退化为只显示推送的那个 commit。
+          prev=$(git ls-remote origin "refs/tags/$tag" | cut -f1)
+          count=0
+          if [ -n "$prev" ] && [ "$prev" != "$GITHUB_SHA" ]; then
+            gh api "repos/${{ github.repository }}/compare/$prev...$GITHUB_SHA" \
+              --jq '.commits[] | "- " + (.commit.message | split("\n")[0])' \
+              > "$round" 2>/dev/null || true
+            count=$(grep -c '^- ' "$round" || true)
+          fi
+
+          echo "## 本轮变更" > "$notes"
+          echo "" >> "$notes"
+          if [ "${count:-0}" -gt 0 ]; then
+            echo "共 ${count} 个提交（\`${GITHUB_SHA:0:7}\`）：" >> "$notes"
+            echo "" >> "$notes"
+            cat "$round" >> "$notes"
+            if [ "$count" -eq 1 ]; then
+              # 单个提交通常就是完整的一轮：连正文一起保留，理由和验证记录都在那里。
+              echo "" >> "$notes"
+              gh api "repos/${{ github.repository }}/commits/$GITHUB_SHA" \
+                --jq '.commit.message | split("\n")[1:] | join("\n") | sub("^\\s+"; "")' \
+                >> "$notes" 2>/dev/null || true
+            fi
+          else
+            git log -1 --pretty=%B >> "$notes"
+          fi
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 应用内版本 | \`$name\`（versionCode $code） |"
+            echo "| 推送时间 | $push_time（UTC+8） |"
+            echo "| 编译完成 | $build_time（UTC+8） |"
+            echo "| 来源 | \`main\` 分支 · 运行 #${{ github.run_number }} |"
+            echo ""
+            echo "> 滚动发布：资产名固定，下载链接始终指向最新构建："
+            echo "> - \`…/releases/download/$tag/zemote-arm64-v8a.apk\`"
+            echo ">"
+            echo "> APK 旁的 \`.md5\` 是校验值；应用内更新检测读的也是这个资产名。"
+            echo "> \`versionCode\` 取构建时间（UTC+8，yyMMddHH），可直接覆盖安装此前任何构建。"
+            echo "> 本包只含 arm64-v8a。"
+          } >> "$notes"
+
+          {
+            echo "ROLLING_TAG=$tag"
+            echo "ROLLING_TITLE=Zemote 安卓 预发布 · $name · $stamp"
+            echo "ROLLING_VERSION=$name"
+          } >> "$GITHUB_ENV"
+
+          echo "=== 标题 ==="
+          echo "Zemote 安卓 预发布 · $name · $stamp"
+          echo "=== 说明 ==="
+          cat "$notes"
+
+      - name: Publish (overwrite the rolling release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          files=(
+            dist/zemote-arm64-v8a.apk
+            dist/zemote-arm64-v8a.apk.md5
+            dist/zemote-version.json
+          )
+          for file in "${files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "::error::missing release asset $file"
+              exit 1
+            fi
+          done
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            # 固定资产名 + --clobber：原地替换上一次的下载，用户收藏的链接不失效。
+            gh release upload "$ROLLING_TAG" "${files[@]}" --clobber
+            # tag 也得跟着走。GitHub 用 tag 渲染发布页（以及它的 "Source code"
+            # 链接），停在第一次构建的 commit 上就会指向一个和资产不匹配的提交。
+            git push --force origin "HEAD:refs/tags/$ROLLING_TAG"
+            gh release edit "$ROLLING_TAG" \
+              --title "$ROLLING_TITLE" \
+              --notes-file pre-notes.md
+          else
+            gh release create "$ROLLING_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$ROLLING_TITLE" \
+              --notes-file pre-notes.md \
+              --prerelease \
+              "${files[@]}"
+          fi
+          echo "published $ROLLING_VERSION -> $ROLLING_TAG"
+
+  # ---------------------------------------------------------------------------
+  # v* tag -> 正式 Release，正文取自 CHANGELOG.md 的 "## [X.Y.Z]" 段。
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust-test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: zemote-apk-${{ github.sha }}
+          path: dist
+
+      # 读 CHANGELOG.md 里该 tag 的 "## [X.Y.Z]" 段；缺这段就直接失败，
+      # 不发一个空正文的 release。
+      - name: Prepare release notes
+        shell: pwsh
+        run: .github/scripts/release-notes.ps1
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: |
+            dist/zemote-arm64-v8a.apk
+            dist/zemote-arm64-v8a.apk.md5
+            dist/zemote-version.json
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

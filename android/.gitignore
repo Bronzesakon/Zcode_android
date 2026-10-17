@@ -1,14 +1,18 @@
 gradle-wrapper.jar
 /.gradle
+/build
 /captures/
-/gradlew
-/gradlew.bat
 /local.properties
-GeneratedPluginRegistrant.java
+/local.properties.bak
 .cxx/
+/.kotlin
 
-# Remember to never publicly share your keystore.
-# See https://flutter.dev/to/reference-keystore
+# Rust 交叉编译产物，由 CI / 本地 cargo 构建生成，不入库
+/app/src/main/jniLibs/
+
+# 本地签名材料——绝不入库
 key.properties
-**/*.keystore
+ci-release.p12
+**/*.p12
 **/*.jks
+**/*.keystore

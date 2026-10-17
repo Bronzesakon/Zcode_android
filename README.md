@@ -1,244 +1,221 @@
-# 由于ZCode 在登录状态下会静默RSA打包整个工作区及完整Git 历史上传至云端对象存储，本项目宣布永久停更！
+# Zemote（重写版）
 
-https://linux.do/t/topic/2917956
+手机/平板上的 **ZCode 远程控制客户端**。本仓库正在把上游 Flutter 实现**重写为原生安卓应用**：
+协议核心用 **Rust**，界面用 **Kotlin + Jetpack Compose** 按官方网页版一比一复刻。
 
-https://linux.do/t/topic/2917923
+上游 Flutter 实现已冻结、不再构建，原样保留在 `Reference_code/` —— 它是对远程控制网页协议逆向的
+**唯一权威参照**，本次重写的全部协议行为以它为准。
 
-推荐使用[paseo](https://github.com/getpaseo/paseo)和[oh-my-pi](https://www.pi-gui.com/)，完美替代
----
-<div align="center">
-
-# Zemote
-
-**手机/平板上的 ZCode 远程控制客户端** — 独立复刻官方 Web 远程控制协议（protocol reimplementation）
-
-[![Flutter](https://img.shields.io/badge/Flutter-3.5%2B-blue.svg?logo=flutter)](https://flutter.dev)
-[![Dart](https://img.shields.io/badge/Dart-3.5%2B-0175C2.svg?logo=dart)](https://dart.dev)
-[![CI](https://github.com/HumanAILoop/zemote/actions/workflows/build-apk.yml/badge.svg)](https://github.com/HumanAILoop/zemote/actions/workflows/build-apk.yml)
-[![Release](https://img.shields.io/github/v/release/HumanAILoop/zemote)](https://github.com/HumanAILoop/zemote/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Web%20%7C%20Windows-lightgrey.svg)](#平台)
-
-在手机/平板上**同时管理多台桌面设备**：扫码或粘贴链接添加设备 → 连接桌面 ZCode → 浏览任务列表、收发对话、查看文件变更、管理模型供应商与用量配额。
-
-> ⚠️ 本项目为**协议复刻**，与官方客户端无任何代码关联。请遵守 ZCode 服务条款与当地法律法规，仅用于连接你自己的设备。
-
-</div>
+> ⚠️ 本项目为**协议复刻**，与官方客户端无任何代码关联。请遵守 ZCode 服务条款与当地法律法规，
+> 仅用于连接你自己的设备。
 
 ---
 
-## 目录
+## 本机开发环境（E:\Zcode_android）
 
-- [反馈与 AI 自动修复](#反馈与-ai-自动修复)
-- [功能特性](#功能特性)
-- [平台](#平台)
-- [快速开始](#快速开始)
-- [更新与签名](#更新与签名)
-- [架构](#架构)
-- [测试](#测试)
-- [项目结构](#项目结构)
-- [安全提示](#安全提示)
-- [技术栈](#技术栈)
-- [贡献](#贡献)
-- [Changelog](#changelog)
-- [License](#license)
+已经装好并实测可用的工具链。**换机器时按这张表配**；`C:` 盘上不放 SDK（这是硬约束）。
 
----
+| 组件 | 路径 / 版本 | 说明 |
+|---|---|---|
+| Android SDK | `E:\AndroidSdk`（`ANDROID_HOME` / `ANDROID_SDK_ROOT` 已设） | build-tools `36.0.0`、platform `android-36`、platform-tools `37.0.1`；licenses 已全部接受 |
+| Android NDK | `E:\AndroidSdk\ndk\28.2.13676358` | 交叉编译 Rust 与 AGP strip `.so` 都要它；版本固定，勿随意升级 |
+| **JDK 17** | `E:\AndroidSdk\jdk-17`（Temurin 17.0.20.1） | **必须用完整 JDK**，原因见下 |
+| Gradle | 9.1.0（`android/gradlew`，发行包已缓存） | 由 wrapper 自动使用，无需另装 |
+| Rust | stable + target `aarch64-linux-android` | crates 源已换清华 TUNA 镜像（`~/.cargo/config.toml`） |
+| cargo-ndk | 4.1.2 | 本地交叉编译的便利工具；CI 里不依赖它（见「构建」） |
+| 真机 | `PLC110`（Android 17 / arm64）、`192.168.0.1:5555` 的 `MU5358`（Android 15 / arm64） | 两台都是 arm64-v8a，这是只出单 ABI 的依据 |
 
-## 反馈与 AI 自动修复
+### 为什么必须用 `E:\AndroidSdk\jdk-17`，而不是 DevEco 自带的 JBR
 
-**欢迎大家提交 [Issue](https://github.com/HumanAILoop/zemote/issues)！** 🎉
+本机原本唯一的 Java 是 DevEco Studio 的 JBR 25，它是**精简运行时：没有 `bin/jlink.exe`，也没有
+`jmods/`**。AGP 在 `compileSdk >= 31` 时要用 `jlink` 生成 `core-for-system-modules.jar`，
+缺了就报 `jlink executable ... does not exist`，卡在 `:app:compileDebugJavaWithJavac`。
+所以另装了一份完整 Temurin JDK 17，并在**用户级** `~/.gradle/gradle.properties` 里指向它：
 
-无论是 Bug 反馈、功能建议，还是界面 / 交互体验问题，都欢迎通过 Issue 提出。本项目采用 **AI 全自动修复** 流程：你提交的 Issue 会被自动分析、定位、修复，并随新的 Beta 版本发布，通常无需人工介入。
-
-为了让自动修复更准确、更快，建议在 Issue 中尽量写清楚：
-
-- **问题现象**：发生了什么，你期望发生什么
-- **复现步骤**：怎样稳定复现
-- **环境信息**：设备型号、Android 版本、App 版本（设置页可见）
-- **相关日志 / 截图**：可在设置页「诊断中心 / 协议日志」中导出
-
-提交后请留意 Issue 回复与新的 Beta Release。
-
----
-
-## 功能特性
-
-### 多设备并发
-- 多台设备可同时在线，一键切换无需重连
-- 设备列表独立显示每台的连接状态（连接中 / 已连接 / 错误）
-- 顶部设备切换栏随时跳转，未连接设备可直接连接或添加新设备
-
-### 添加设备
-- 扫码（`mobile_scanner`）或粘贴远程控制 URL（`https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...`）
-
-### 任务管理
-- 任务 / 置顶 / 已归档三栏，搜索过滤、下拉刷新、滑动置顶/归档、重命名、删除
-- 实时订阅 `sessions-index`，与 workspace-list 推送合并去重
-- 未读标记、最近预览文本、运行状态点
-
-### 对话（Conversation V4）
-- 流式回复、推理过程展示、斜杠命令（`/`）、Skills（`$`）、模型/模式/思考级别切换
-- **辅助对话**：为当前会话开启独立侧对话（`createSelectionSideSession`），互不干扰并行提问
-- 排队消息管理、目标（goal）指令、暂停/恢复
-- 附件上传/预览、文件变更 diff、文件回滚、编辑用户消息、点赞/点踩
-
-### 协议层
-完整复刻官方 relay 握手、配对证明（HMAC-SHA256）、rpc-frame 分片传输（CRC32 校验 + ack）、IPC 值编解码、V4 快照/增量协议。
-
-### 调试工具
-- 协议日志页（relay / IPC / V4 帧）
-- RPC（relay payload）调试器
-- Channel RPC 调试器
-
-### 其他
-- 模型供应商管理（添加/启停/删除）、用量/配额/订阅查看
-- 浅色/深色/跟随系统主题、字体缩放、中英双语
-- **更新检测**：启动自动检查 GitHub 最新发布，Android 端一键下载 APK 并调用系统安装器升级
-- **后台任务通知（Android）**：任务运行中时通知栏静默常驻并实时更新最新进展；任务完成静默提醒（不弹窗打扰）；点击通知直达对应对话
-
-## 平台
-
-| 平台 | 状态 |
-|------|------|
-| Android | ✅ 主要目标平台 |
-| Web | ✅ 可用（调试 / 快速预览） |
-| Windows | ⚙️ 桌面端可用（未重点优化） |
-| iOS / macOS / Linux | 未验证（理论上可构建） |
-
-## 快速开始
-
-### 前置条件
-
-- Flutter SDK（本项目 `sdk: ^3.5.0`）
-- 桌面端已安装并打开 **ZCode**（zcode.z.ai）
-
-### 获取远程控制 URL
-
-桌面 ZCode → 远程控制 → 生成二维码 / 复制链接，形如：
-
-```
-https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...&mid=...&name=...
+```properties
+org.gradle.java.home=E:/AndroidSdk/jdk-17
 ```
 
-### 运行
+放在用户级而不是仓库里，是为了让仓库不含机器相关路径。改过这项之后要先 `./gradlew --stop`
+再构建，否则会复用按旧 JDK 启动的 daemon。
+
+---
+
+## 仓库布局
+
+| 路径 | 内容 | 状态 |
+|---|---|---|
+| `rust/` | **Rust 侧**：`crates/protocol`（纯逻辑协议核心）+ `crates/ffi`（JNI 绑定层） | `cargo test --workspace` 全绿 |
+| `android/` | **Kotlin 外壳**：引擎 / 持久化 / 配对 / 更新 / 表现层（界面样式未实现） | 单测全绿，debug / release 均可构建 |
+| `design/` | 从网页快照抽取的设计基线：设计令牌、图标清单、界面清单、协议地图 | 已完成 |
+| `docs/` | 架构图与各层契约：`ARCHITECTURE.md`、`FFI.md`、`ENGINE-API.md` | 已完成 |
+| `docs/remote-v4/` | 网页端 remote-v4 协议文档（按 **3.15.3** 重写；源在 `Zcode_harmony/Docs/`） | 只读镜像 |
+| `docs/desktop/` | **桌面端（对端）协议逆向 12 篇**（`app.asar` 3.15.3） | 权威对端规格 |
+| `tools/` | `asar.mjs`：只读读取 Electron `app.asar`（`ls`/`cat`/`dump`/`grep`/`stat`） | 审计工具 |
+| `Reference_code/` | 上游 Flutter 客户端全部源码（Dart 约 21k 行 + 平台胶水 + 原有测试） | 冻结，只读参照 |
+| `Reference_web/` | 官方网页版快照（remote v4 / 3.15.3，2026-10-15 抓取） | 只读参照；按该快照自带约定**仅本机保留、不入 Git** |
+| `scratch/` | 本地签名材料（`zemote-release.p12`、密码、base64） | **不入库** |
+| `VERSION` | 版本号基准（单行），CI 据此生成 `versionName` | — |
+| `CHANGELOG.md` | 正式 Release 的正文来源（见「CI」） | — |
+
+> 姊妹仓库 `Zcode_harmony` 另存有更早的两份网页快照、13 份安卓壳分区审计、以及 MIUIX 组件库副本
+> （`android-shell/docs/miuix/`），需要时从那边取。
+
+---
+
+## 构建
+
+### Rust 侧
 
 ```bash
-# Android
-flutter run
-
-# Web（快速预览）
-flutter run -d chrome
-
-# Windows
-flutter run -d windows
+cd rust
+cargo test --workspace                 # 协议核心 + FFI 层，纯逻辑，主机上直接跑，不需要设备
 ```
 
-应用内：**添加设备** → 扫码或粘贴 URL → 连接桌面 → 完成配对 → 进入任务列表。
-
-### 构建 APK
+交叉编译到 arm64-v8a（本地）：
 
 ```bash
-flutter build apk --split-per-abi
-# 产物：arm64-v8a / armeabi-v7a / x86_64 三种 APK
+cd rust
+cargo ndk -t arm64-v8a -o ../android/app/src/main/jniLibs build --release -p zemote-ffi
 ```
 
-## 更新与签名
+注意编的是 **`zemote-ffi`** 而不是 `zemote-protocol`：只有前者是 cdylib 且带 JNI 入口
+（`Java_app_zemote_core_NativeCore_*`），协议 crate 是纯逻辑的 rlib，它那个 `.so` 是空的。
+产物名必须是 `libzemote_ffi.so`，与 Kotlin 侧 `System.loadLibrary("zemote_ffi")` 对应。
 
-- 应用内置**更新检测**：按设备 CPU 自动选择 APK，支持断点续传、缓存安装包直装、MD5 校验和安装完成后自动清理。
-- 发布流程：在 `main` 上打好代码 → 提交 → `git tag vX.Y.Z` → 推送。GitHub Actions 自动执行 `flutter analyze` + `flutter test`，并构建上传三种 CPU 架构的统一签名 APK 与对应 MD5。
-- 签名说明：release APK 使用正式 keystore 签名（本地 `android/key.properties` + CI Secrets），保证覆盖安装与持续更新可用。详见 `.github/workflows/build-apk.yml`。
+CI 里不装 cargo-ndk，而是显式把 NDK 的 clang 作为 linker / CC 传给 cargo —— cargo-ndk 做的事就是
+这几个环境变量，只编一个目标时少一个活动部件（见 `.github/workflows/android.yml`）。
+
+### 安卓外壳
+
+```bash
+cd android
+./gradlew :app:testDebugUnitTest  # 宿主层单测（引擎/持久化/配对/更新/表现层），JVM 上跑，不需要设备
+./gradlew :app:assembleDebug      # 快速验证，debug 签名
+./gradlew :app:assembleRelease    # 发布路径：R8 混淆 + 正式签名
+```
+
+产物在 `android/app/build/outputs/apk/`。release 开了 minify + shrinkResources；有正式签名时读
+`android/key.properties`（模板见 `android/key.properties.example`），缺该文件会回退 debug 签名
+并打印告警。
+
+```bash
+cd android
+./gradlew :app:assembleDebug      # 快速验证，debug 签名
+./gradlew :app:assembleRelease    # 发布路径：R8 混淆 + 正式签名
+```
+
+产物在 `android/app/build/outputs/apk/`。release 开了 minify + shrinkResources；有正式签名时读
+`android/key.properties`（模板见 `android/key.properties.example`），缺该文件会回退 debug 签名
+并打印告警。
+
+---
 
 ## 架构
 
-```
-┌────────────────────────────────────────────────────────────┐
-│ UI (lib/ui)     设备列表 / 任务 / 对话 / 设置 / 调试器        │
-├────────────────────────────────────────────────────────────┤
-│ State (lib/state)  AccountStore · AppSession · LogStore    │
-├────────────────────────────────────────────────────────────┤
-│ Facade (lib/protocol/zemote_client.dart)                    │
-│   relay → 配对 → bootstrap → workspace-bridge → channel RPC │
-├────────────────────────────────────────────────────────────┤
-│ Protocol (纯 Dart，可单测)                                  │
-│   RelayClient · RpcFrameTransport · ChannelClient           │
-│   IpcCodec · Conversation(V4) · Proof(HMAC-SHA256)          │
-└────────────────────────────────────────────────────────────┘
-```
+### 边界：协议核心是纯逻辑
 
-协议分层示意：
+`rust/crates/protocol` 是**纯逻辑、同步、无 I/O** 的 crate：不做网络、不做文件、不做定时器、
+不用 async、不依赖 tokio。WebSocket / 存储 / 计时 / 权限 / 通知等宿主能力由 Kotlin 侧实现；
+需要宿主的地方，crate 里**只定义 trait**，实现留给宿主。好处是 FFI 边界最小、单测不需要任何
+mock 运行时。
 
-| 层 | 职责 |
-|---|---|
-| `connection_params.dart` | 远程控制 URL 解析 + relay WS 地址 |
-| `proof.dart` | 配对证明（HMAC-SHA256 / base64url） |
-| `relay_client.dart` | relay WebSocket 连接 + 心跳 + 重连 |
-| `rpc_transport.dart` | rpc-frame 分片/重组/CRC32 校验/ack |
-| `ipc_codec.dart` | 值编解码 + 13 字节 IPC 帧解析 |
-| `channel_client.dart` | IPC channel RPC 调用/事件订阅 |
-| `conversation.dart` | Conversation V4 / sessions-index 快照+增量 |
-| `zemote_client.dart` | 高层门面：bootstrap / bridge / 断线恢复 |
+模块与 Dart 源文件**一一对应**（`relay_client.dart` → `relay_client.rs`），这是移植可追溯性的基础。
+跨模块共用的类型不搬家，统一从 `zemote_protocol::prelude` 再导出。
 
-## 测试
+| Rust 模块 | 对应 Dart | 职责 |
+|---|---|---|
+| `connection_params` | `connection_params.dart` | 远控 URL 解析（`Uri`、`ZemoteConnectionParams`） |
+| `device_info` | `device_info.dart` | 设备信息与平台名 |
+| `proof` | `proof.dart` | 配对证明（HMAC-SHA256 + base64url 去 padding） |
+| `crc32` | `crc32.dart` | IEEE CRC-32（查表） |
+| `id` | `id.dart` | UUID / 请求 id（CSPRNG，随机源可注入） |
+| `ipc_codec` | `ipc_codec.dart` | IPC 值编解码（通道 RPC 的真实线格式） |
+| `rpc_transport` | `rpc_transport.dart` | 逻辑消息分片、CRC 校验、重组 |
+| `relay_client` | `relay_client.dart` | 中继连接状态机（心跳、退避重连、关闭码） |
+| `channel_client` | `channel_client.dart` | 通道 RPC 与事件分发 |
+| `automation_client` | `automation_client.dart` | 定时任务管理 |
+| `conversation` | `conversation.dart` | 对话状态机、增量、CAS 记账、订阅核心 |
+| `conversation_transport` | `conversation.dart`（`ConversationTransport` 类） | 对话传输层：握手、订阅、看门狗、CAS 重试、行区间、附件分块上传 |
+| `zemote_client` | `zemote_client.dart` | 集成层：把上面几层串成一次完整会话 |
 
-```bash
-# 单元测试（协议编解码 / 状态机 / delta 应用 / 更新检测等）
-flutter test
+移植契约（命名映射、硬性要求、已决事项）见 `rust/crates/protocol/PORTING.md` —— 那份文档同时是
+后续并行移植的派单契约。
 
-# 集成测试：需要真实桌面 + 自己的远程控制 URL，通过环境变量注入
-$env:ZEMOTE_PROBE_URL="https://zcode.z.ai/remote/v4?sid=..."
-flutter test integration_test
-```
+### 宿主能力怎么接（**零回调**）
 
-## 项目结构
+核心不碰 I/O，于是把"需要外界做的事"抽象成 trait（`RelayTransport` / `FrameSink` /
+`ChannelRpc` / `SecureRandom`）。但**Kotlin 不实现这些 trait** —— FFI 层在 Rust 侧用一个
+**记录型 transport** 把它们记成事件、随返回值吐给宿主。于是：
 
-```
-lib/
-├── main.dart                 # 应用入口 + 主题/字号注入 + 启动更新检测
-├── protocol/                 # ZCode 协议复刻（纯 Dart，可单测）
-├── state/                    # 应用状态（多设备账号 / 连接管理 / 日志）
-├── ui/                       # 界面（设备 / 任务 / 对话 / 设置 / 调试器）
-└── update/                   # 更新检测 + Android 下载安装
-test/                         # 单元测试
-integration_test/             # 对真实桌面的集成测试（需 ZEMOTE_PROBE_URL）
-```
+- Kotlin 只需要处理 JSON 事件、喂回 JSON 输入，不碰任何 Rust 类型；
+- FFI 面只有 6 个函数（`docs/FFI.md` §2），全是字符串进出，没有对象生命周期、没有回调线程、
+  没有 JNI 局部引用管理；
+- 代价是每次 socket 动作多一趟 JSON 序列化，相对网络往返可忽略。
 
-## 安全提示
+定时器同理不进核心：核心只吐 `TimerStart`/`TimerCancel`，到点由宿主回喂 `TimerFired`。
 
-- 远程控制 URL 包含设备凭据（`sid` / `hash`），相当于设备的访问凭证，**切勿提交到版本库或分享给他人**。
-- 集成测试通过环境变量 `ZEMOTE_PROBE_URL` 注入 URL，不写死在测试代码里；`.gitignore` 已忽略 `.env`、`*.remote.*`、签名文件（`*.jks` / `key.properties`）等。
-- 如凭据意外泄露，请在桌面端 ZCode 中重新生成远程控制二维码（旧凭据立即失效）。
+### Kotlin 侧的分层
 
-## 技术栈
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 引擎 | `app/zemote/engine/` | 协程事件循环：执行 `ws_*` 动作、驱动两套命名空间的定时器、把 socket 与定时器事件回喂核心、按令牌解析挂起操作。**单线程调度**（契约要求同一 handle 不可重入） |
+| 持久化 | `app/zemote/data/` | 设备列表与设置；配对凭据用 Keystore AES-GCM 加密落盘（内存明文、落盘密文） |
+| 配对 | `app/zemote/pairing/` | URL 前置筛查（只查必要条件，权威校验在 Rust）、去重、扫码接口 |
+| 更新 | `app/zemote/update/` | 版本清单、断点续传、MD5 完整性校验、同源签名校验、FileProvider 安装 |
+| 表现层 | `app/zemote/ui/` | ViewModel + 手写导航状态机（见下「界面」） |
 
-- [Flutter](https://flutter.dev) / Dart
-- [web_socket_channel](https://pub.dev/packages/web_socket_channel) — relay 长连接
-- [crypto](https://pub.dev/packages/crypto) — HMAC-SHA256 配对证明
-- [mobile_scanner](https://pub.dev/packages/mobile_scanner) — 扫码
-- [zxing2](https://pub.dev/packages/zxing2) — 纯 Dart 二维码解码（图片识别）
-- [shared_preferences](https://pub.dev/packages/shared_preferences) — 账号持久化
-- [image_picker](https://pub.dev/packages/image_picker) / [file_picker](https://pub.dev/packages/file_picker) — 附件
-- [flutter_markdown](https://pub.dev/packages/flutter_markdown) — Markdown 渲染
-- [http](https://pub.dev/packages/http) — 更新检测（GitHub Releases API）
+表现层的公开 API 见 `docs/ENGINE-API.md`；**界面样式本次未实现** —— `ui/` 下的屏幕只有结构骨架
+与状态接线，需要视觉设计的位置都留了 `// TODO(UI):` 标记。
 
-## 贡献
+### 界面
 
-欢迎提交 [Issue](https://github.com/HumanAILoop/zemote/issues) 与 Pull Request。
+`design/` 里的令牌与清单全部抽取自官方网页版快照，界面按它一比一复刻：
 
-- **提交 Issue**：最省事的方式。问题会被 **AI 全自动分析并修复**，详见 [反馈与 AI 自动修复](#反馈与-ai-自动修复)。
-- **提交 Pull Request**：贡献代码前请确保：
-  1. `flutter analyze` 无告警
-  2. `flutter test` 全部通过
-  3. 集成测试改动需注明需要真实桌面环境
+- `design/tokens/colors.json` —— 551 个颜色 token，明暗两套已解析成 sRGB hex（oklch 转换结果对照过真实 Chromium 引擎）
+- `design/tokens/typography.json`、`design/tokens/layout.json` —— 字号阶梯（真实基准是应用私有的 `--ui-font-size: 14px`，不是 Tailwind 的 `--text-*`）、4px 间距栅格、圆角、动效、断点
+- `design/ICONS.md` —— 实际使用的 247 个图标及线宽约定
+- `design/SCREENS.md` —— 12 个视图的逐层结构
+- `design/PROTOCOL-MAP.md` —— 消息条目、握手步骤、错误码族与 35 条待证实项
 
-## Changelog
+---
 
-版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+## 签名
 
-## License
+使用**本项目专属**的 keystore：`scratch/zemote-release.p12`（PKCS12，别名 `zemote`，RSA 4096），
+证书 SHA-256 `6A:4F:D8:7F:69:A1:D8:91:11:EE:6F:24:C6:8E:B7:5E:4C:19:79:31:E8:BE:A8:27:72:25:BA:6E:AE:06:6B:5B`。
 
-[MIT](LICENSE)
+**不复用 android-shell 项目的签名材料**：共用签名只在两个应用 `applicationId` 相同时才有意义，
+而本项目的 `applicationId` 是 `app.zemote`。
 
-## 免责声明
+签名材料与 `android/key.properties` 都在 `.gitignore` 里，**绝不入库**；密码只存在于本地文件与
+GitHub Secrets，不进任何提交或日志。
 
-本项目为个人学习与互操作目的，对 ZCode 远程控制协议的独立复刻，非官方出品。使用者须自行承担风险与合规责任。
+CI 需要的仓库 Secrets：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、
+`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。
+
+---
+
+## CI
+
+`.github/workflows/android.yml`（取代了旧的 Flutter 工作流）：
+
+1. **`rust-test`** —— `cargo test --workspace`。Rust 侧全是纯逻辑，几秒钟就能挡掉回归。
+2. **`build`** —— 交叉编译 Rust `.so` → 放进 `jniLibs` → 跑 Kotlin 单测 → `assembleRelease` →
+   重命名 + MD5 + 生成版本清单 → 上传 artifact。其中两道硬门：
+   - 打包前自检 `.so` 里存在 JNI 入口符号（符号名对不上时 APK 能装能起、一调就
+     `UnsatisfiedLinkError`，而单测用的是假 bridge，发现不了）；
+   - 配置了签名 Secrets 却产出 debug 签名，**直接失败**（宁可红，也不发一个用户装不上的包）。
+3. **`prerelease`**（推 `main`）—— **滚动覆写**预发布 `android-pre`：资产名固定 + `--clobber`，
+   下载链接始终指向最新构建。
+4. **`release`**（推 `v*` tag）—— 正式 Release，正文取 `CHANGELOG.md` 的 `## [X.Y.Z]` 段；
+   缺该段直接失败，不发空正文。
+
+发布资产：`zemote-arm64-v8a.apk`、`zemote-arm64-v8a.apk.md5`、`zemote-version.json`
+（后者是应用内更新读的版本清单，因为滚动发布的 tag 永远不变，不能靠 tag 判断新旧）。
+
+版本号取自**构建时间**（UTC+8）：`versionCode` = `yyMMddHH`（时钟只向前走，保证每次构建都能覆盖安装
+此前任何构建），`versionName` = `<VERSION>-dev.<yyyyMMdd.HHmm>`（分支构建）/ tag 版本（tag 构建）。
+UTC+8 用 epoch + 28800 算术换算，不依赖 runner 的 tz 数据库。
+
+只出 **arm64-v8a 单包**，所以不需要 `--split-per-abi` 那套每 ABI 的 versionCode 偏移。

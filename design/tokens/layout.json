@@ -1,0 +1,353 @@
+{
+  "_meta": {
+    "source_file": "Reference_web/3.15.3/assets/index-BD2BL4Cc.css",
+    "source_file_abs": "E:/Zcode_android/Reference_web/3.15.3/assets/index-BD2BL4Cc.css",
+    "source_version": "remote v4 / 3.15.3",
+    "secondary_sources": [
+      "Reference_web/3.15.3/index.html (inline <style> bootstrap shell, lines 110-194)"
+    ],
+    "extracted_at": "2026-10-16",
+    "root_font_size_px": 16,
+    "px_conversion_rule": "px = rem * 16",
+    "theme_token_location": "@layer theme{:root,:host{ ... }}",
+    "light_dark_relationship": "LIGHT/DARK IRRELEVANT: no spacing/radius/blur/animation/breakpoint token is redefined in .dark or @media (prefers-color-scheme:dark). Verified by counting duplicate token definitions across the whole stylesheet — every layout token below has exactly one definition."
+  },
+
+  "spacing": {
+    "base": {
+      "var": "--spacing",
+      "value": "0.25rem",
+      "px": 4,
+      "source": "index-BD2BL4Cc.css @layer theme :root,:host { --spacing:.25rem }",
+      "conditional_variants": "NONE",
+      "usage_form": "Every spacing utility is emitted as calc(var(--spacing) * N). Examples: .p-4 -> calc(var(--spacing) * 4); .gap-2 -> calc(var(--spacing) * 2); .mt-1.5 -> calc(var(--spacing) * 1.5)."
+    },
+    "derived_common_steps_px": {
+      "_note": "px = 4 * N. Only the multiplier steps actually observed in emitted calc() expressions are listed.",
+      "0": 0, "0.5": 2, "0.75": 3, "1": 4, "1.25": 5, "1.5": 6, "2": 8, "2.5": 10, "3": 12,
+      "3.5": 14, "4": 16, "4.5": 18, "5": 20, "6": 24, "7": 28, "8": 32, "9": 36, "10": 40,
+      "11": 44, "12": 48, "13": 52, "14": 56, "15": 60, "16": 64, "18": 72, "20": 80, "24": 96,
+      "25": 100, "28": 112, "29": 116, "32": 128, "36": 144, "38": 152, "39": 156, "40": 160,
+      "44": 176, "48": 192, "50": 200, "52": 208, "100": 400, "128": 512, "168": 672,
+      "3000": 12000, "3001": 12004
+    },
+    "notes": "The huge multipliers (100, 128, 168, 3000, 3001) are used for off-screen positioning tricks (e.g. sr-only / virtual spacers), not for visual layout."
+  },
+
+  "radius": {
+    "_note": "Source: index-BD2BL4Cc.css @layer theme :root,:host.",
+    "xs":  {"value": "0.125rem", "px": 2,  "var": "--radius-xs", "utility": ".rounded-xs"},
+    "sm":  {"value": "0.25rem",  "px": 4,  "var": "--radius-sm", "utility": ".rounded-sm"},
+    "md":  {"value": "0.375rem", "px": 6,  "var": "--radius-md", "utility": ".rounded-md"},
+    "lg":  {"value": "0.5rem",   "px": 8,  "var": "--radius-lg", "utility": ".rounded-lg"},
+    "xl":  {"value": "0.75rem",  "px": 12, "var": "--radius-xl", "utility": ".rounded-xl"},
+    "2xl": {"value": "1rem",     "px": 16, "var": "--radius-2xl","utility": ".rounded-2xl"},
+    "3xl": {"value": "1.5rem",   "px": 24, "var": "--radius-3xl","utility": ".rounded-3xl"},
+    "legacy_rounded": {
+      "css": ".rounded{border-radius:.25rem}",
+      "px": 4,
+      "source": "index-BD2BL4Cc.css",
+      "notes": "Bare `rounded` (Tailwind v3 style) == --radius-sm (4px)."
+    },
+    "full": {
+      "var": "NONE — Tailwind v4 does not create a --radius-full variable",
+      "css": ".rounded-full{border-radius:3.40282e38px}",
+      "notes": "3.40282e38px is calc(infinity * 1px) rendered to float. Compose equivalent: CircleShape (or a very large RoundedCornerShape).",
+      "source": "index-BD2BL4Cc.css"
+    },
+    "none": {"css": ".rounded-none{border-radius:0}", "px": 0},
+    "unused_tailwind_steps": {
+      "4xl": "2rem (Tailwind v4 default) — not emitted, unused"
+    },
+    "hardcoded_radius_literals": {
+      "_note": "index-BD2BL4Cc.css raw `border-radius:` values that bypass the tokens (component CSS + the bootstrap shell).",
+      "px_values": [1, 2, 3.2, 4, 5, 6, 7, 8, 9, 10, 12, 16, 20, 99, 999, 9999],
+      "percent_values": ["35%", "50%"],
+      "expressions": ["calc(var(--radius-sm) - 2px)", "inherit"],
+      "bootstrap_shell": "index.html `.zcode-boot-loading__logo-shell{border-radius:24px}`"
+    }
+  },
+
+  "blur": {
+    "_note": "Source: index-BD2BL4Cc.css @layer theme :root,:host. Used both for filter:blur() and backdrop-filter.",
+    "xs":  {"value": "4px",  "var": "--blur-xs"},
+    "sm":  {"value": "8px",  "var": "--blur-sm"},
+    "md":  {"value": "12px", "var": "--blur-md"},
+    "xl":  {"value": "24px", "var": "--blur-xl"},
+    "2xl": {"value": "40px", "var": "--blur-2xl"},
+    "3xl": {"value": "64px", "var": "--blur-3xl"},
+    "legacy_blur": {"css": ".blur{--tw-blur:blur(8px)}", "px": 8, "source": "index-BD2BL4Cc.css"},
+    "utility_mapping": {
+      "blur-3xl": "filter: blur(var(--blur-3xl))",
+      "backdrop-blur-sm": "backdrop-filter: blur(var(--blur-sm))",
+      "backdrop-blur-md": "backdrop-filter: blur(var(--blur-md))",
+      "backdrop-blur-xl": "backdrop-filter: blur(var(--blur-xl))",
+      "backdrop-blur-2xl": "backdrop-filter: blur(var(--blur-2xl))"
+    },
+    "unused_tailwind_steps": {
+      "blur-none": "0 — not emitted, unused",
+      "blur-lg": "16px (Tailwind default) — not emitted, unused"
+    },
+    "compose_implication": "backdrop-blur on web maps to Modifier.blur() on the layer below; Compose's blur radius roughly corresponds but Android GPU blur cost differs — treat these as visual targets, not literal radii."
+  },
+
+  "animation": {
+    "_note": "Tailwind theme animation tokens (source: index-BD2BL4Cc.css @layer theme :root,:host) plus the app's own @keyframes and hardcoded animation declarations.",
+    "theme_tokens": {
+      "spin":  {"value": "spin 1s linear infinite",                  "var": "--animate-spin",  "utility": ".animate-spin{animation:var(--animate-spin)}"},
+      "ping":  {"value": "ping 1s cubic-bezier(0, 0, .2, 1) infinite","var": "--animate-ping",  "utility": ".animate-ping{animation:var(--animate-ping)}"},
+      "pulse": {"value": "pulse 2s cubic-bezier(.4, 0, .6, 1) infinite","var": "--animate-pulse","utility": ".animate-pulse{animation:var(--animate-pulse)}"}
+    },
+    "enter_exit": {
+      "animate-in":  {"css": ".animate-in{animation:enter var(--tw-animation-duration,var(--tw-duration,.15s)) var(--tw-ease,ease) var(--tw-animation-delay,0s) var(--tw-animation-iteration-count,1) var(--tw-animation-direction,normal) var(--tw-animation-fill-mode,none)}", "default_duration": "0.15s", "default_easing": "ease", "keyframes": "enter"},
+      "animate-out": {"css": ".animate-out{animation:exit ...}", "default_duration": "0.15s", "default_easing": "ease", "keyframes": "exit"},
+      "animate-none": {"css": ".animate-none{animation:none}"}
+    },
+    "accordion_collapsible": {
+      "animate-accordion-down": {"keyframes": "accordion-down", "duration": "var(--tw-animation-duration,var(--tw-duration,.2s))", "default_duration": "0.2s", "easing": "var(--tw-ease,ease-out)", "default_easing": "ease-out"},
+      "animate-accordion-up":   {"keyframes": "accordion-up",   "default_duration": "0.2s", "default_easing": "ease-out"},
+      "animate-collapsible-down": {"keyframes": "collapsible-down", "default_duration": "0.2s", "default_easing": "ease-out"},
+      "animate-collapsible-up":   {"keyframes": "collapsible-up",   "default_duration": "0.2s", "default_easing": "ease-out"},
+      "notes": "All four animate height: accordion/collapsible-down from height:0; up from height:var(--radix-accordion-content-height|--radix-collapsible-content-height|...,auto)."
+    },
+    "app_named": {
+      "animate-zcode-alarm-ring": {"css": ".animate-zcode-alarm-ring{animation:.6s ease-in-out infinite zcode-alarm-ring}", "duration": "0.6s", "easing": "ease-in-out", "iteration": "infinite"}
+    },
+    "duration_utilities": {
+      "duration-100": {"value": "0.1s", "css": ".duration-100{--tw-duration:.1s;transition-duration:.1s}"},
+      "duration-150": {"value": "0.15s", "css": ".duration-150{--tw-duration:.15s;transition-duration:.15s}"},
+      "duration-200": {"value": "0.2s", "css": ".duration-200{--tw-duration:.2s;transition-duration:.2s}"},
+      "duration-300": {"value": "0.3s", "css": ".duration-300{--tw-duration:.3s;transition-duration:.3s}"},
+      "duration-500": {"value": "0.5s", "css": ".duration-500{--tw-duration:.5s;transition-duration:.5s}"}
+    },
+    "raw_transition_durations": {
+      "_note": "index-BD2BL4Cc.css raw `transition-duration:` literals",
+      "values": ["0.1s", "0.15s", "0.16s", "0.2s", "0.3s", "0.5s"],
+      "default_used_by_39_rules": "var(--tw-duration,var(--default-transition-duration)) = var(--default-transition-duration) = 0.15s"
+    },
+    "raw_animation_declarations": {
+      "_note": "Component-level `animation:` shorthand found in index-BD2BL4Cc.css. Format: duration easing delay fill keyframes.",
+      "entries": [
+        {"keyframes": "wf-face-morph",             "duration": "0.18s", "easing": "ease-in-out"},
+        {"keyframes": "wf-face-closed-morph",      "duration": "0.18s", "easing": "ease-in-out"},
+        {"keyframes": "wf-face-dot-float",         "duration": "0.5s",  "easing": "ease-in-out", "fill": "both"},
+        {"keyframes": "wf-face-float",             "duration": "0.6s",  "easing": "ease-in-out"},
+        {"keyframes": "wf-face-hop",               "duration": "0.24s", "easing": "ease-in-out"},
+        {"keyframes": "wf-face-shake",             "duration": "90ms",  "easing": "linear"},
+        {"keyframes": "wf-face-blink",             "duration": "0.23s", "easing": "ease-in-out"},
+        {"keyframes": "wf-face-closed-blink",      "duration": "0.23s", "easing": "ease-in-out"},
+        {"keyframes": "wf-caret",                  "duration": "1s",    "easing": "step-end", "iteration": "infinite"},
+        {"keyframes": "wf-draw",                   "duration": "0.42s", "easing": "var(--wf-ease)", "fill": "forwards"},
+        {"keyframes": "wf-fill-stroke",            "duration": "0.42s", "easing": "var(--wf-ease)"},
+        {"keyframes": "wf-slide",                  "duration": "0.32s", "easing": "var(--wf-ease)"},
+        {"keyframes": "wf-mark",                   "duration": "0.18s", "easing": "var(--wf-ease)"},
+        {"keyframes": "wf-land",                   "duration": "1.2s",  "easing": "var(--wf-ease)"},
+        {"keyframes": "wf-stream-flow",            "duration": "1.2s",  "easing": "var(--wf-ease,ease-in-out)", "iteration": "infinite"},
+        {"keyframes": "wf-ws-shine",               "duration": "2.4s",  "easing": "linear", "iteration": "infinite"},
+        {"keyframes": "wf-unfold",                 "duration": "var(--wf-t-enter)", "easing": "var(--wf-ease)", "note": "applied to body"},
+        {"keyframes": "zcode-collapsible-up",      "duration": "0.3s",  "easing": "ease-in-out", "fill": "forwards", "important": true},
+        {"keyframes": "zcode-collapsible-fade-out","duration": "0.3s",  "easing": "ease-in-out", "fill": "forwards", "important": true},
+        {"keyframes": "zcode-reaction-pop",        "duration": "0.45s", "easing": "cubic-bezier(.34,1.56,.64,1)"},
+        {"keyframes": "zcode-reaction-particles",  "duration": "0.56s", "easing": "cubic-bezier(.16,1,.3,1)", "delay": "60ms", "fill": "forwards"},
+        {"keyframes": "zcode-stream-text-in",      "duration": "0.9s",  "easing": "cubic-bezier(.16,1,.3,1)", "fill": "both"},
+        {"keyframes": "zcode-update-charge-sweep", "duration": "1.15s", "easing": "cubic-bezier(.65,0,.35,1)", "iteration": "infinite"},
+        {"keyframes": "zcode-alarm-ring",          "duration": "0.6s",  "easing": "ease-in-out", "iteration": "infinite"},
+        {"keyframes": "highspeed-share-dialog-fade-up", "duration": "0.42s / 0.46s", "easing": "cubic-bezier(.22,1,.36,1)", "delay": "0.12s / 0.23s / 0.3s / 0.42s", "fill": "both"},
+        {"keyframes": "highspeed-inline-countdown-enter", "duration": "0.42s", "easing": "cubic-bezier(.23,1,.32,1)", "fill": "both"},
+        {"keyframes": "highspeed-model-trigger-sweep", "duration": "0.8s", "easing": "cubic-bezier(.23,1,.32,1)", "fill": "both"},
+        {"keyframes": "highspeed-share-dialog-fill-grow", "duration": "1.2s", "easing": "cubic-bezier(.33,0,.16,1)", "delay": "0.52s", "fill": "both"},
+        {"keyframes": "highspeed-share-dialog-marker-sweep", "duration": "1.2s", "easing": "cubic-bezier(.33,0,.16,1)", "delay": "0.52s", "fill": "both"},
+        {"keyframes": "highspeed-share-dialog-marker-rise", "duration": "1.2s", "easing": "cubic-bezier(.33,0,.16,1)", "delay": "0.52s", "fill": "both"},
+        {"keyframes": "browser-use-operation-breathe", "duration": "0.9s", "easing": "ease-in-out", "iteration": "infinite"},
+        {"keyframes": "workspace-remote-connecting-breathe", "duration": "1.8s", "easing": "ease-in-out", "iteration": "infinite"},
+        {"keyframes": "tool-call-progress-indeterminate", "duration": "1.2s", "easing": "ease-in-out", "iteration": "infinite"},
+        {"keyframes": "task-search-result-highlight", "duration": "1.2s", "easing": "ease-out", "fill": "both"},
+        {"keyframes": "fork-highlight-pulse",      "duration": "1.6s",  "easing": "ease-out"},
+        {"keyframes": "markdown-image-loading-shimmer", "duration": "1.8s", "easing": "linear", "iteration": "infinite"},
+        {"keyframes": "cua-group-gradient-flow",   "duration": "1s",    "easing": "linear", "delay": "0.5s", "iteration": "infinite"},
+        {"keyframes": "gradient-flow",             "duration": "4s",    "easing": "linear", "iteration": "infinite"},
+        {"keyframes": "onboarding-logo-border-sweep", "duration": "5s", "easing": "linear", "iteration": "infinite"}
+      ]
+    },
+    "wf_timing_tokens": {
+      "_note": "App-specific workflow-visualization timing variables (plain :root/app CSS, not Tailwind theme). Source: index-BD2BL4Cc.css.",
+      "--wf-t-fast":  {"value": "0.12s"},
+      "--wf-t-base":  {"value": "0.16s"},
+      "--wf-t-enter": {"value": "0.2s"},
+      "--wf-t-ink":   {"value": "0.32s"},
+      "--wf-beat":    {"value": "1.6s"},
+      "--wf-ease":    {"value": "cubic-bezier(.22, .61, .36, 1)"}
+    },
+    "reduced_motion": {
+      "_note": "The stylesheet honours prefers-reduced-motion.",
+      "queries": [
+        "@media (prefers-reduced-motion:no-preference) — gates .motion-safe:animate-pulse and hover animations",
+        "@media (prefers-reduced-motion:reduce) — disables .onboarding-logo-sweep, .cua-group-gradient-text, .highspeed-particle-layer/.highspeed-diffusion-canvas transitions, and the highspeed-share-dialog animations (animation:none!important)"
+      ],
+      "compose_implication": "Compose side should mirror this via LocalAccessibilityManager / animator duration scale checks."
+    },
+    "keyframes_names_all": [
+      "accordion-down", "accordion-up", "browser-use-operation-breathe", "collapsible-down", "collapsible-up",
+      "cua-group-gradient-flow", "enter", "exit", "fork-highlight-pulse", "gradient-flow",
+      "highspeed-inline-countdown-enter", "highspeed-model-trigger-sweep", "highspeed-share-dialog-fade-up",
+      "highspeed-share-dialog-fill-grow", "highspeed-share-dialog-marker-rise", "highspeed-share-dialog-marker-sweep",
+      "markdown-image-loading-shimmer", "onboarding-logo-border-sweep", "ping", "pulse", "spin",
+      "task-search-result-highlight", "tool-call-progress-indeterminate",
+      "wf-arrive", "wf-beat", "wf-caret", "wf-draw", "wf-face-blink", "wf-face-closed-blink", "wf-face-closed-morph",
+      "wf-face-dot-float", "wf-face-float", "wf-face-hop", "wf-face-morph", "wf-face-shake", "wf-fill-stroke",
+      "wf-land", "wf-mark", "wf-rail-grow", "wf-slide", "wf-stream-flow", "wf-swap", "wf-unfold", "wf-ws-land",
+      "wf-ws-shine", "workspace-remote-connecting-breathe", "zcode-alarm-ring", "zcode-collapsible-fade-out",
+      "zcode-collapsible-up", "zcode-draft-prompt-waterfall", "zcode-reaction-particles", "zcode-reaction-pop",
+      "zcode-stream-marker-in", "zcode-stream-text-in", "zcode-task-interaction-countdown", "zcode-update-charge-sweep"
+    ],
+    "keyframes_count": 56,
+    "keyframes_notes": "Some names in the list are declared in the stylesheet but their duration/easing is supplied at runtime through CSS variables (e.g. wf-arrive, wf-rail-grow, wf-swap, wf-beat, zcode-draft-prompt-waterfall, zcode-task-interaction-countdown, zcode-stream-marker-in, wf-ws-land). Only the ones with a literal `animation:` shorthand are itemised in raw_animation_declarations."
+  },
+
+  "easing": {
+    "_note": "Source: index-BD2BL4Cc.css @layer theme :root,:host + utility classes + raw literals.",
+    "tokens": {
+      "--ease-out":    {"value": "cubic-bezier(0, 0, .2, 1)",  "utility": ".ease-out{--tw-ease:var(--ease-out);transition-timing-function:var(--ease-out)}"},
+      "--ease-in-out": {"value": "cubic-bezier(.4, 0, .2, 1)", "utility": ".ease-in-out{--tw-ease:var(--ease-in-out);transition-timing-function:var(--ease-in-out)}"},
+      "--ease-linear": {"var": "NONE", "utility": ".ease-linear{--tw-ease:linear;transition-timing-function:linear}"}
+    },
+    "unused_tailwind_steps": {
+      "--ease-in": "cubic-bezier(.4, 0, 1, 1) (Tailwind default) — not emitted, unused"
+    },
+    "default_transition": {
+      "--default-transition-duration": {"value": "0.15s"},
+      "--default-transition-timing-function": {"value": "cubic-bezier(.4, 0, .2, 1)"},
+      "applied_as": "transition-duration:var(--tw-duration,var(--default-transition-duration)); transition-timing-function:var(--tw-ease,var(--default-transition-timing-function)) — used by 39 rules",
+      "compose_equivalent": "FastOutSlowInEasing / standard Material easing is the closest match to cubic-bezier(.4,0,.2,1)."
+    },
+    "raw_one_off_curves": {
+      "_note": "cubic-bezier literals in component CSS, for 1:1 fidelity on specific animations.",
+      "values": [
+        "cubic-bezier(.22,1,.36,1)", "cubic-bezier(.23,1,.32,1)", "cubic-bezier(.34,1.56,.64,1)",
+        "cubic-bezier(.16,1,.3,1)", "cubic-bezier(.33,0,.16,1)", "cubic-bezier(.65,0,.35,1)",
+        "cubic-bezier(.77,0,.175,1)", "cubic-bezier(.22,.61,.36,1)  /* == --wf-ease */"
+      ]
+    }
+  },
+
+  "breakpoints": {
+    "_note": "NO --breakpoint-* variables are emitted (Tailwind consumes them at build time and inlines them into media queries). Values below are read directly from the emitted @media conditions. Source: index-BD2BL4Cc.css.",
+    "sm":  {"value": "40rem", "px": 640,  "media_query": "@media (width>=40rem)", "negative": "@media not all and (width>=40rem)"},
+    "md":  {"value": "48rem", "px": 768,  "media_query": "@media (width>=48rem)", "negative": "@media not all and (width>=48rem)"},
+    "lg":  {"value": "64rem", "px": 1024, "media_query": "@media (width>=64rem)", "negative": "@media not all and (width>=64rem)"},
+    "xl":  {"value": "80rem", "px": 1280, "media_query": "@media (width>=80rem)"},
+    "2xl": {"value": "96rem", "px": 1536, "media_query": "@media (width>=96rem)"},
+    "custom": {
+      "narrow_phone": {"value": "480px", "media_query": "@media (width<=480px)", "source": "index-BD2BL4Cc.css — used e.g. .highspeed-share-dialog__card{padding:16px}"},
+      "short_viewport": {"value": "740px", "media_query": "@media (height<=740px)", "source": "index-BD2BL4Cc.css — height-based variant utilities, e.g. .[@media(max-height:740px)]:mt-4{margin-top:calc(var(--spacing) * 4)}, :gap-1, :gap-2, :h-10, :min-h-11, :mt-4, :mt-5, :pt-10, :py-2"}
+    },
+    "other_media_features": [
+      "@media (hover:hover)",
+      "@media (hover:none)",
+      "@media (forced-colors:active)",
+      "@media (prefers-color-scheme:dark)",
+      "@media (prefers-reduced-motion:no-preference)",
+      "@media (prefers-reduced-motion:reduce)"
+    ],
+    "compose_implication": "Use 640/768/1024/1280/1536 dp as the width-class breakpoints and 740dp HEIGHT as the compact-height breakpoint (phones in landscape, small windows). Height matters here — several utilities switch on it."
+  },
+
+  "container": {
+    "_note": "Tailwind container widths (--container-*), consumed by .max-w-*. Source: index-BD2BL4Cc.css @layer theme :root,:host.",
+    "xs":  {"value": "20rem", "px": 320,  "var": "--container-xs",  "utility": ".max-w-xs"},
+    "sm":  {"value": "24rem", "px": 384,  "var": "--container-sm",  "utility": ".max-w-sm"},
+    "md":  {"value": "28rem", "px": 448,  "var": "--container-md",  "utility": ".max-w-md"},
+    "lg":  {"value": "32rem", "px": 512,  "var": "--container-lg",  "utility": ".max-w-lg"},
+    "xl":  {"value": "36rem", "px": 576,  "var": "--container-xl",  "utility": ".max-w-xl"},
+    "2xl": {"value": "42rem", "px": 672,  "var": "--container-2xl", "utility": ".max-w-2xl"},
+    "3xl": {"value": "48rem", "px": 768,  "var": "--container-3xl", "utility": ".max-w-3xl"},
+    "4xl": {"value": "56rem", "px": 896,  "var": "--container-4xl", "utility": ".max-w-4xl"},
+    "5xl": {"value": "64rem", "px": 1024, "var": "--container-5xl", "utility": ".max-w-5xl"},
+    "6xl": {"value": "72rem", "px": 1152, "var": "--container-6xl", "utility": ".max-w-6xl"},
+    "unused_tailwind_steps": {"7xl": "80rem — not emitted, unused"},
+    "compose_implication": "Use these as maxWidth on chat bubble / dialog / prose containers instead of full width."
+  },
+
+  "aspect_ratio": {
+    "video": {"value": "16 / 9", "var": "--aspect-video", "source": "index-BD2BL4Cc.css @layer theme :root,:host"},
+    "notes": "Only aspect token emitted."
+  },
+
+  "z_index": {
+    "_note": "There are NO --z-* theme variables. Tailwind emits the z utilities with hardcoded integers; the app also uses literal z-index values in component CSS. Source: index-BD2BL4Cc.css.",
+    "utility_values": {
+      "z-0": 0, "z-1": 1, "z-2": 2, "z-10": 10, "z-20": 20, "z-30": 30, "z-40": 40, "z-50": 50
+    },
+    "literal_values_in_css": {
+      "-5": 1, "0": 3, "1": 9, "2": 3, "5": 1, "6": 1, "7": 1, "8": 1,
+      "10": 6, "20": 1, "30": 1, "40": 1, "50": 2, "60": 1, "100": 1,
+      "9998": 1, "9999": 1, "2147483647": 1
+    },
+    "notes": "The histogram counts how many rules use each value. The 9998/9999/2147483647 values are the modal/tooltip/toast escape hatches. Compose side: define a small explicit layer enum (background=0, content=1, sticky=10, overlay=40, modal=50, toast=9999) rather than copying the literals."
+  },
+
+  "notes": {
+    "_purpose": "What Tailwind's default scale does NOT override in this app — critical for Compose alignment.",
+    "summary": "The emitted @layer theme :root,:host block is the STOCK Tailwind v4 default theme, tree-shaken down to only the variables the UI actually references. There are exactly three custom additions and one app-level variable outside the theme layer. Everything else is Tailwind defaults.",
+
+    "custom_additions": [
+      "--tracking-wf-label: 0.09em (app-specific letter-spacing for workflow labels)",
+      "--text-ui-2xs/xs/sm/caption/base/lg/xl (app-specific UI size scale derived from --ui-font-size)",
+      "--text-mobile-input-safe: 16px (iOS input zoom prevention)",
+      "--ui-font-size: 14px (declared in a plain `:root{}` block, NOT in the Tailwind theme layer)"
+    ],
+
+    "not_overridden_inherit_tailwind_default": {
+      "--spacing": "0.25rem — untouched default",
+      "--radius-xs/sm/md/lg/xl/2xl/3xl": "untouched Tailwind defaults (no app rebranding of the corner scale)",
+      "--blur-xs/sm/md/xl/2xl/3xl": "untouched Tailwind defaults",
+      "--text-xs..4xl + paired line-heights": "untouched Tailwind defaults",
+      "--font-weight-normal/medium/semibold/bold": "untouched Tailwind defaults",
+      "--leading-tight/snug/normal/relaxed": "untouched Tailwind defaults",
+      "--tracking-tight/normal/wide/widest": "untouched Tailwind defaults",
+      "--ease-out / --ease-in-out": "untouched Tailwind defaults",
+      "--animate-spin/ping/pulse": "untouched Tailwind defaults",
+      "--container-xs..6xl": "untouched Tailwind defaults",
+      "--default-transition-duration / --default-transition-timing-function": "0.15s / cubic-bezier(.4,0,.2,1) — untouched defaults"
+    },
+
+    "tailwind_default_steps_NOT_EMITTED_meaning_unused_by_the_UI": {
+      "_note": "Absent from the stylesheet. If a Compose token set is generated from these files, do NOT invent values for them — they are simply not used.",
+      "font_size": ["5xl (3rem)", "6xl (3.75rem)", "7xl (4.5rem)", "8xl (6rem)", "9xl (8rem)"],
+      "font_weight": ["thin (100)", "extralight (200)", "light (300)", "extrabold (800)", "black (900)"],
+      "line_height": ["loose (2)"],
+      "letter_spacing": ["tighter (-0.05em)", "wider (0.05em)"],
+      "radius": ["4xl (2rem)", "full is not a variable — .rounded-full uses 3.40282e38px = infinity*1px"],
+      "blur": ["none (0)", "lg (16px)"],
+      "easing": ["--ease-in cubic-bezier(.4,0,1,1)"],
+      "breakpoint_vars": ["--breakpoint-* are never emitted; breakpoints only exist inline inside @media conditions"],
+      "container": ["7xl (80rem)"]
+    },
+
+    "quirks_that_matter_for_compose": [
+      "The stylesheet is a single 455KB minified line — all 'source' citations above refer to variable names / selectors, not line numbers.",
+      "No brand webfont: the UI is 100% system fonts. The sans stack has NO CJK family, while the mono stack DOES (Microsoft YaHei UI, Microsoft YaHei, PingFang SC, Noto Sans CJK SC).",
+      "index.html's inline bootstrap style puts `Inter` first on `body` — a font that is never shipped. On any machine without Inter the effective UI font is the platform system font (Segoe UI on Windows, SF Pro on macOS).",
+      "The app UI size scale (--text-ui-*) has NO paired line-height, so those sizes inherit line-height 1.5 from preflight.",
+      "html,:host preflight sets `tab-size:4` and `line-height:1.5`; `pre` keeps `white-space:pre` (code blocks scroll horizontally, they do not wrap).",
+      "No --z-* tokens exist; z-index is a mix of Tailwind integers (0..50) and component literals up to 2147483647.",
+      "Only one spacing base (--spacing: 0.25rem) exists — there is no density/compact override anywhere in the stylesheet.",
+      "The only conditional (non-dark) variation of any layout token is the media-query family: width>=640/768/1024/1280/1536, width<=480, height<=740. No token VALUE changes across those queries — only which utilities apply."
+    ],
+
+    "verified_absences": {
+      "radius_full_variable": "absent",
+      "breakpoint_variables": "absent",
+      "z_index_variables": "absent",
+      "spacing_overrides": "absent",
+      "dark_mode_layout_or_type_overrides": "absent",
+      "density_or_compact_mode": "absent",
+      "webfont_face_for_ui_fonts": "absent (only KaTeX)"
+    }
+  },
+
+  "unknown_count": 1,
+  "unknowns": [
+    "z_index intent per surface — the CSS gives literal numbers but no semantic mapping (which surface is which layer). Compose must decide the layer enum."
+  ]
+}

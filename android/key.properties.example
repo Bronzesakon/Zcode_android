@@ -1,0 +1,22 @@
+# 本地签名配置示例
+#
+# 复制为 key.properties 后填入真实值；该文件已被 .gitignore 忽略，切勿提交。
+# CI 不用这个文件：workflow 从 GitHub Secrets 生成同名的 key.properties。
+#
+# 本项目的签名材料是**专属的**，不与 android-shell、也不与上游 zemote 共用：
+# 共用签名只对同一个 applicationId 有意义，而本应用包名 app.zemote 是独立的。
+#
+#   keystore : ../scratch/zemote-release.p12（PKCS12，别名 zemote，RSA 4096）
+#              scratch/ 已被 .gitignore 忽略，只存在于本地。
+#              CI 用 GitHub Secrets 里同一份 .p12 的 base64。
+#   密码     : ../scratch/keystore-password.txt（32 位随机串）
+#
+# storeFile 相对 android/（rootProject）解析，所以本地写 ../scratch/…；
+# CI 写入的是 $RUNNER_TEMP 下的绝对路径。
+# 注意：.properties 里反斜杠是转义符，Windows 绝对路径必须写正斜杠（E:/...）。
+
+storeFile=../scratch/zemote-release.p12
+storeType=PKCS12
+storePassword=<../scratch/keystore-password.txt 的内容>
+keyPassword=<与 storePassword 相同>
+keyAlias=zemote

@@ -1,0 +1,234 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<link rel="stylesheet" href="katex/katex.css">
+<style>
+  :root {
+    --mm-fg: #1f2328;
+    --mm-line: #57606a;
+    --mm-node: #f6f8fa;
+    --mm-note: #fff8c5;
+    --mm-note-line: #d4a72c;
+    color-scheme: light;
+  }
+  html.dark {
+    --mm-fg: #e6edf3;
+    --mm-line: #8b949e;
+    --mm-node: #161b22;
+    --mm-note: #3a2f0b;
+    --mm-note-line: #9e6a03;
+    color-scheme: dark;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    color: var(--mm-fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  #root {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0 2px;
+  }
+  .katex-display {
+    margin: 0 !important;
+  }
+  .mm-svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  .mm-svg text {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    fill: var(--mm-fg);
+  }
+  .mm-svg .mm-node,
+  .mm-svg .mm-actor {
+    fill: var(--mm-node);
+    stroke: var(--mm-line);
+    stroke-width: 1.2;
+  }
+  .mm-svg .mm-edge,
+  .mm-svg .mm-life {
+    stroke: var(--mm-line);
+    stroke-width: 1.3;
+    fill: none;
+  }
+  .mm-svg .mm-dashed {
+    stroke-dasharray: 5 4;
+  }
+  .mm-svg .mm-life {
+    stroke-dasharray: 4 4;
+    opacity: 0.75;
+  }
+  .mm-svg .mm-edge-label,
+  .mm-svg .mm-msg-label {
+    font-size: 12px;
+  }
+  .mm-svg .mm-frame {
+    fill: none;
+    stroke: var(--mm-line);
+    stroke-width: 1;
+  }
+  .mm-svg .mm-frame-label {
+    font-size: 11px;
+    fill: var(--mm-line);
+  }
+  .mm-svg .mm-frame-divider {
+    stroke: var(--mm-line);
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+  }
+  .mm-svg .mm-note {
+    fill: var(--mm-note);
+    stroke: var(--mm-note-line);
+    stroke-width: 1;
+  }
+  .mm-svg .mm-note-label {
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  window.__RICH_CONFIG__ = {
+    type: "__TYPE__",
+    display: __DISPLAY__,
+    source: "__SOURCE_B64__",
+    theme: "__THEME__"
+  };
+</script>
+<script src="katex/dep.js"></script>
+<script src="katex/katex.js"></script>
+<script src="mermaid.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var cfg = window.__RICH_CONFIG__ || {};
+  var root = document.getElementById('root');
+  var reported = -1;
+
+  function bridge() {
+    return (typeof AndroidBridge !== 'undefined') ? AndroidBridge : null;
+  }
+
+  function fail(message) {
+    var b = bridge();
+    if (b && b.onError) {
+      b.onError(String(message || 'render failed'));
+    }
+  }
+
+  function decodeBase64Utf8(b64) {
+    if (!b64) return '';
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    if (typeof TextDecoder !== 'undefined') {
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+    var out = '';
+    for (var j = 0; j < bytes.length; j++) out += String.fromCharCode(bytes[j]);
+    try { return decodeURIComponent(escape(out)); } catch (e) { return out; }
+  }
+
+  function reportHeight() {
+    var h = Math.ceil(root.getBoundingClientRect().height);
+    if (!isFinite(h) || h <= 0) h = 1;
+    if (h === reported) return;
+    reported = h;
+    var b = bridge();
+    if (b && b.onHeight) b.onHeight(h);
+  }
+
+  var scheduled = false;
+  function scheduleReport() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(function () {
+      scheduled = false;
+      reportHeight();
+    });
+  }
+
+  function afterRender() {
+    scheduleReport();
+    // Web fonts can change metrics; report again once they are ready.
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(scheduleReport);
+    }
+    if (typeof ResizeObserver !== 'undefined') {
+      try { new ResizeObserver(scheduleReport).observe(root); } catch (e) {}
+    }
+    window.addEventListener('load', scheduleReport);
+    setTimeout(scheduleReport, 60);
+    setTimeout(scheduleReport, 250);
+  }
+
+  function renderMath(source) {
+    if (!window.katex || typeof window.katex.render !== 'function') {
+      throw new Error('katex not loaded');
+    }
+    root.className = 'rich-math';
+    window.katex.render(source, root, {
+      displayMode: !!cfg.display,
+      throwOnError: true,
+      strict: 'ignore',
+      trust: false
+    });
+    afterRender();
+  }
+
+  function renderMermaid(source) {
+    if (!window.mermaid || typeof window.mermaid.render !== 'function') {
+      throw new Error('mermaid not loaded');
+    }
+    window.mermaid.render('rich-mermaid', source).then(function (result) {
+      root.className = 'rich-mermaid';
+      root.innerHTML = result.svg;
+      afterRender();
+    }).catch(function (err) {
+      fail(err && err.message ? err.message : err);
+    });
+  }
+
+  try {
+    if (document.documentElement) {
+      document.documentElement.className = cfg.theme === 'dark' ? 'dark' : 'light';
+    }
+    var source = decodeBase64Utf8(cfg.source);
+    if (cfg.type === 'mermaid') {
+      renderMermaid(source);
+    } else {
+      renderMath(source);
+    }
+  } catch (err) {
+    fail(err && err.message ? err.message : err);
+  }
+
+  window.addEventListener('error', function (event) {
+    fail(event && event.message ? event.message : 'script error');
+  });
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event && event.reason;
+    fail(reason && reason.message ? reason.message : reason);
+  });
+})();
+</script>
+</body>
+</html>
