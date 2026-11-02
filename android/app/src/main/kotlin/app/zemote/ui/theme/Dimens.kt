@@ -2,9 +2,10 @@
 //  由 design/tokens/layout.json 机械翻译的 Web 布局令牌（Android / Compose 侧）
 //
 //  数据来源：design/tokens/layout.json
+//    - 3.17.1 复核：Reference_web/3.17.1/assets/index-BgVjt5KE.css
+//      `--spacing:4px`、radius 4/6/8/12/16 与 3.15.3 一致，未改值。
 //    - 上游快照：Reference_web/3.15.3/assets/index-BD2BL4Cc.css
 //    - 上游 CSS sha256：40894faf46c4aaf3508873aaa4e808eb1d41343029f6d8aa070f5b6a997ebc2f
-//  生成时间：2026-10-16 23:20
 //
 //  【不要直接改这个文件】改值请改 design/tokens/layout.json 后重新生成。
 //
@@ -18,6 +19,8 @@
 //    4. 动效时长/缓动只是目标值：网页的 cubic-bezier 与 Compose 的
 //       CubicBezierEasing 语义一致，但 transition 的默认 0.15s 对应 Compose 动画
 //       的 spec 时长，实际手感仍以 1:1 复刻为准。
+//    5. 高度两档（3.17.1）：顶栏 h-11 = 44dp；可点行 min-h-12 = 48dp（Android
+//       最小触摸目标）。
 // ---------------------------------------------------------------------------
 
 package app.zemote.ui.theme
@@ -71,6 +74,17 @@ object ZemoteSpacing {
     val space32: Dp = of(32) // 128
     val space40: Dp = of(40) // 160
     val space48: Dp = of(48) // 192
+}
+
+// ===========================================================================
+//  高度：网页 h-11 / min-h-12 两个档位
+// ===========================================================================
+object ZemoteHeight {
+    /** h-11 = 44dp：对话页顶栏 / 紧凑工具条。 */
+    val Control: Dp = 44.dp
+
+    /** min-h-12 = 48dp：可点行、列表项（对齐 Android 最小触摸目标）。 */
+    val Touch: Dp = 48.dp
 }
 
 // ===========================================================================

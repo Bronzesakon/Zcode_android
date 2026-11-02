@@ -1,42 +1,34 @@
 // ---------------------------------------------------------------------------
-//  ZemoteTheme —— 把 design/tokens 里抽出来的 Web 设计令牌装进 Compose 主题
+//  ZemoteTheme —— 把 Web 设计令牌装进 Compose 主题
 //
-//  数据来源：design/tokens/colors.json、typography.json
-//    - 上游快照：Reference_web/3.15.3/assets/index-BD2BL4Cc.css
-//    - 上游 CSS sha256：40894faf46c4aaf3508873aaa4e808eb1d41343029f6d8aa070f5b6a997ebc2f
-//  生成时间：2026-10-16 23:20
+//  数据来源：
+//    - 3.17.1 语义令牌：design/tokens/generate_zai_theme.py 解析
+//      Reference_web/3.17.1/assets/index-BgVjt5KE.css 生成，值在 ZaiColors.kt；
+//    - 3.15.3 默认口径：design/tokens/colors.json（ZemoteColors.Light / .Dark），
+//      保留不动，只作为历史口径与解析兜底。
+//    - 排版 / 布局：design/tokens/typography.json、layout.json（Type.kt / Dimens.kt）。
 //
-//  【不要在这里硬编码颜色/字号】令牌本体在 Color.kt / Type.kt / Dimens.kt，
-//  它们又来自 design/tokens/*.json；改值请改令牌后重新生成。
+//  主题口径（docs/UI-CONFIRM-3.17.1.md §1.2）：
+//    - 跟随系统：系统深色 -> ZemoteColors.ZaiDark，浅色 -> ZemoteColors.ZaiLight；
+//    - 手动覆盖：ThemeMode.DARK / .LIGHT（设置页写入 ThemeController）；
+//    - 动态取色（Material You 壁纸取色）一律禁用，否则会覆盖网页复刻令牌。
 //
-//  主题口径：明暗两套按快照的**默认主题**解析（`:root,:host` + `.dark`），不套用
-//  `.theme-zai-*` 皮肤；Color.kt 里的 ZemoteColors.Light / .Dark 就是这个口径的值。
-//  明暗跟随系统设置（`isSystemInDarkTheme()`）。
+//  【不要在这里硬编码颜色/字号】令牌本体在 Color.kt / ZaiColors.kt / Type.kt /
+//  Dimens.kt；改值请改令牌后重新生成。
 // ---------------------------------------------------------------------------
 
 package app.zemote.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-
-/**
- * 动态取色开关，**必须保持 false**。
- *
- * 动态取色会把 Material You 的壁纸取色灌进 ColorScheme，直接覆盖掉从 Web 快照抽出来
- * 的令牌，一比一复刻就废了。保留这个常量只是为了标注意图，不要在复刻阶段打开。
- */
-private const val USE_DYNAMIC_COLOR = false
 
 /**
  * 应用主题入口。
@@ -45,21 +37,27 @@ private const val USE_DYNAMIC_COLOR = false
  * ColorScheme 与 Typography）。业务代码优先读 [LocalZemoteColors]（181 个语义令牌
  * 全在里面），Material3 组件走 MaterialTheme.colorScheme —— 后者是前者的子集映射，
  * 目的是让 ripple / TextField 默认色之类的 M3 内部实现不至于用 Material 默认的紫色。
+ *
+ * 明暗决策优先级：
+ *  1. [LocalThemeController] 存在时，用它的 [ThemeMode]（设置页手动覆盖）；
+ *  2. 否则用 [darkTheme]（默认跟随系统，调用方也可显式传入）。
+ *
+ * @param darkTheme 未安装 ThemeController 时的明暗兜底；默认跟随系统。
  */
 @Composable
 fun ZemoteTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    val zemoteColors = if (darkTheme) ZemoteColors.Dark else ZemoteColors.Light
+    val systemDark = isSystemInDarkTheme()
+    val controller = LocalThemeController.current
+    val mode: ThemeMode? = if (controller != null) controller.mode.collectAsState().value else null
 
-    val colorScheme = when {
-        USE_DYNAMIC_COLOR && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
+    val effectiveDark = mode?.resolveDark(systemDark) ?: darkTheme
+    val zemoteColors = if (effectiveDark) ZemoteColors.ZaiDark else ZemoteColors.ZaiLight
 
-        else -> remember(zemoteColors, darkTheme) { zemoteColorScheme(zemoteColors, darkTheme) }
+    val colorScheme = remember(zemoteColors, effectiveDark) {
+        zemoteColorScheme(zemoteColors, effectiveDark)
     }
 
     CompositionLocalProvider(

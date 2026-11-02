@@ -1137,6 +1137,21 @@ data class ZemoteColors(
             workflowTraceArgb = 0x59FFFFFF,
             workflowTraceStrongArgb = 0x99FFFFFF.toInt(),
         )
+
+        /**
+         * 3.17.1 网页 zai-dark 皮肤（181 条语义令牌，值在 ZaiColors.kt）。
+         *
+         * 与 [Dark] 的区别：Dark 是 3.15.3 的默认 `.dark` 口径；ZaiDark 按 3.17.1 的
+         * `:root,:host` + `.theme-zai-dark` 解析，是应用当前实际使用的暗色令牌。
+         */
+        val ZaiDark: ZemoteColors get() = ZaiColors.ZaiDark
+
+        /**
+         * 3.17.1 网页 zai-light 皮肤（181 条语义令牌，值在 ZaiColors.kt）。
+         *
+         * 与 [Light] 的区别同上：Light 是 3.15.3 默认口径，ZaiLight 是 3.17.1 实值。
+         */
+        val ZaiLight: ZemoteColors get() = ZaiColors.ZaiLight
     }
 }
 

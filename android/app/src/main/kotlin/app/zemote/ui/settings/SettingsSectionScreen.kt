@@ -13,47 +13,51 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.zemote.data.AppSettings
-import app.zemote.data.AppTheme
 import app.zemote.engine.RelayState
 import app.zemote.notify.LiveUpdate
+import app.zemote.ui.common.NoticeBar
+import app.zemote.ui.common.OutlineActionButton
+import app.zemote.ui.common.PageHeader
+import app.zemote.ui.common.SettingsDivider
+import app.zemote.ui.common.SettingsGroupHeader
+import app.zemote.ui.common.SettingsRow
+import app.zemote.ui.common.SettingsSwitchRow
+import app.zemote.ui.common.SettingsValue
+import app.zemote.ui.common.StatusDot
+import app.zemote.ui.common.ZemoteCard
+import app.zemote.ui.common.zemoteSwitchColors
+import app.zemote.ui.theme.LocalThemeController
 import app.zemote.ui.theme.LocalZemoteColors
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonArray
@@ -63,10 +67,12 @@ import kotlinx.serialization.json.JsonPrimitive
 /**
  * 设置二级页。
  *
- * 每个一级分类一个页面；`CONNECTION` / `NOTIFICATIONS` 是本机设置，
+ * 每个一级分类一个页面；`CONNECTION` / `NOTIFICATIONS` / `APPEARANCE` 是本机设置，
  * 其余分类读桌面端 `setting.get()`（UI-SPEC §3）。
+ *
+ * 视觉按 `docs/audit/06-non-chat.md` §3.2 / §5.2：44dp 页头、12dp 圆角卡片 + 1px 边框、
+ * 行式设置（label 左 / control 右）、行间 1px 分隔线；主题走 [LocalThemeController]。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSectionScreen(
     category: SettingsCategory,
@@ -84,24 +90,7 @@ fun SettingsSectionScreen(
     val colors = LocalZemoteColors.current
 
     Column(modifier = modifier.fillMaxSize().background(colors.background)) {
-        Box(Modifier.fillMaxWidth().background(colors.header).statusBarsPadding()) {
-            TopAppBar(
-                title = {
-                    Text(category.title, style = ZemoteType.uiLg, fontWeight = FontWeight.Medium)
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = colors.header,
-                    titleContentColor = colors.foreground,
-                    navigationIconContentColor = colors.foreground,
-                ),
-            )
-        }
-        HorizontalDivider(color = colors.border)
+        PageHeader(title = category.title, onBack = onBack)
 
         if (state.error != null) {
             NoticeBar(text = state.error, destructive = true, onClose = onDismissError)
@@ -114,8 +103,8 @@ fun SettingsSectionScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             when (category) {
                 SettingsCategory.CONNECTION -> ConnectionSection(
@@ -169,34 +158,71 @@ private fun ConnectionSection(
 
     SectionCard(title = "当前电脑") {
         if (device == null) {
-            Text("还没有连接电脑", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("还没有连接电脑", style = ZemoteType.uiBase, fontWeight = FontWeight.Medium, color = colors.foreground)
+                Text("去「对话」Tab 扫码配对一台电脑。", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
+            }
         } else {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(
                         device.name,
                         style = ZemoteType.uiBase,
                         fontWeight = FontWeight.Medium,
                         color = colors.foreground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        relayText(state.relayState),
-                        style = ZemoteType.uiSm,
-                        color = colors.foregroundSubtle,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        StatusDot(color = relayDotColor(state.relayState))
+                        Text(relayText(state.relayState), style = ZemoteType.uiSm, color = colors.foregroundSubtle)
+                    }
                 }
-                Button(onClick = onReconnect) { Text("重新连接") }
+                OutlineActionButton("重新连接", onClick = onReconnect)
             }
-            Spacer(Modifier.height(10.dp))
+            SettingsDivider()
             Text(
-                "断开后配对信息仍保留，下次打开应用会自动重连。",
-                style = ZemoteType.uiXs,
+                text = "断开后配对信息仍保留，下次打开应用会自动重连。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                style = ZemoteType.uiSm,
                 color = colors.foregroundSubtle,
             )
-            Spacer(Modifier.height(10.dp))
-            TextButton(onClick = onDisconnect) { Text("断开连接") }
+            SettingsDivider()
+            SettingsRow(
+                title = "断开连接",
+                titleColor = colors.destructive,
+                onClick = onDisconnect,
+            )
         }
+    }
+}
+
+@Composable
+private fun relayDotColor(state: RelayState): Color {
+    val colors = LocalZemoteColors.current
+    return when (state) {
+        RelayState.Paired -> colors.success
+        RelayState.Connecting,
+        RelayState.Authenticating,
+        RelayState.Waiting,
+        RelayState.Reconnecting,
+        -> colors.warning
+        RelayState.Error,
+        RelayState.Kicked,
+        -> colors.destructive
+        RelayState.Closed,
+        RelayState.Idle,
+        -> colors.foregroundSubtlest
     }
 }
 
@@ -214,32 +240,35 @@ private fun NotificationsSection(
     val fluidCloud = remember { LiveUpdate.describeEligibility(context) }
 
     SectionCard(title = "通知") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "通知总开关",
-            subtitle = "关闭后不发任何系统通知，连接与后台服务继续",
+            description = "关闭后不发任何系统通知，连接与后台服务继续",
             checked = settings.notificationEnabled,
             onCheckedChange = { v -> onUpdate { it.copy(notificationEnabled = v) } },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "声音与震动",
-            subtitle = "完成 / 等待授权通知是否响铃",
+            description = "完成 / 等待授权通知是否响铃",
             checked = settings.notificationSound,
             onCheckedChange = { v -> onUpdate { it.copy(notificationSound = v) } },
         )
     }
 
     SectionCard(title = "提醒事件") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "任务完成",
             checked = settings.notifyOnComplete,
             onCheckedChange = { v -> onUpdate { it.copy(notifyOnComplete = v) } },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "任务出错",
             checked = settings.notifyOnError,
             onCheckedChange = { v -> onUpdate { it.copy(notifyOnError = v) } },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "等待授权 / 输入",
             checked = settings.notifyOnAttention,
             onCheckedChange = { v -> onUpdate { it.copy(notifyOnAttention = v) } },
@@ -247,18 +276,18 @@ private fun NotificationsSection(
     }
 
     SectionCard(title = "后台与流体云") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "后台常驻",
-            subtitle = "保持连接；关闭后系统可能回收连接",
+            description = "保持连接；关闭后系统可能回收连接",
             checked = settings.foregroundServiceEnabled,
             onCheckedChange = { v -> onUpdate { it.copy(foregroundServiceEnabled = v) } },
         )
-        HorizontalDivider(color = colors.border.copy(alpha = 0.5f))
+        SettingsDivider()
         Text(
             text = fluidCloud,
-            style = ZemoteType.uiXs,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            style = ZemoteType.uiSm,
             color = colors.foregroundSubtle,
-            modifier = Modifier.padding(top = 8.dp),
         )
     }
 }
@@ -276,17 +305,24 @@ private fun AppearanceSection(
     onUpdateDesktop: (String, kotlinx.serialization.json.JsonElement) -> Unit,
 ) {
     val colors = LocalZemoteColors.current
+    val controller = LocalThemeController.current
+    val mode = currentThemeMode()
 
     SectionCard(title = "主题") {
-        ThemeChoice("跟随系统", settings.theme == AppTheme.SYSTEM) {
-            onUpdateAppSettings { it.copy(theme = AppTheme.SYSTEM) }
+        Column(Modifier.padding(16.dp)) {
+            ThemeModeSegmented(
+                selected = mode,
+                onSelect = { controller?.setMode(it) },
+                enabled = controller != null,
+            )
         }
-        ThemeChoice("深色", settings.theme == AppTheme.DARK) {
-            onUpdateAppSettings { it.copy(theme = AppTheme.DARK) }
-        }
-        ThemeChoice("浅色", settings.theme == AppTheme.LIGHT) {
-            onUpdateAppSettings { it.copy(theme = AppTheme.LIGHT) }
-        }
+        SettingsDivider()
+        Text(
+            text = "跟随系统时，系统深色用 zai-dark、浅色用 zai-light。",
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            style = ZemoteType.uiSm,
+            color = colors.foregroundSubtle,
+        )
     }
 
     SectionCard(title = "字号") {
@@ -298,6 +334,7 @@ private fun AppearanceSection(
             label = "${(settings.textScale * 100).toInt()}%",
             onChange = { v -> onUpdateAppSettings { it.copy(textScale = v) } },
         )
+        SettingsDivider()
         SliderRow(
             title = "代码字号",
             value = settings.codeFontSize,
@@ -311,12 +348,13 @@ private fun AppearanceSection(
     if (desktop != null) {
         val code = desktop["codePreviewSettings"] as? kotlinx.serialization.json.JsonObject
         SectionCard(title = "代码预览（桌面端）") {
-            SwitchRow(
+            SettingsSwitchRow(
                 title = "显示行号",
                 checked = code?.bool("showLineNumbers") ?: true,
                 onCheckedChange = { v -> onUpdateDesktop("codePreviewSettings", patchCode(code, "showLineNumbers", v)) },
             )
-            SwitchRow(
+            SettingsDivider()
+            SettingsSwitchRow(
                 title = "自动换行",
                 checked = code?.bool("wrapLongLines") ?: false,
                 onCheckedChange = { v -> onUpdateDesktop("codePreviewSettings", patchCode(code, "wrapLongLines", v)) },
@@ -324,7 +362,12 @@ private fun AppearanceSection(
         }
     } else if (loading) {
         SectionCard(title = "桌面端外观") {
-            Text("正在读取…", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
+            Text(
+                "正在读取…",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                style = ZemoteType.uiSm,
+                color = colors.foregroundSubtle,
+            )
         }
     }
 }
@@ -335,23 +378,6 @@ private fun patchCode(
     value: Boolean,
 ): kotlinx.serialization.json.JsonObject =
     kotlinx.serialization.json.JsonObject((base ?: kotlinx.serialization.json.JsonObject(emptyMap())) + (key to JsonPrimitive(value)))
-
-@Composable
-private fun ThemeChoice(label: String, selected: Boolean, onClick: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
-        if (selected) {
-            Icon(Icons.Default.Check, contentDescription = null, tint = colors.foreground, modifier = Modifier.size(18.dp))
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 桌面设置：通用与其余分类
@@ -368,17 +394,21 @@ private fun RemoteSection(
 
     if (category.readOnly) {
         SectionCard(title = "桌面端专属") {
-            Text(
-                "这一类设置只对电脑端有意义，手机端无法修改。",
-                style = ZemoteType.uiSm,
-                color = colors.foregroundSubtle,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "请到电脑端 ZCode 的「设置」里调整。",
-                style = ZemoteType.uiSm,
-                color = colors.foregroundSubtle,
-            )
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    "这一类设置只对电脑端有意义，手机端无法修改。",
+                    style = ZemoteType.uiSm,
+                    color = colors.foregroundSubtle,
+                )
+                Text(
+                    "请到电脑端 ZCode 的「设置」里调整。",
+                    style = ZemoteType.uiSm,
+                    color = colors.foregroundSubtle,
+                )
+            }
         }
         return
     }
@@ -386,7 +416,8 @@ private fun RemoteSection(
     if (desktop == null) {
         SectionCard(title = category.title) {
             Text(
-                if (loading) "正在读取桌面设置…" else "还没有读到桌面设置。",
+                text = if (loading) "正在读取桌面设置…" else "还没有读到桌面设置。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 style = ZemoteType.uiSm,
                 color = colors.foregroundSubtle,
             )
@@ -397,12 +428,13 @@ private fun RemoteSection(
     when (category) {
         SettingsCategory.GENERAL -> GeneralRemoteSection(desktop, onUpdate)
         SettingsCategory.MEMORY -> SectionCard(title = "记忆") {
-            SwitchRow(
+            SettingsSwitchRow(
                 title = "启用跨会话记忆",
                 checked = desktop.bool("memoryEnabled", true),
                 onCheckedChange = { v -> onUpdate("memoryEnabled", JsonPrimitive(v)) },
             )
-            SwitchRow(
+            SettingsDivider()
+            SettingsSwitchRow(
                 title = "主动建议",
                 checked = desktop.bool("proactiveSuggestionsEnabled", false),
                 onCheckedChange = { v -> onUpdate("proactiveSuggestionsEnabled", JsonPrimitive(v)) },
@@ -411,6 +443,7 @@ private fun RemoteSection(
         else -> SectionCard(title = category.title) {
             Text(
                 "这一类设置的界面正在接线。已读取到 ${desktop.size} 个桌面设置键。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                 style = ZemoteType.uiSm,
                 color = colors.foregroundSubtle,
             )
@@ -430,12 +463,14 @@ private fun GeneralRemoteSection(
             options = listOf("system" to "跟随系统", "zh-CN" to "中文", "en-US" to "English"),
             onSelect = { v -> onUpdate("localePreference", JsonPrimitive(v)) },
         )
+        SettingsDivider()
         SelectRow(
             title = "对话交互行为",
             value = desktop.str("zcodeInteractionBehavior", "queue"),
             options = listOf("queue" to "排队", "guide" to "引导"),
             onSelect = { v -> onUpdate("zcodeInteractionBehavior", JsonPrimitive(v)) },
         )
+        SettingsDivider()
         SelectRow(
             title = "动态工作流",
             value = desktop.str("dynamicWorkflowMode", "disabled"),
@@ -446,7 +481,8 @@ private fun GeneralRemoteSection(
             ),
             onSelect = { v -> onUpdate("dynamicWorkflowMode", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "增强原生搜索",
             checked = desktop.bool("nativeSearchEnhancementsEnabled", true),
             onCheckedChange = { v -> onUpdate("nativeSearchEnhancementsEnabled", JsonPrimitive(v)) },
@@ -454,41 +490,46 @@ private fun GeneralRemoteSection(
     }
 
     SectionCard(title = "对话显示") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "显示思考过程",
             checked = desktop.bool("messageStreamShowReasoning", true),
             onCheckedChange = { v -> onUpdate("messageStreamShowReasoning", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "显示待办",
             checked = desktop.bool("messageStreamShowTodos", false),
             onCheckedChange = { v -> onUpdate("messageStreamShowTodos", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "自动确认用户提问",
             checked = desktop.bool("askUserQuestionAutoResolutionEnabled", true),
             onCheckedChange = { v -> onUpdate("askUserQuestionAutoResolutionEnabled", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "完整保留模型输入输出",
-            subtitle = "可能包含敏感内容",
+            description = "可能包含敏感内容",
             checked = desktop.bool("modelIoFullRetentionEnabled", false),
             onCheckedChange = { v -> onUpdate("modelIoFullRetentionEnabled", JsonPrimitive(v)) },
         )
     }
 
     SectionCard(title = "工具分组") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "折叠探索类工具",
             checked = desktop.bool("toolGroupingExploreEnabled", true),
             onCheckedChange = { v -> onUpdate("toolGroupingExploreEnabled", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "折叠终端类工具",
             checked = desktop.bool("toolGroupingTerminalEnabled", true),
             onCheckedChange = { v -> onUpdate("toolGroupingTerminalEnabled", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "折叠变更类工具",
             checked = desktop.bool("toolGroupingChangesEnabled", false),
             onCheckedChange = { v -> onUpdate("toolGroupingChangesEnabled", JsonPrimitive(v)) },
@@ -496,11 +537,12 @@ private fun GeneralRemoteSection(
     }
 
     SectionCard(title = "任务") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "自动归档旧任务",
             checked = desktop.bool("taskAutoArchiveEnabled", false),
             onCheckedChange = { v -> onUpdate("taskAutoArchiveEnabled", JsonPrimitive(v)) },
         )
+        SettingsDivider()
         TextSettingRow(
             title = "归档天数",
             value = desktop.number("taskAutoArchiveOlderThanDays", 7.0).toInt().toString(),
@@ -515,12 +557,14 @@ private fun GeneralRemoteSection(
             placeholder = "http://127.0.0.1:7890",
             onSave = { v -> onUpdate("httpProxy", JsonPrimitive(v)) },
         )
+        SettingsDivider()
         TextSettingRow(
             title = "不走代理的地址",
             value = desktop.str("httpProxyNoProxy"),
             placeholder = "localhost,127.0.0.1",
             onSave = { v -> onUpdate("httpProxyNoProxy", JsonPrimitive(v)) },
         )
+        SettingsDivider()
         TextSettingRow(
             title = "代理 CA 证书路径",
             value = desktop.str("httpProxyCaCertPath"),
@@ -530,13 +574,15 @@ private fun GeneralRemoteSection(
 
     SectionCard(title = "存储与终端") {
         InfoRow("数据目录", desktop.str("dataBaseDir", "默认"))
+        SettingsDivider()
         TextSettingRow(
             title = "终端字体",
             value = desktop.str("terminalFontFamily"),
             placeholder = "留空 = 跟随系统",
             onSave = { v -> onUpdate("terminalFontFamily", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "终端继承系统配置",
             checked = desktop.bool("terminalInheritSystemProfile", true),
             onCheckedChange = { v -> onUpdate("terminalInheritSystemProfile", JsonPrimitive(v)) },
@@ -544,12 +590,13 @@ private fun GeneralRemoteSection(
     }
 
     SectionCard(title = "桌面端更新") {
-        SwitchRow(
+        SettingsSwitchRow(
             title = "接收预览版更新",
             checked = desktop.bool("receivePreviewUpdates", false),
             onCheckedChange = { v -> onUpdate("receivePreviewUpdates", JsonPrimitive(v)) },
         )
-        SwitchRow(
+        SettingsDivider()
+        SettingsSwitchRow(
             title = "自动下载并安装更新",
             checked = desktop.bool("autoDownloadAndInstallUpdates", false),
             onCheckedChange = { v -> onUpdate("autoDownloadAndInstallUpdates", JsonPrimitive(v)) },
@@ -589,7 +636,11 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
     var expanded by remember { mutableStateOf(setOf<String>()) }
 
     SectionCard(title = "服务商") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Text(
                 text = when {
                     state.providersLoading -> "正在读取…"
@@ -600,8 +651,8 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                 style = ZemoteType.uiSm,
                 color = colors.foregroundSubtle,
             )
-            TextButton(onClick = actions.refresh) { Text("刷新") }
-            TextButton(onClick = { addProviderOpen = true }) { Text("新增") }
+            TextButton(onClick = actions.refresh) { Text("刷新", style = ZemoteType.uiSm) }
+            TextButton(onClick = { addProviderOpen = true }) { Text("新增", style = ZemoteType.uiSm) }
         }
     }
 
@@ -622,16 +673,21 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
         val isOpen = providerId in expanded
 
         SectionCard(title = name) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(
-                    Modifier.weight(1f).clickable {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
                         expanded = if (isOpen) expanded - providerId else expanded + providerId
-                    },
-                ) {
+                    }
+                    .padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = provider.str("templateId").ifBlank { "个人服务商" },
-                        style = ZemoteType.uiXs,
-                        color = colors.foregroundSubtle,
+                        style = ZemoteType.uiSm,
+                        color = colors.foreground,
                     )
                     Text(
                         text = "${models.size} 个模型" + if (account) " · 账户服务商" else "",
@@ -640,14 +696,12 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                     )
                 }
                 if (busy) {
-                    androidx.compose.material3.CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                 } else if (isPersonal) {
                     Switch(
                         checked = enabled,
                         onCheckedChange = { v -> actions.setProviderEnabled(providerId, v) },
+                        colors = zemoteSwitchColors(),
                     )
                 } else {
                     Text(
@@ -659,13 +713,16 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
             }
 
             if (isOpen) {
-                HorizontalDivider(color = colors.border.copy(alpha = 0.5f))
                 models.forEach { model ->
                     val modelId = model.str("modelId")
                     val modelBusy = state.providerBusy == "$providerId/$modelId"
+                    SettingsDivider()
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
@@ -686,16 +743,14 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                             }
                         }
                         if (modelBusy) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                            )
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                         } else {
                             Switch(
                                 checked = model.bool("enabled", true),
                                 onCheckedChange = { v ->
                                     actions.setModelEnabled(providerId, modelId, v)
                                 },
+                                colors = zemoteSwitchColors(),
                             )
                             if (!model.bool("builtin", false)) {
                                 IconButton(onClick = { actions.deleteModel(providerId, modelId) }) {
@@ -710,12 +765,16 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                         }
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { addModelFor = providerId }) { Text("添加模型") }
+                SettingsDivider()
+                Row(
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { addModelFor = providerId }) { Text("添加模型", style = ZemoteType.uiSm) }
                     if (isPersonal) {
-                        TextButton(onClick = { renameFor = providerId }) { Text("重命名") }
+                        TextButton(onClick = { renameFor = providerId }) { Text("重命名", style = ZemoteType.uiSm) }
                         TextButton(onClick = { deleteFor = providerId }) {
-                            Text("删除", color = colors.destructive)
+                            Text("删除", style = ZemoteType.uiSm, color = colors.destructive)
                         }
                     }
                 }
@@ -746,13 +805,14 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                         Text("模板", style = ZemoteType.uiXs, color = colors.foregroundSubtle)
                         templates.forEach { template ->
                             val id = template.str("templateId")
-                            ThemeChoice(id, id == templateId) { templateId = id }
+                            SelectableCheckRow(id, id == templateId) { templateId = id }
                         }
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
                             label = { Text("显示名称（可选）") },
                             singleLine = true,
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                         )
                     }
@@ -783,6 +843,7 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                     label = { Text("模型 ID") },
                     placeholder = { Text("例如 glm-5.2") },
                     singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
@@ -812,6 +873,7 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                     value = draft,
                     onValueChange = { draft = it },
                     singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
@@ -837,7 +899,7 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
                 TextButton(onClick = {
                     deleteFor = null
                     actions.deleteProvider(providerId)
-                }) { Text("删除") }
+                }) { Text("删除", color = colors.destructive) }
             },
             dismissButton = { TextButton(onClick = { deleteFor = null }) { Text("取消") } },
         )
@@ -848,51 +910,12 @@ private fun ModelProviderSection(state: SettingsSectionUiState, actions: Provide
 // 通用控件
 // ---------------------------------------------------------------------------
 
+/** 分组：分组标题 + 12dp 圆角卡片；行间分隔线由调用方在行之间插入。 */
 @Composable
 private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    val colors = LocalZemoteColors.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(colors.card)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-    ) {
-        Text(
-            text = title,
-            style = ZemoteType.uiXs,
-            fontWeight = FontWeight.Medium,
-            color = colors.foregroundSubtle,
-        )
-        Spacer(Modifier.height(4.dp))
-        content()
-    }
-}
-
-@Composable
-private fun SwitchRow(
-    title: String,
-    subtitle: String? = null,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    val colors = LocalZemoteColors.current
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = ZemoteType.uiBase, color = colors.foreground)
-            if (subtitle != null) {
-                Text(
-                    subtitle,
-                    style = ZemoteType.uiXs,
-                    color = colors.foregroundSubtle,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
-        }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    Column {
+        SettingsGroupHeader(title)
+        ZemoteCard(content = content)
     }
 }
 
@@ -903,30 +926,20 @@ private fun SelectRow(
     options: List<Pair<String, String>>,
     onSelect: (String) -> Unit,
 ) {
-    val colors = LocalZemoteColors.current
     var open by remember { mutableStateOf(false) }
     val label = options.firstOrNull { it.first == value }?.second ?: value
     Box {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { open = true }
-                .padding(vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(title, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
-            Text(label, style = ZemoteType.uiSm, color = colors.foregroundSubtle)
-            Icon(
-                Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = colors.foregroundSubtlest,
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        SettingsRow(
+            title = title,
+            onClick = { open = true },
+            trailing = {
+                SettingsValue(label)
+            },
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { (v, l) ->
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text(l) },
+                DropdownMenuItem(
+                    text = { Text(l, style = ZemoteType.uiBase) },
                     onClick = { open = false; onSelect(v) },
                     trailingIcon = if (v == value) {
                         { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -946,27 +959,16 @@ private fun TextSettingRow(
     placeholder: String = "",
     onSave: (String) -> Unit,
 ) {
-    val colors = LocalZemoteColors.current
     var open by remember { mutableStateOf(false) }
     var draft by remember(value) { mutableStateOf(value) }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { draft = value; open = true }
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
-        Text(
-            value.ifBlank { "未设置" },
-            style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
-            color = colors.foregroundSubtle,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.width(160.dp),
-        )
-    }
+    SettingsRow(
+        title = title,
+        onClick = { draft = value; open = true },
+        trailing = {
+            SettingsValue(value.ifBlank { "未设置" }, monospace = true)
+        },
+    )
 
     if (open) {
         AlertDialog(
@@ -978,6 +980,7 @@ private fun TextSettingRow(
                     onValueChange = { draft = it },
                     placeholder = { Text(placeholder) },
                     singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
@@ -994,19 +997,19 @@ private fun TextSettingRow(
 @Composable
 private fun InfoRow(title: String, value: String) {
     val colors = LocalZemoteColors.current
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
-        Text(
-            value,
-            style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
-            color = colors.foregroundSubtle,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+    SettingsRow(
+        title = title,
+        trailing = {
+            Text(
+                text = value,
+                style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
+                color = colors.foregroundSubtle,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(160.dp),
+            )
+        },
+    )
 }
 
 @Composable
@@ -1019,9 +1022,9 @@ private fun SliderRow(
     onChange: (Float) -> Unit,
 ) {
     val colors = LocalZemoteColors.current
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
+            Text(title, Modifier.weight(1f), style = ZemoteType.uiBase, fontWeight = FontWeight.Medium, color = colors.foreground)
             Text(label, style = ZemoteType.uiSm, color = colors.foregroundSubtle)
         }
         Slider(
@@ -1033,26 +1036,26 @@ private fun SliderRow(
     }
 }
 
+/** 单选行（对话框里的模板选择 / 列表内互斥项）。 */
 @Composable
-private fun NoticeBar(text: String, destructive: Boolean, onClose: () -> Unit) {
+private fun SelectableCheckRow(label: String, selected: Boolean, onClick: () -> Unit) {
     val colors = LocalZemoteColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                if (destructive) colors.destructive.copy(alpha = 0.12f)
-                else colors.surface,
-            )
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = text,
-            modifier = Modifier.weight(1f),
-            style = ZemoteType.uiSm,
-            color = if (destructive) colors.destructive else colors.foregroundSubtle,
-        )
-        TextButton(onClick = onClose) { Text("关闭") }
+        Text(label, Modifier.weight(1f), style = ZemoteType.uiBase, color = colors.foreground)
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = null,
+                tint = colors.foreground,
+                modifier = Modifier.size(18.dp),
+            )
+        }
     }
 }
 

@@ -50,10 +50,13 @@ import kotlinx.serialization.json.put
  * 不在快照里，来自 `sessions-index/<workspaceKey>` 订阅（Rust 侧已解析，见
  * `docs/FFI.md` §9 的 `sessionsIndex[i].list`）。
  *
- * 折叠规则（UI-SPEC §1.2）：
- * - 默认全部折叠；
- * - 有未读的工作区自动展开，且只显示未读任务；
- * - 用户点一下横条 → 显示全部任务；再点一下 → 折叠并记住本次「不要自动展开」。
+ * 3.17.1 首页是项目树（项目 → 任务），不再有公告卡/工作区横条：
+ * - 置顶任务统一抽到最上方「已置顶」区，项目内不重复；
+ * - 分组视图按项目分组，列表视图按更新时间平铺；
+ * - 未读点与任务数都取自 `readTree` 基底（`pinned` / `archived` / `unreadAt`）。
+ *
+ * 折叠规则沿用旧口径：默认折叠；有未读的项目自动展开且只显示未读；
+ * 用户点一下项目行 → 显示全部任务，再点一下 → 折叠并记住「不要自动展开」。
  */
 data class HomeUiState(
     val loading: Boolean = false,
@@ -75,7 +78,7 @@ data class HomeUiState(
     val expanded: Set<String> = emptySet(),
     /** 用户显式折叠（即使有未读也不自动展开）的工作区键。 */
     val collapsed: Set<String> = emptySet(),
-    /** 正在执行置顶/归档/删除的任务 id（按钮转圈用）。 */
+    /** 正在执行置顶/归档/删除的任务 id（菜单禁用）。 */
     val busyTasks: Set<String> = emptySet(),
 ) {
 
@@ -85,19 +88,96 @@ data class HomeUiState(
             .filter { it.purpose != "conversation" }
             .sortedByDescending { workspace -> workspace.tasks.maxOfOrNull { it.updatedAt ?: 0L } ?: 0L }
 
-    /** 置顶任务：从工作区抽出，单独成区。 */
+    /** 项目树（分组视图）：每个项目一行，展开时带任务。 */
+    val projectSections: List<ProjectSection>
+        get() = visibleWorkspaces.map { workspace ->
+            ProjectSection(
+                workspace = workspace,
+                expanded = isExpanded(workspace),
+                tasks = tasksOf(workspace),
+                totalTasks = workspace.tasks.count { !it.archived },
+                unreadCount = workspace.tasks.count { it.unreadAt != null && !it.archived },
+                hasUnread = hasUnread(workspace),
+                offline = workspace.isOffline(),
+                canShowAll = canShowAll(workspace),
+            )
+        }
+
+    /** 置顶任务：从项目抽出，列表最上方独立成区；带所属项目供导航回调。 */
+    val pinnedEntries: List<TaskEntry>
+        get() = visibleWorkspaces
+            .flatMap { workspace ->
+                workspace.tasks
+                    .filter { it.pinned && !it.archived }
+                    .map { TaskEntry(workspace, it) }
+            }
+            .sortedByDescending { it.task.updatedAt ?: 0L }
+
+    /**
+     * 列表视图：非置顶、非归档任务按更新时间倒序。
+     *
+     * 置顶任务只在「已置顶」区出现，平铺列表里不重复。
+     */
+    val timelineEntries: List<TaskEntry>
+        get() = visibleWorkspaces
+            .flatMap { workspace ->
+                workspace.tasks
+                    .filter { !it.archived && !it.pinned }
+                    .map { TaskEntry(workspace, it) }
+            }
+            .sortedByDescending { it.task.updatedAt ?: 0L }
+
+    /** 列表视图的日期分节：今天 / 昨天 / 更早（保持更新时间倒序）。 */
+    fun timelineDays(now: Long = System.currentTimeMillis()): List<TimelineDay> {
+        val entries = timelineEntries
+        if (entries.isEmpty()) return emptyList()
+        val zone = java.time.ZoneId.systemDefault()
+        val today = java.time.Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        return entries
+            .groupBy { entry ->
+                val ts = entry.task.updatedAt ?: 0L
+                if (ts <= 0L) {
+                    "更早"
+                } else {
+                    val date = java.time.Instant.ofEpochMilli(ts).atZone(zone).toLocalDate()
+                    when (date) {
+                        today -> "今天"
+                        today.minusDays(1) -> "昨天"
+                        else -> "更早"
+                    }
+                }
+            }
+            .map { (label, dayEntries) -> TimelineDay(label, dayEntries) }
+    }
+
+    /** 全部未读任务数（不含归档；跨项目，含置顶）。 */
+    val unreadCount: Int
+        get() = visibleWorkspaces.sumOf { workspace ->
+            workspace.tasks.count { it.unreadAt != null && !it.archived }
+        }
+
+    /** 全部任务数（不含归档；含置顶）。 */
+    val totalTaskCount: Int
+        get() = visibleWorkspaces.sumOf { workspace -> workspace.tasks.count { !it.archived } }
+
+    /** 兼容旧入口：置顶任务本身。 */
     val pinnedTasks: List<TaskItem>
-        get() = workspaces
-            .flatMap { it.tasks }
-            .filter { it.pinned && !it.archived }
-            .sortedByDescending { it.updatedAt ?: 0L }
+        get() = pinnedEntries.map { it.task }
 
     fun hasUnread(workspace: WorkspaceItem): Boolean =
         workspace.tasks.any { it.unreadAt != null && !it.archived }
 
+    /**
+     * 是否该自动展开：只有**非置顶**的未读任务触发。
+     *
+     * 置顶任务已经在最上方的「已置顶」区单独显示，不该再让原项目展开一次。
+     */
+    private fun hasUnpinnedUnread(workspace: WorkspaceItem): Boolean =
+        workspace.tasks.any { it.unreadAt != null && !it.archived && !it.pinned }
+
     /** 当前是否展开（未读自动展开也算）。 */
     fun isExpanded(workspace: WorkspaceItem): Boolean =
-        workspace.key in expanded || (hasUnread(workspace) && workspace.key !in collapsed)
+        workspace.key in expanded || (hasUnpinnedUnread(workspace) && workspace.key !in collapsed)
 
     /**
      * 当前该显示的任务。
@@ -111,7 +191,7 @@ data class HomeUiState(
             .sortedByDescending { it.updatedAt ?: 0L }
         return when {
             workspace.key in expanded -> base
-            hasUnread(workspace) && workspace.key !in collapsed ->
+            hasUnpinnedUnread(workspace) && workspace.key !in collapsed ->
                 base.filter { it.unreadAt != null }
             else -> emptyList()
         }
@@ -122,8 +202,39 @@ data class HomeUiState(
     /** 是否该显示「查看全部」提示：未读自动展开且还有非未读任务。 */
     fun canShowAll(workspace: WorkspaceItem): Boolean =
         workspace.key !in expanded &&
-            hasUnread(workspace) &&
+            hasUnpinnedUnread(workspace) &&
             workspace.tasks.any { !it.archived && !it.pinned && it.unreadAt == null }
+}
+
+/** 项目树里的一行：项目 + 展开时实际显示的任务 + 网页口径的计数。 */
+data class ProjectSection(
+    val workspace: WorkspaceItem,
+    val expanded: Boolean,
+    /** 展开时显示的任务（已排除归档与置顶）。 */
+    val tasks: List<TaskItem>,
+    /** 项目任务总数（不含归档、含置顶）。 */
+    val totalTasks: Int,
+    /** 项目未读数（不含归档、含置顶）。 */
+    val unreadCount: Int,
+    val hasUnread: Boolean,
+    val offline: Boolean,
+    val canShowAll: Boolean,
+)
+
+/** 任务 + 所属项目：置顶区与列表视图都要带着项目信息回调导航。 */
+data class TaskEntry(val workspace: WorkspaceItem, val task: TaskItem)
+
+/** 列表视图的日期分节。 */
+data class TimelineDay(val label: String, val entries: List<TaskEntry>)
+
+/** `connectionState` 里表示不可用的取值（枚举未冻结，按小写匹配）。 */
+private val OFFLINE_CONNECTION_STATES = setOf("offline", "disconnected", "error", "closed", "kicked")
+
+/** 项目行是否该显示「离线」：有连接错误，或连接态落在不可用集合。 */
+internal fun WorkspaceItem.isOffline(): Boolean {
+    if (!lastError.isNullOrBlank()) return true
+    val state = connectionState?.lowercase() ?: return false
+    return state in OFFLINE_CONNECTION_STATES
 }
 
 /**
@@ -486,7 +597,22 @@ class HomeViewModel(
                     } else {
                         bridge = engine.openBridge(workspace.key)
                         engine.waitHealthy(bridge)
+                        // 握手完成即返回；下面的 readTree 只依赖握手，不依赖 sessions-index 订阅。
                         key = engine.conversationOpen(bridge, scope)
+                    }
+                    // 任务 mutation 复用这条桥：同一工作区开两条桥会让对端把旧桥降级，
+                    // 后续握手/订阅永远等不到应答。
+                    if (mutationBridge == null && workspace.purpose != "conversation") {
+                        mutationBridge = bridge
+                    }
+                    // `project` / `zcode-task` 只要求对话握手已完成。先拉 readTree 再订阅：
+                    // 订阅超时（existing-only / 无 runtime）只影响任务活动字段，不能让
+                    // 「工作区/项目列表」一起消失。
+                    if (!projectTreeAttempted) {
+                        // 只有真的拿到合法响应才算完成；失败留待下一轮 refresh 重试。
+                        projectTreeAttempted = loadProjectTree(bridge)
+                    }
+                    if (handle == null) {
                         engine.conversationCall(
                             bridge,
                             key,
@@ -494,19 +620,8 @@ class HomeViewModel(
                             buildJsonObject { put("timeoutSecs", 60) },
                         )
                     }
-                    // 任务 mutation 复用这条桥：同一工作区开两条桥会让对端把旧桥降级，
-                    // 后续握手/订阅永远等不到应答。
-                    if (mutationBridge == null && workspace.purpose != "conversation") {
-                        mutationBridge = bridge
-                    }
                     // 订阅成功后才登记，失败时下一轮 refresh 还能重试。
                     previewSubscriptions[workspace.key] = bridge to key
-                    // `project` / `zcode-task` 都要求对话握手已完成（`initializeConversationV4`
-                    // 的应答已到）；所以必须放在订阅 ack 之后，不能放在开桥之后。
-                    if (!projectTreeAttempted) {
-                        // 只有真的拿到合法响应才算完成；失败留待下一轮 refresh 重试。
-                        projectTreeAttempted = loadProjectTree(bridge)
-                    }
                     // pinned/archived/unreadAt 全部来自 readTree 的 tasks，不再二次计算
                     // （listPinnedTasks/listArchivedTasks 只是它的子集，失败还会把标记清零）。
                     mergeSessionsIndex()

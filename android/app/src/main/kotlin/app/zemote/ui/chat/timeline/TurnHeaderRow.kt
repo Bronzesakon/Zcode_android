@@ -21,6 +21,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -39,15 +40,7 @@ internal fun TurnHeaderRow(
     collapsible: Boolean = true,
 ) {
     val colors = LocalZemoteColors.current
-    val state = row["state"].asString()
-    val duration = durationMs(row)
-    val label = when {
-        state == "running" && duration > 0 -> "工作中 ${formatDuration(duration)}"
-        state == "running" -> "工作中"
-        state == "completedInterrupted" -> "已停止"
-        state == "completedSuccess" && duration > 0 -> "已工作 ${formatDuration(duration)}"
-        else -> "已处理"
-    }
+    val label = turnHeaderLabel(row["state"].asString(), durationMs(row))
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 90f else 0f,
         label = "turn-chevron",
@@ -58,9 +51,10 @@ internal fun TurnHeaderRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (collapsible) Modifier.clickable(onClick = onToggle) else Modifier)
-                .padding(top = 40.dp, bottom = 8.dp),
+                // 网页 turn section 的 pt-14（56dp）减去时间线行间距 20dp = 36dp。
+                .padding(top = ZemoteSpacing.space9, bottom = ZemoteSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
         ) {
             Text(
                 text = label,
@@ -72,10 +66,12 @@ internal fun TurnHeaderRow(
                     Icons.Default.ChevronRight,
                     contentDescription = null,
                     tint = colors.foregroundSubtlest.copy(alpha = 0.7f),
-                    modifier = Modifier.size(16.dp).rotate(rotation),
+                    modifier = Modifier
+                        .size(ZemoteSpacing.space4)
+                        .rotate(rotation),
                 )
             }
         }
-        HorizontalDivider(color = colors.border)
+        HorizontalDivider(color = colors.border.copy(alpha = 0.5f))
     }
 }

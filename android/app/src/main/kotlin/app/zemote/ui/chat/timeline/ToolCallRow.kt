@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -50,6 +51,8 @@ import app.zemote.ui.chat.asString
 import app.zemote.ui.chat.isStreaming
 import app.zemote.ui.theme.LocalZemoteColors
 import app.zemote.ui.theme.ZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -103,14 +106,14 @@ internal fun ToolCallRow(
                         },
                     ),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
             ) {
                 Icon(
                     imageVector = LucideIcons.Bot,
                     contentDescription = null,
                     tint = colors.foregroundSubtlest,
-                    modifier = Modifier.size(16.dp).offset(y = 1.dp),
+                    modifier = Modifier.size(ZemoteSpacing.space4).offset(y = 1.dp),
                 )
-                Spacer(Modifier.width(8.dp))
                 Text(
                     text = "子智能体",
                     style = ZemoteType.uiBase,
@@ -124,7 +127,6 @@ internal fun ToolCallRow(
                     },
                 )
                 if (agentName.isNotBlank()) {
-                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = agentName,
                         style = ZemoteType.uiBase.copy(fontFamily = FontFamily.Monospace),
@@ -134,15 +136,21 @@ internal fun ToolCallRow(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(Modifier.width(8.dp))
                 Text("·", style = ZemoteType.uiBase, color = colors.foregroundSubtlest)
-                Spacer(Modifier.width(8.dp))
                 AnimatedSummaryText(
                     text = subSummary,
                     style = ZemoteType.uiBase,
                     color = colors.foregroundSubtlest,
                     modifier = Modifier.weight(1f),
                 )
+                if (duration > 0) {
+                    Text(
+                        text = formatDuration(duration),
+                        style = ZemoteType.uiSm,
+                        color = colors.foregroundSubtlest,
+                        maxLines = 1,
+                    )
+                }
             }
         } else {
             Row(
@@ -150,15 +158,17 @@ internal fun ToolCallRow(
                     .fillMaxWidth()
                     .then(if (canToggle) Modifier.clickable(onClick = onToggle) else Modifier),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
             ) {
+                // 状态图标（运行中转圈 / 完成勾 / 失败叉），网页靠文字表达，这里按确认稿补上。
+                StatusGlyph(status = status, modifier = Modifier.size(ZemoteSpacing.space3_5))
                 if (showIcon) {
                     Icon(
                         imageVector = toolIcon(name),
                         contentDescription = null,
-                        tint = colors.foregroundSubtlest,
-                        modifier = Modifier.size(16.dp).offset(y = 1.dp),
+                        tint = colors.foregroundSubtle,
+                        modifier = Modifier.size(ZemoteSpacing.space4).offset(y = 1.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
                 }
                 Text(
                     text = toolKindLabel(name, status),
@@ -169,9 +179,7 @@ internal fun ToolCallRow(
                     modifier = if (streaming) Modifier.graphicsLayer(alpha = runningAlpha()) else Modifier,
                 )
                 if (summary.isNotBlank()) {
-                    Spacer(Modifier.width(8.dp))
                     Text("·", style = ZemoteType.uiBase, color = colors.foregroundSubtlest)
-                    Spacer(Modifier.width(8.dp))
                     AnimatedSummaryText(
                         text = summary,
                         style = ZemoteType.uiBase,
@@ -182,13 +190,23 @@ internal fun ToolCallRow(
                     Spacer(Modifier.weight(1f))
                 }
                 if (failureLabel != null) {
-                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = failureLabel,
                         style = ZemoteType.uiBase,
                         color = colors.destructive,
                         maxLines = 1,
                     )
+                }
+                if (duration > 0) {
+                    Text(
+                        text = formatDuration(duration),
+                        style = ZemoteType.uiSm,
+                        color = colors.foregroundSubtlest,
+                        maxLines = 1,
+                    )
+                }
+                if (canToggle) {
+                    ExpandChevron(expanded = open, tint = colors.foregroundSubtlest)
                 }
             }
         }
@@ -203,7 +221,7 @@ internal fun ToolCallRow(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
+                    .padding(top = ZemoteSpacing.space2, bottom = ZemoteSpacing.space2),
             ) {
                 when {
                     toolFamilyOf(name) == ToolFamily.TERMINAL ->
@@ -411,15 +429,17 @@ internal fun MonoBlock(label: String, text: String, modifier: Modifier = Modifie
             color = colors.foregroundSubtle,
             fontWeight = FontWeight.Medium,
         )
-        Spacer(Modifier.size(2.dp))
+        Spacer(Modifier.size(ZemoteSpacing.space1))
         Text(
             text = text,
-            style = ZemoteType.uiXs.copy(fontFamily = FontFamily.Monospace),
+            style = ZemoteType.mono.copy(fontSize = ZemoteType.uiSm.fontSize, lineHeight = 20.sp),
             color = colors.foregroundSubtle,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 240.dp)
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(rememberScrollState())
+                .background(colors.backgroundAlt.copy(alpha = 0.5f), ZemoteRadius.mdShape)
+                .padding(ZemoteSpacing.space2),
         )
     }
 }

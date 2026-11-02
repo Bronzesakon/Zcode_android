@@ -2,7 +2,7 @@ package app.zemote.ui.chat.rich
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
+import android.graphics.Color as AndroidColor
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -14,9 +14,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -26,11 +26,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteColors
+import app.zemote.ui.theme.ZemoteSpacing
 
 /**
  * 消息流里的富内容块：KaTeX 公式或 mermaid 图。
@@ -42,6 +48,10 @@ import androidx.compose.ui.viewinterop.AndroidView
  * 所以直接把回调值当作 dp 使用。页面报错（公式语法错误、不支持的图类型等）时回调
  * `AndroidBridge.onError(message)`，本组件退化为等宽源码文本。
  *
+ * 主题：前景/边框/节点底色/底色全部按当前 `LocalZemoteColors` 注入页面，
+ * 不用 `prefers-color-scheme` 或系统深色判断，保证跟随应用内主题；
+ * WebView 自身背景设为透明，并把页面底色设成同一颜色，避免加载瞬间白底闪。
+ *
  * 注意：mermaid 只支持 flowchart/graph 与 sequenceDiagram（见 `assets/rich/README.md`）。
  */
 @Composable
@@ -51,8 +61,11 @@ fun RichBlock(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
-    val html = remember(type, source, dark) { buildHtml(context, type, source, dark) }
+    val colors = LocalZemoteColors.current
+    val dark = colors.background.luminance() < 0.5f
+    val html = remember(type, source, colors, dark) {
+        buildHtml(context, type, source, colors, dark)
+    }
 
     // 每个 html 版本独立一套状态；key() 让 AndroidView 在内容变化时重建，
     // 避免旧的 JS 回调写到已经不再被读取的旧状态上。
@@ -63,7 +76,10 @@ fun RichBlock(
         if (failure != null) {
             Text(
                 text = source,
-                modifier = modifier.fillMaxWidth(),
+                modifier = modifier
+                    .fillMaxWidth()
+                    .padding(vertical = ZemoteSpacing.space1),
+                color = colors.foreground,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 13.sp,
                 lineHeight = 19.sp,
@@ -101,7 +117,9 @@ private fun createWebView(
     onError: (String) -> Unit,
 ): WebView {
     return WebView(context).apply {
-        setBackgroundColor(Color.TRANSPARENT)
+        // 先给 WebView 本身一个透明底，再由页面把 html/body 底色画成主题色，
+        // 这样第一次绘制之前也不会露出系统默认的白色。
+        setBackgroundColor(AndroidColor.TRANSPARENT)
         overScrollMode = View.OVER_SCROLL_NEVER
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
@@ -122,7 +140,8 @@ private fun createWebView(
             textZoom = 100
             cacheMode = WebSettings.LOAD_NO_CACHE
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                isAlgorithmicDarkeningAllowed = true
+                // 颜色由我们按主题注入，关掉系统强制反色，避免二次染色。
+                isAlgorithmicDarkeningAllowed = false
             }
         }
 
@@ -182,6 +201,7 @@ private fun buildHtml(
     context: Context,
     type: RichBlockType,
     source: String,
+    colors: ZemoteColors,
     dark: Boolean,
 ): String {
     val template = context.assets
@@ -194,5 +214,23 @@ private fun buildHtml(
         .replace("__TYPE__", if (type == RichBlockType.MERMAID) "mermaid" else "math")
         .replace("__DISPLAY__", if (type == RichBlockType.MATH_BLOCK) "1" else "0")
         .replace("__THEME__", if (dark) "dark" else "light")
+        .replace("__FG__", colors.foreground.toCssHex())
+        .replace("__LINE__", colors.foregroundSubtle.toCssHex())
+        .replace("__NODE__", colors.card.toCssHex())
+        .replace("__NOTE__", colors.accent.toCssHex())
+        .replace("__NOTE_LINE__", colors.warning.toCssHex())
+        .replace("__BG__", colors.background.toCssHex())
+        .replace("__SCHEME__", if (dark) "dark" else "light")
         .replace("__SOURCE_B64__", sourceB64)
+}
+
+/**
+ * Compose Color → `#RRGGBB`。
+ *
+ * 页面里的令牌都是有底色的不透明语义色；带 alpha 的几个（accent / warning）
+ * 直接取 RGB，透明部分由页面背景兜底，不影响可读性。
+ */
+private fun Color.toCssHex(): String {
+    val rgb = toArgb() and 0xFFFFFF
+    return "#" + rgb.toString(16).padStart(6, '0')
 }

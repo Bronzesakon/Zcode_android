@@ -5,26 +5,23 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <link rel="stylesheet" href="katex/katex.css">
 <style>
+  /*
+   * 颜色由 Kotlin 侧按当前 ZemoteColors 注入（RichBlock.buildHtml），
+   * 页面里不再写死明暗两套色值：WebView 底色与页面一致，加载瞬间不会白闪。
+   */
   :root {
-    --mm-fg: #1f2328;
-    --mm-line: #57606a;
-    --mm-node: #f6f8fa;
-    --mm-note: #fff8c5;
-    --mm-note-line: #d4a72c;
-    color-scheme: light;
-  }
-  html.dark {
-    --mm-fg: #e6edf3;
-    --mm-line: #8b949e;
-    --mm-node: #161b22;
-    --mm-note: #3a2f0b;
-    --mm-note-line: #9e6a03;
-    color-scheme: dark;
+    --mm-fg: __FG__;
+    --mm-line: __LINE__;
+    --mm-node: __NODE__;
+    --mm-note: __NOTE__;
+    --mm-note-line: __NOTE_LINE__;
+    --rich-bg: __BG__;
+    color-scheme: __SCHEME__;
   }
   html, body {
     margin: 0;
     padding: 0;
-    background: transparent;
+    background: var(--rich-bg);
     overflow: hidden;
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
@@ -39,6 +36,7 @@
     display: block;
     box-sizing: border-box;
     width: 100%;
+    color: var(--mm-fg);
     padding: 0 2px;
   }
   .katex-display {

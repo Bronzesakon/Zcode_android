@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asLong
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -63,26 +65,22 @@ internal fun ReasoningRow(
     val colors = LocalZemoteColors.current
     val duration = row["durationMs"].asLong() ?: 0L
     val streaming = row["state"].asString() == "streaming"
-    val label = when {
-        streaming -> "正在思考"
-        duration > 0 -> "思考 · 持续了 ${formatDuration(duration)}"
-        else -> "思考"
-    }
+    val label = reasoningLabel(streaming = streaming, open = open, durationMs = duration)
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
         ) {
             Icon(
                 imageVector = LucideIcons.Brain,
                 contentDescription = null,
                 tint = colors.foregroundSubtlest,
                 // 文本行高 21sp 的字形视觉中心比行盒中心略低，图标下移 1dp 对齐。
-                modifier = Modifier.size(16.dp).offset(y = 1.dp),
+                modifier = Modifier.size(ZemoteSpacing.space4).offset(y = 1.dp),
             )
-            Spacer(Modifier.width(6.dp))
-            if (streaming) {
+            if (streaming && !open) {
                 val transition = rememberInfiniteTransition(label = "thinking")
                 val alpha by transition.animateFloat(
                     initialValue = 0.45f,
@@ -116,7 +114,7 @@ internal fun ReasoningRow(
             val scroll = rememberScrollState()
             Box(
                 modifier = Modifier
-                    .padding(top = 12.dp)
+                    .padding(top = ZemoteSpacing.space3, start = ZemoteSpacing.space2)
                     .fillMaxWidth()
                     .drawBehind {
                         drawRect(
@@ -128,7 +126,7 @@ internal fun ReasoningRow(
             ) {
                 Box(
                     modifier = Modifier
-                        .padding(start = 14.dp)
+                        .padding(start = ZemoteSpacing.space3_5)
                         .fillMaxWidth()
                         .heightIn(max = 240.dp),
                 ) {

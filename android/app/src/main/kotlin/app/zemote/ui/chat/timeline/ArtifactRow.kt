@@ -1,31 +1,33 @@
 package app.zemote.ui.chat.timeline
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asLong
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
 /**
- * 产物卡（主时间线口径）：静态卡片，图标恒为文件，副标题 `TYPE · N bytes`。
+ * 产物卡（主时间线口径）：静态卡片，类型图标 + 文件名 + 大小，版本 ≥2 显示版本徽标。
  *
  * 网页端主时间线里产物不可点击（预览按钮只在分享页）；这里保持只读。
  */
@@ -33,40 +35,56 @@ import kotlinx.serialization.json.JsonObject
 internal fun ArtifactRow(row: JsonObject, modifier: Modifier = Modifier) {
     val colors = LocalZemoteColors.current
     val name = row["displayName"].asString() ?: "产物"
-    val type = row["artifactType"].asString().orEmpty().uppercase()
-    val size = row["sizeBytes"].asLong()
+    val type = row["artifactType"].asString().orEmpty()
+    val meta = artifactMeta(type, row["sizeBytes"].asLong())
+    val version = artifactVersionBadge(
+        row["version"].asLong() ?: row["artifactVersion"].asLong(),
+    )
+    val shape = RoundedCornerShape(ZemoteRadius.lg)
 
     Row(
         modifier = modifier
-            .padding(start = 4.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .padding(vertical = ZemoteSpacing.space1)
+            .clip(shape)
             .background(colors.card)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .border(1.dp, colors.cardBorder, shape)
+            .padding(horizontal = ZemoteSpacing.space3, vertical = ZemoteSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
     ) {
         Icon(
-            Icons.Default.Description,
+            imageVector = artifactIcon(type.ifBlank { name.substringAfterLast('.', "") }),
             contentDescription = null,
             tint = colors.foregroundSubtle,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(ZemoteSpacing.space4),
         )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = name,
-            style = ZemoteType.uiBase,
-            color = colors.foreground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (type.isNotBlank() || size != null) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = listOfNotNull(
-                    type.takeIf { it.isNotBlank() },
-                    size?.let { "$it bytes" },
-                ).joinToString(" · ").let { "  $it" },
-                style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
-                color = colors.foregroundSubtle,
+                text = name,
+                style = ZemoteType.uiBase,
+                color = colors.foreground,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (meta.isNotBlank()) {
+                Text(
+                    text = meta,
+                    style = ZemoteType.uiSm,
+                    color = colors.foregroundSubtle,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (version != null) {
+            Spacer(Modifier.width(ZemoteSpacing.space0_5))
+            Text(
+                text = version,
+                style = ZemoteType.uiXs,
+                color = colors.foregroundSubtle,
+                modifier = Modifier
+                    .clip(ZemoteRadius.smShape)
+                    .background(colors.input)
+                    .padding(horizontal = ZemoteSpacing.space1_5, vertical = ZemoteSpacing.space0_5),
             )
         }
     }

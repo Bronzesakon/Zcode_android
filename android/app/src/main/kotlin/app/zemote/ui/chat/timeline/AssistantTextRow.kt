@@ -2,18 +2,19 @@ package app.zemote.ui.chat.timeline
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asString
 import app.zemote.ui.chat.markdown.MarkdownText
 import kotlinx.serialization.json.JsonObject
 
 /**
- * 助手正文：纯文档流（无气泡/边框/背景），Markdown 渲染。
+ * 助手正文：左对齐全宽、纯文档流（无气泡/边框/背景），Markdown 渲染。
  *
+ * 行高 1.75 由 Markdown 渲染层负责（工具/状态行仍是 1.5），这里不覆盖。
  * 网页端正文没有流式光标或闪烁动画，这里也不加——流式进度由工具/思考行体现。
+ * 行级动作（复制 / 重试 / 分叉）按 `row.actions` 与「整轮输出已完成」判定，
+ * 长按出菜单。
  */
 @Composable
 internal fun AssistantTextRow(
@@ -21,7 +22,9 @@ internal fun AssistantTextRow(
     onImageClick: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(modifier = modifier.fillMaxWidth().padding(vertical = 0.dp)) {
-        MarkdownText(text = row["text"].asString().orEmpty(), onImageClick = onImageClick)
+    RowActionContainer(row = row, modifier = modifier.fillMaxWidth()) { gesture ->
+        Column(modifier = Modifier.fillMaxWidth().then(gesture)) {
+            MarkdownText(text = row["text"].asString().orEmpty(), onImageClick = onImageClick)
+        }
     }
 }

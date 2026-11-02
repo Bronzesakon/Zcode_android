@@ -3,15 +3,7 @@ package app.zemote.ui
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import app.zemote.ui.chat.TaskItem
@@ -22,12 +14,13 @@ import app.zemote.ui.nav.MainTab
 import app.zemote.ui.settings.SettingsCategory
 import app.zemote.ui.settings.SettingsHomeScreen
 import app.zemote.ui.theme.LocalZemoteColors
-import app.zemote.ui.theme.ZemoteType
 
 /**
  * 主界面：底部双 Tab（对话 / 设置）。
  *
  * 两个 Tab 都是根级内容，切换不产生返回层级（`NavState.replaceRoot`）。
+ * 底栏是自绘的 [MainTabBar]（48dp + 安全区，1px 上边框，选中 `selected` 底），
+ * 不用 M3 `NavigationBar` 的默认高度与胶囊指示器。
  *
  * ## 状态栏
  *
@@ -62,22 +55,7 @@ fun MainScreen(
         containerColor = colors.background,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
-            NavigationBar(containerColor = colors.header) {
-                NavigationBarItem(
-                    selected = tab == MainTab.HOME,
-                    onClick = { onTabChange(MainTab.HOME) },
-                    icon = { Icon(Icons.Default.Chat, contentDescription = null) },
-                    label = { Text("对话", style = ZemoteType.uiXs) },
-                    colors = navColors(),
-                )
-                NavigationBarItem(
-                    selected = tab == MainTab.SETTINGS,
-                    onClick = { onTabChange(MainTab.SETTINGS) },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("设置", style = ZemoteType.uiXs) },
-                    colors = navColors(),
-                )
-            }
+            MainTabBar(selected = tab, onSelect = onTabChange)
         },
     ) { padding ->
         val contentModifier = Modifier.padding(bottom = padding.calculateBottomPadding())
@@ -106,12 +84,3 @@ fun MainScreen(
         }
     }
 }
-
-@Composable
-private fun navColors() = NavigationBarItemDefaults.colors(
-    selectedIconColor = LocalZemoteColors.current.foreground,
-    selectedTextColor = LocalZemoteColors.current.foreground,
-    indicatorColor = LocalZemoteColors.current.selected,
-    unselectedIconColor = LocalZemoteColors.current.foregroundSubtle,
-    unselectedTextColor = LocalZemoteColors.current.foregroundSubtle,
-)

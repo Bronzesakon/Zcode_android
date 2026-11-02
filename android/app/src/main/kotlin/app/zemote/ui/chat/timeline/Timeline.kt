@@ -50,6 +50,7 @@ import app.zemote.ui.chat.isStreaming
 import app.zemote.ui.chat.kind
 import app.zemote.ui.chat.rowId
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -190,7 +191,8 @@ internal fun ConversationTimeline(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = TimelineContentPadding,
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                // 网页 turn 内 flow items 是 `gap-5`（20px）；turn 之间再加 turnHeader 的 36dp。
+                verticalArrangement = Arrangement.spacedBy(ZemoteSpacing.space5),
             ) {
                 items(visibleUnits, key = { it.key }) { unit ->
                     Box(Modifier.fillMaxWidth()) {
@@ -255,7 +257,10 @@ internal fun ConversationTimeline(
 
                                     "artifact" -> ArtifactRow(row)
 
-                                    "subagent" -> SubagentRow(row = row)
+                                    "subagent" -> SubagentRow(
+                                        row = row,
+                                        onClick = { onSubagentClick(row) },
+                                    )
 
                                     "hookInvocation" -> Unit
 
@@ -384,7 +389,7 @@ private const val PREFETCH_ROWS = 16
 
 /** 列表内边距：常量实例，完整历史下不会在每次重组时重新分配。 */
 private val TimelineContentPadding =
-    PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 20.dp)
+    PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 20.dp)
 
 /** 时间线渲染单元：单行，或连续同家族工具合并出的分组。 */
 internal sealed interface TimelineUnit {

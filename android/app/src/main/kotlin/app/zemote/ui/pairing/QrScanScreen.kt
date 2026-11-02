@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -27,9 +29,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -54,6 +57,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.zemote.pairing.CameraQrScanner
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteType
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -203,10 +208,11 @@ fun QrScanScreen(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(ScanFrameSize)
-                    .border(2.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(16.dp)),
+                    .border(2.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(ZemoteRadius.xl)),
             )
             Text(
                 text = "将二维码放入框内",
+                style = ZemoteType.uiSm,
                 color = Color.White,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -234,7 +240,7 @@ fun QrScanScreen(
                 onClick = onClose,
                 colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
             ) {
-                Text("关闭")
+                Text("关闭", style = ZemoteType.uiBase)
             }
             TextButton(
                 onClick = { scanner.toggleTorch() },
@@ -244,7 +250,7 @@ fun QrScanScreen(
                     disabledContentColor = Color.White.copy(alpha = 0.4f),
                 ),
             ) {
-                Text(if (torchOn) "关闭手电筒" else "手电筒")
+                Text(if (torchOn) "关闭手电筒" else "手电筒", style = ZemoteType.uiBase)
             }
         }
 
@@ -261,6 +267,7 @@ fun QrScanScreen(
             if (cameraGranted) {
                 Text(
                     text = "对准桌面端 ZCode 的远控二维码",
+                    style = ZemoteType.uiSm,
                     color = Color.White,
                     textAlign = TextAlign.Center,
                 )
@@ -269,6 +276,7 @@ fun QrScanScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = "相机不可用：$message",
+                    style = ZemoteType.uiSm,
                     color = ErrorTextColor,
                     textAlign = TextAlign.Center,
                 )
@@ -277,6 +285,7 @@ fun QrScanScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = message,
+                    style = ZemoteType.uiSm,
                     color = ErrorTextColor,
                     textAlign = TextAlign.Center,
                 )
@@ -327,25 +336,38 @@ private fun PermissionDenied(
     ) {
         Text(
             text = "需要相机权限才能扫码",
+            style = ZemoteType.uiXl,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
             color = Color.White,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(8.dp))
         Text(
             text = "也可以不开相机：从相册选一张二维码截图，或直接粘贴配对链接。",
+            style = ZemoteType.uiBase,
             color = Color.White.copy(alpha = 0.7f),
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onOpenSettings) {
-            Text("去设置开启")
+        Surface(
+            onClick = onOpenSettings,
+            shape = RoundedCornerShape(ZemoteRadius.lg),
+            color = Color.White,
+        ) {
+            Text(
+                text = "去设置开启",
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 11.dp),
+                style = ZemoteType.uiBase,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                color = Color.Black,
+            )
         }
         Spacer(Modifier.height(8.dp))
         TextButton(
             onClick = onUsePaste,
             colors = ButtonDefaults.textButtonColors(contentColor = Color.White),
         ) {
-            Text("改用粘贴链接")
+            Text("改用粘贴链接", style = ZemoteType.uiBase)
         }
     }
 }
@@ -372,6 +394,7 @@ private fun PasteLinkDialog(
                 onValueChange = { text = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("https://…/remote/v4?sid=…&hash=…") },
+                shape = RoundedCornerShape(8.dp),
                 minLines = 2,
                 maxLines = 4,
             )
@@ -392,24 +415,29 @@ private fun PasteLinkDialog(
     )
 }
 
-/** 相机页底栏按钮：黑底上的半透明白，不跟随应用主题。 */
+/** 相机页底栏按钮：黑底上的半透明白，8dp 圆角、视觉高 40dp，不跟随应用主题。 */
 @Composable
 private fun ScanActionButton(
     text: String,
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.White.copy(alpha = 0.18f),
-            contentColor = Color.White,
-            disabledContainerColor = Color.White.copy(alpha = 0.08f),
-            disabledContentColor = Color.White.copy(alpha = 0.4f),
-        ),
+    val shape = RoundedCornerShape(ZemoteRadius.lg)
+    Box(
+        modifier = Modifier
+            .heightIn(min = 40.dp)
+            .clip(shape)
+            .background(Color.White.copy(alpha = if (enabled) 0.18f else 0.08f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(text)
+        Text(
+            text = text,
+            style = ZemoteType.uiBase,
+            color = Color.White.copy(alpha = if (enabled) 1f else 0.4f),
+            maxLines = 1,
+        )
     }
 }
 

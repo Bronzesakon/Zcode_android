@@ -3,6 +3,7 @@ package app.zemote.ui.chat.timeline
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,15 +41,22 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asLong
 import app.zemote.ui.chat.asString
-import app.zemote.ui.chat.media.RemoteImage
+import app.zemote.ui.chat.markdown.MarkdownText
+import app.zemote.ui.chat.media.ImageThumbGrid
 import app.zemote.ui.theme.LocalZemoteColors
-import app.zemote.ui.theme.ZemoteType
+import app.zemote.ui.theme.ZemoteContainer
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
 /**
- * 用户消息：右侧气泡（88% 宽），图片附件渲染缩略图，其余附件渲染文件 pill。
+ * 用户消息：右对齐气泡（`rounded-xl` + 右上角小圆角），正文 Markdown 内联，
+ * 图片 80dp 缩略图网格，其余附件 32dp 文件 pill。
+ *
+ * 网页只给用户行挂了 `复制`/`编辑` 两个行级动作，长按菜单据此显示
+ * （`canEdit` 由行的 `actions` 决定，见 [availableRowActions]）。
  */
 @Composable
 internal fun UserInputRow(
@@ -60,49 +68,60 @@ internal fun UserInputRow(
     val colors = LocalZemoteColors.current
     val text = row["text"].asString().orEmpty()
     val attachments = row["attachments"] as? JsonArray
-    val shape = RoundedCornerShape(topStart = 12.dp, topEnd = 2.dp, bottomEnd = 12.dp, bottomStart = 12.dp)
+    // 网页 rounded-xl（12px）+ rounded-tr-xs（2px）。
+    val shape = RoundedCornerShape(
+        topStart = ZemoteRadius.xl,
+        topEnd = ZemoteRadius.xs,
+        bottomEnd = ZemoteRadius.xl,
+        bottomStart = ZemoteRadius.xl,
+    )
+    val items = attachments?.mapNotNull { it as? JsonObject }.orEmpty()
+    val mediaKeys = items.mapNotNull { item ->
+        val mime = item["mime"].asString().orEmpty()
+        item["ref"].asString()?.takeIf { mime.startsWith("image/") }
+    }
+    val files = items.filter { item ->
+        val mime = item["mime"].asString().orEmpty()
+        !(mime.startsWith("image/") && item["ref"].asString() != null)
+    }
 
-    Column(
-        modifier = modifier.fillMaxWidth().padding(vertical = 0.dp),
-        horizontalAlignment = Alignment.End,
-    ) {
+    RowActionContainer(row = row, modifier = modifier.fillMaxWidth()) { gesture ->
         Column(
-            modifier = Modifier
-                .widthIn(max = 576.dp)
-                .clip(shape)
-                .background(colors.surface)
-                .border(1.dp, colors.border, shape)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.fillMaxWidth().then(gesture),
+            horizontalAlignment = Alignment.End,
         ) {
-            if (text.isNotBlank()) {
-                CollapsibleBubbleText(text = text)
-            }
-            if (!attachments.isNullOrEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                attachments.forEach { item ->
-                    val obj = item as? JsonObject ?: return@forEach
-                    val mime = obj["mime"].asString().orEmpty()
-                    val ref = obj["ref"].asString()
-                    if (mime.startsWith("image/") && ref != null) {
-                        RemoteImage(
-                            key = ref,
-                            loader = imageLoader,
-                            modifier = Modifier
-                                .size(80.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.background),
-                            onClick = { onImageClick(ref) },
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    } else {
-                        AttachmentPill(obj)
-                        Spacer(Modifier.height(8.dp))
-                    }
+            Column(
+                modifier = Modifier
+                    .widthIn(max = ZemoteContainer.xl)
+                    .clip(shape)
+                    .background(colors.surface)
+                    .border(1.dp, colors.border, shape)
+                    .padding(
+                        horizontal = ZemoteSpacing.space4,
+                        vertical = ZemoteSpacing.space3,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
+            ) {
+                if (text.isNotBlank()) {
+                    CollapsibleBubbleText(text = text, onImageClick = onImageClick)
                 }
+                if (mediaKeys.isNotEmpty()) {
+                    // 只读气泡的图片是 80dp、圆角 12、gap 8（48dp/圆角 8 只用于编辑态）。
+                    ImageThumbGrid(
+                        keys = mediaKeys,
+                        loader = imageLoader,
+                        onClick = onImageClick,
+                        thumbSize = READ_ONLY_THUMB_SIZE,
+                    )
+                }
+                files.forEach { item -> AttachmentPill(item) }
             }
         }
     }
 }
+
+/** 网页 `size-20` = 80px，只读用户气泡里的图片缩略图。 */
+private val READ_ONLY_THUMB_SIZE = 80.dp
 
 /**
  * 超长用户消息折叠到 120dp。
@@ -112,7 +131,7 @@ internal fun UserInputRow(
  * 展开状态不持久化，文本变化时重置。
  */
 @Composable
-private fun CollapsibleBubbleText(text: String) {
+private fun CollapsibleBubbleText(text: String, onImageClick: (String) -> Unit) {
     val colors = LocalZemoteColors.current
     var expanded by remember(text) { mutableStateOf(false) }
     val density = LocalDensity.current
@@ -123,12 +142,9 @@ private fun CollapsibleBubbleText(text: String) {
             .animateContentSize(),
     ) { constraints ->
         val body = subcompose("body") {
-            // 网页把用户输入当纯文本（whitespace-pre-wrap），不解析 Markdown。
-            Text(
+            MarkdownText(
                 text = text,
-                style = ZemoteType.uiBase,
-                color = colors.foreground,
-                softWrap = true,
+                onImageClick = onImageClick,
             )
         }.first().measure(Constraints(maxWidth = constraints.maxWidth))
 
@@ -142,7 +158,7 @@ private fun CollapsibleBubbleText(text: String) {
             subcompose("fade") {
                 Box(
                     Modifier
-                        .widthIn(max = with(density) { contentWidth.toDp() })
+                        .width(with(density) { contentWidth.toDp() })
                         .height(COLLAPSED_HEIGHT * 0.3f)
                         .background(
                             Brush.verticalGradient(
@@ -190,7 +206,7 @@ private fun CollapsibleBubbleText(text: String) {
 private fun ExpandToggle(expanded: Boolean, onToggle: () -> Unit) {
     val colors = LocalZemoteColors.current
     Box(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = ZemoteSpacing.space2),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
@@ -204,8 +220,8 @@ private fun ExpandToggle(expanded: Boolean, onToggle: () -> Unit) {
                 contentDescription = if (expanded) "收起" else "展开",
                 tint = colors.foregroundSubtle,
                 modifier = Modifier
-                    .padding(4.dp)
-                    .size(16.dp)
+                    .padding(ZemoteSpacing.space1)
+                    .size(ZemoteSpacing.space4)
                     .rotate(if (expanded) 180f else 0f),
             )
         }
@@ -214,6 +230,7 @@ private fun ExpandToggle(expanded: Boolean, onToggle: () -> Unit) {
 
 private val COLLAPSED_HEIGHT = 120.dp
 
+/** 只读附件 pill：32dp 高、全圆角、`bg-surface`（网页 `h-8 rounded-full`）。 */
 @Composable
 internal fun AttachmentPill(obj: JsonObject, modifier: Modifier = Modifier) {
     val colors = LocalZemoteColors.current
@@ -221,24 +238,33 @@ internal fun AttachmentPill(obj: JsonObject, modifier: Modifier = Modifier) {
     val bytes = obj["bytes"].asLong() ?: obj["sizeBytes"].asLong()
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(999.dp))
+            .height(32.dp)
+            .clip(RoundedCornerShape(percent = 50))
             .background(colors.surface)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .padding(horizontal = ZemoteSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space1_5),
     ) {
         Icon(
             Icons.Default.InsertDriveFile,
             contentDescription = null,
             tint = colors.foregroundSubtle,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(ZemoteSpacing.space4),
         )
-        Spacer(Modifier.width(6.dp))
         Text(
-            text = if (bytes != null) "$name · ${formatBytes(bytes)}" else name,
-            style = ZemoteType.uiSm,
+            text = name,
+            style = ZemoteType.uiBase.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
             color = colors.foreground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        if (bytes != null) {
+            Text(
+                text = formatBytes(bytes),
+                style = ZemoteType.uiSm,
+                color = colors.foregroundSubtle,
+                maxLines = 1,
+            )
+        }
     }
 }

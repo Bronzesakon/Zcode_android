@@ -1,6 +1,7 @@
 package app.zemote.ui.chat.timeline
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,7 +22,6 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -39,6 +40,8 @@ import app.zemote.ui.chat.asBool
 import app.zemote.ui.chat.asLong
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -46,8 +49,9 @@ import kotlinx.serialization.json.JsonObject
 /**
  * 轮次底部的钩子入口。
  *
- * 网页端把 `hookInvocation` 从行流里摘出来，只在回合尾部渲染一个 icon-only 的
- * anchor 按钮；点击弹出 Popover 列表。移动端没有 hover，按远程精简模式常显。
+ * 网页端把 `hookInvocation` 从行流里摘出来，只在回合尾部渲染一个入口；确认稿要求
+ * 这里显示成**一行**（事件名 + 执行数 + 状态 + 耗时）。点击展开逐条执行列表。
+ * 移动端没有 hover，入口常显。
  */
 @Composable
 internal fun HookTrailerRow(
@@ -56,20 +60,48 @@ internal fun HookTrailerRow(
 ) {
     val colors = LocalZemoteColors.current
     val executions = remember(hooks) { flattenHookExecutions(hooks) }
-    if (executions.isEmpty()) return
+    val summary = remember(executions) { hookSummary(executions) } ?: return
     var open by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(ZemoteRadius.md)
 
-    Box(modifier.padding(start = 4.dp, top = 4.dp)) {
-        IconButton(
-            onClick = { open = !open },
-            modifier = Modifier.size(24.dp),
+    Box(modifier.padding(vertical = ZemoteSpacing.space1)) {
+        Row(
+            modifier = Modifier
+                .clip(shape)
+                .clickable { open = !open }
+                .padding(horizontal = ZemoteSpacing.space2, vertical = ZemoteSpacing.space1),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space1_5),
         ) {
             Icon(
                 Icons.Default.Anchor,
                 contentDescription = "钩子",
-                tint = colors.foregroundSubtle,
-                modifier = Modifier.size(14.dp),
+                tint = colors.foregroundSubtlest,
+                modifier = Modifier.size(ZemoteSpacing.space3_5),
             )
+            Text(
+                text = summary.title,
+                style = ZemoteType.uiBase,
+                color = colors.foregroundSubtle,
+                maxLines = 1,
+            )
+            summary.status?.let { status ->
+                Text(
+                    text = hookStatusLabel(status),
+                    style = ZemoteType.uiSm,
+                    color = hookStatusColor(status),
+                    maxLines = 1,
+                )
+            }
+            summary.durationMs?.let { duration ->
+                Text(
+                    text = formatHookDuration(duration),
+                    style = ZemoteType.uiSm,
+                    color = colors.foregroundSubtlest,
+                    maxLines = 1,
+                )
+            }
+            ExpandChevron(expanded = open, tint = colors.foregroundSubtlest)
         }
 
         if (open) {
@@ -198,7 +230,7 @@ private fun hookStatusColor(status: String) = when (status) {
     else -> LocalZemoteColors.current.foregroundSubtle
 }
 
-private fun hookStatusLabel(status: String): String = when (status) {
+internal fun hookStatusLabel(status: String): String = when (status) {
     "running" -> "运行中"
     "blocked" -> "已阻止"
     "failed" -> "失败"
@@ -222,6 +254,38 @@ internal fun formatHookDuration(ms: Long): String {
     val seconds = ms / 1000.0
     return if (seconds < 10) String.format("%.2fs", seconds)
     else String.format("%.1fs", seconds)
+}
+
+/** 钩子入口的一行摘要：事件名/执行数 + 聚合状态 + 总耗时。 */
+internal data class HookSummary(
+    val title: String,
+    val status: String?,
+    val durationMs: Long?,
+)
+
+/** 聚合状态的优先级：失败 > 超时 > 阻止 > 运行中 > 取消。 */
+private val HOOK_STATUS_PRIORITY = listOf("failed", "timedOut", "blocked", "running", "cancelled")
+
+/**
+ * 把执行列表折成一行摘要。
+ *
+ * 事件名一致时显示事件名（`PostToolUse · 3 次执行`），否则统一用「钩子」；
+ * 有执行仍在运行时不显示总耗时（与逐条列表的「运行中不显示耗时」一致）。
+ */
+internal fun hookSummary(executions: List<HookExecution>): HookSummary? {
+    if (executions.isEmpty()) return null
+    val names = executions.map { it.eventName }.distinct()
+    val title = (names.singleOrNull() ?: "钩子") + " · ${executions.size} 次执行"
+    val status = HOOK_STATUS_PRIORITY.firstOrNull { candidate ->
+        executions.any { it.status == candidate }
+    }
+    val running = executions.any { it.status == "running" }
+    val durations = executions.mapNotNull { it.durationMs }
+    val duration = when {
+        running || durations.isEmpty() -> null
+        else -> durations.sum()
+    }
+    return HookSummary(title = title, status = status, durationMs = duration)
 }
 
 /** 一条可展示的钩子执行（父行的 `hookEventName` + 子执行的状态）。 */

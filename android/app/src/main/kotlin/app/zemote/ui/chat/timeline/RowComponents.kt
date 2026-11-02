@@ -83,6 +83,13 @@ internal fun StatusGlyph(status: String, modifier: Modifier = Modifier) {
             modifier = modifier.size(14.dp),
         )
 
+        "cancelled", "stopped" -> Icon(
+            Icons.Default.Close,
+            contentDescription = null,
+            tint = colors.foregroundSubtle,
+            modifier = modifier.size(14.dp),
+        )
+
         else -> Box(modifier.size(12.dp))
     }
 }

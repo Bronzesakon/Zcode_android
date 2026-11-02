@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -20,11 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +36,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -78,14 +78,19 @@ internal fun ModelSheet(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .heightIn(max = 560.dp)
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                    .clip(RoundedCornerShape(topStart = ZemoteRadius.xxl, topEnd = ZemoteRadius.xxl))
                     .background(colors.popover)
                     .navigationBarsPadding(),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
+                        .padding(
+                            start = ZemoteSpacing.space4,
+                            end = ZemoteSpacing.space1,
+                            top = ZemoteSpacing.space2,
+                            bottom = ZemoteSpacing.space2,
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -105,7 +110,13 @@ internal fun ModelSheet(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(ZemoteSpacing.space9)
+                            .clip(RoundedCornerShape(ZemoteRadius.lg))
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         Icon(
                             Icons.Default.Close,
                             contentDescription = "关闭",
@@ -114,11 +125,11 @@ internal fun ModelSheet(
                         )
                     }
                 }
-                HorizontalDivider(color = colors.border)
+                Box(Modifier.fillMaxWidth().height(1.dp).background(colors.border))
 
                 when {
                     loading && groups.isEmpty() -> Box(
-                        Modifier.fillMaxWidth().padding(32.dp),
+                        Modifier.fillMaxWidth().padding(ZemoteSpacing.space8),
                         contentAlignment = Alignment.Center,
                     ) {
                         CircularProgressIndicator(
@@ -129,15 +140,30 @@ internal fun ModelSheet(
                     }
 
                     error != null && groups.isEmpty() -> Column(
-                        Modifier.fillMaxWidth().padding(24.dp),
+                        Modifier.fillMaxWidth().padding(ZemoteSpacing.space6),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Text(
                             text = error,
-                            style = ZemoteType.uiSm,
+                            style = ZemoteType.uiBase,
                             color = colors.destructive,
                         )
-                        TextButton(onClick = onReload) { Text("重试") }
+                        Spacer(Modifier.height(ZemoteSpacing.space2))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(ZemoteRadius.lg))
+                                .clickable(onClick = onReload)
+                                .padding(
+                                    horizontal = ZemoteSpacing.space3,
+                                    vertical = ZemoteSpacing.space1,
+                                ),
+                        ) {
+                            Text(
+                                text = "重试",
+                                style = ZemoteType.uiBase,
+                                color = colors.foregroundSubtle,
+                            )
+                        }
                     }
 
                     else -> LazyColumn(Modifier.weight(1f, fill = false)) {
@@ -150,14 +176,17 @@ internal fun ModelSheet(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(
-                                            start = 16.dp,
-                                            end = 16.dp,
-                                            top = 12.dp,
-                                            bottom = 4.dp,
+                                            start = ZemoteSpacing.space4,
+                                            end = ZemoteSpacing.space4,
+                                            top = ZemoteSpacing.space3,
+                                            bottom = ZemoteSpacing.space1,
                                         ),
                                 )
                             }
-                            items(group.models, key = { "${group.providerId}/${it.modelId}" }) { model ->
+                            items(
+                                group.models,
+                                key = { "${group.providerId}/${it.modelId}" },
+                            ) { model ->
                                 ModelRow(
                                     modelId = model.modelId,
                                     selected = group.providerId == currentProvider &&
@@ -165,6 +194,9 @@ internal fun ModelSheet(
                                     onClick = { onPick(group.providerId, model.modelId) },
                                 )
                             }
+                        }
+                        item(key = "bottom-spacer") {
+                            Spacer(Modifier.height(ZemoteSpacing.space4))
                         }
                     }
                 }
@@ -179,8 +211,12 @@ private fun ModelRow(modelId: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = ZemoteSpacing.space2, vertical = 1.dp)
+            .clip(RoundedCornerShape(ZemoteRadius.lg))
+            .background(if (selected) colors.selected else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .heightIn(min = 48.dp)
+            .padding(horizontal = ZemoteSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -192,7 +228,7 @@ private fun ModelRow(modelId: String, selected: Boolean, onClick: () -> Unit) {
             modifier = Modifier.weight(1f),
         )
         if (selected) {
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(ZemoteSpacing.space2))
             Icon(
                 Icons.Default.Check,
                 contentDescription = "当前模型",

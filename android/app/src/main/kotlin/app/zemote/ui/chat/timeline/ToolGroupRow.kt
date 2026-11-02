@@ -1,13 +1,13 @@
 package app.zemote.ui.chat.timeline
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,23 +21,22 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.zemote.ui.chat.asString
 import app.zemote.ui.chat.rowId
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -88,47 +87,37 @@ internal fun ToolGroupRow(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalZemoteColors.current
-    val rotation by animateFloatAsState(
-        targetValue = if (open) 180f else 0f,
-        label = "group-chevron",
-    )
     val summary = groupSummary(family, rows)
 
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onToggle)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .clip(RoundedCornerShape(ZemoteRadius.md))
+                .clickable(onClick = onToggle),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
         ) {
             Icon(
                 family.icon,
                 contentDescription = null,
                 tint = colors.foregroundSubtle,
-                modifier = Modifier.size(16.dp).offset(y = 1.dp),
+                modifier = Modifier.size(ZemoteSpacing.space4).offset(y = 1.dp),
             )
-            Spacer(Modifier.width(8.dp))
             Text(
                 text = family.label,
                 style = ZemoteType.uiBase,
                 fontWeight = FontWeight.Medium,
-                color = colors.foreground,
+                color = colors.foregroundSubtlest,
             )
-            Spacer(Modifier.width(8.dp))
+            Text("·", style = ZemoteType.uiBase, color = colors.foregroundSubtlest)
             AnimatedSummaryText(
                 text = summary,
                 style = ZemoteType.uiBase,
-                color = colors.foregroundSubtle,
+                color = colors.foregroundSubtlest,
                 modifier = Modifier.weight(1f),
             )
-            Icon(
-                Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = colors.foregroundSubtle,
-                modifier = Modifier.size(14.dp).rotate(rotation),
-            )
+            ExpandChevron(expanded = open, tint = colors.foregroundSubtlest)
         }
 
         AnimatedVisibility(
@@ -139,7 +128,7 @@ internal fun ToolGroupRow(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 8.dp),
+                    .padding(start = ZemoteSpacing.space2),
             ) {
                 Box(
                     Modifier
@@ -148,7 +137,7 @@ internal fun ToolGroupRow(
                         .background(colors.border),
                 )
                 Column(
-                    modifier = Modifier.padding(start = 14.dp).fillMaxWidth(),
+                    modifier = Modifier.padding(start = ZemoteSpacing.space3_5).fillMaxWidth(),
                 ) {
                     rows.forEach { row ->
                         ToolCallRow(
@@ -157,7 +146,7 @@ internal fun ToolGroupRow(
                             onToggle = { onRowToggle(row.rowIdOf()) },
                             showIcon = false,
                         )
-                        Spacer(Modifier.size(8.dp))
+                        Spacer(Modifier.size(ZemoteSpacing.space2))
                     }
                 }
             }

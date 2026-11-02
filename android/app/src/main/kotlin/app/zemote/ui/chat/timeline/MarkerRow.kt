@@ -8,6 +8,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
@@ -26,10 +27,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.zemote.ui.chat.asLong
 import app.zemote.ui.chat.asObj
 import app.zemote.ui.chat.asString
 import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.serialization.json.JsonObject
 
@@ -60,17 +63,19 @@ internal fun MarkerRow(row: JsonObject, modifier: Modifier = Modifier) {
     val label = markerLabel(type, marker) ?: return
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = ZemoteSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space3),
     ) {
         HorizontalDivider(
-            Modifier.weight(1f).widthIn(min = 32.dp),
+            Modifier.weight(1f).widthIn(min = ZemoteSpacing.space8),
             color = colors.border.copy(alpha = 0.5f),
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space1_5),
         ) {
             // 运行态网页隐藏图标、文字走渐变扫光；这里用透明度呼吸近似。
             if (icon != null && !running) {
@@ -78,20 +83,20 @@ internal fun MarkerRow(row: JsonObject, modifier: Modifier = Modifier) {
                     imageVector = icon,
                     contentDescription = null,
                     tint = colors.foregroundSubtle,
-                    modifier = Modifier.size(14.dp),
+                    modifier = Modifier.size(ZemoteSpacing.space3_5),
                 )
             }
             val alpha = if (running) markerRunningAlpha() else 1f
             Text(
                 text = label,
-                style = ZemoteType.uiBase,
+                style = ZemoteType.uiBase.copy(lineHeight = 20.sp),
                 color = colors.foregroundSubtle,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.graphicsLayer(alpha = alpha),
             )
         }
         HorizontalDivider(
-            Modifier.weight(1f).widthIn(min = 32.dp),
+            Modifier.weight(1f).widthIn(min = ZemoteSpacing.space8),
             color = colors.border.copy(alpha = 0.5f),
         )
     }

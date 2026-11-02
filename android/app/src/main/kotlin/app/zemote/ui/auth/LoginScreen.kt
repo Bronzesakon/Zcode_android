@@ -23,9 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,13 +33,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.zemote.auth.OAuthFlow
 import app.zemote.auth.OAuthProvider
+import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
 import app.zemote.ui.theme.ZemoteType
 
 /**
@@ -53,6 +56,8 @@ import app.zemote.ui.theme.ZemoteType
  *
  * 授权页在 WebView 内完成；`zcode.z.ai/remote/v4?...code=...` 被拦截后交给
  * [LoginViewModel]，**不会**真的加载远控页面。
+ *
+ * 视觉：44dp 页头、12dp 圆角按钮、4dp 栅格，颜色/字号全部走令牌。
  */
 @Composable
 fun LoginScreen(
@@ -63,6 +68,8 @@ fun LoginScreen(
     onClose: () -> Unit,
     onSuccess: () -> Unit,
 ) {
+    val colors = LocalZemoteColors.current
+
     LaunchedEffect(state.completed) {
         if (state.completed) onSuccess()
     }
@@ -73,7 +80,7 @@ fun LoginScreen(
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
+        color = colors.background,
     ) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             LoginHeader(
@@ -96,7 +103,7 @@ fun LoginScreen(
                     }
                     if (state.busy) {
                         Surface(
-                            color = MaterialTheme.colorScheme.background.copy(alpha = 0.86f),
+                            color = colors.background.copy(alpha = 0.86f),
                             modifier = Modifier.fillMaxSize(),
                         ) {
                             Column(
@@ -104,9 +111,16 @@ fun LoginScreen(
                                 verticalArrangement = Arrangement.Center,
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                CircularProgressIndicator()
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                )
                                 Spacer(Modifier.height(12.dp))
-                                Text("正在完成登录…", style = ZemoteType.uiSm)
+                                Text(
+                                    "正在完成登录…",
+                                    style = ZemoteType.uiSm,
+                                    color = colors.foregroundSubtle,
+                                )
                             }
                         }
                     }
@@ -116,18 +130,32 @@ fun LoginScreen(
     }
 }
 
+/** 44dp 页头：左「关闭」、居中标题、底部 1px 分隔线。 */
 @Composable
 private fun LoginHeader(title: String, onClose: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TextButton(onClick = onClose) { Text("关闭") }
-        Spacer(Modifier.weight(1f))
-        Text(title, style = ZemoteType.uiBase, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.weight(1f))
-        // 与左侧「关闭」等宽，保证标题真正居中。
-        Spacer(Modifier.width(64.dp))
+    val colors = LocalZemoteColors.current
+    Column(Modifier.fillMaxWidth().background(colors.header)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onClose) {
+                Text("关闭", style = ZemoteType.uiBase, color = colors.foregroundSubtle)
+            }
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = ZemoteType.uiBase,
+                fontWeight = FontWeight.Medium,
+                color = colors.foreground,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // 与左侧「关闭」等宽，保证标题真正居中。
+            Spacer(Modifier.width(64.dp))
+        }
+        HorizontalDivider(color = colors.border)
     }
 }
 
@@ -137,6 +165,7 @@ private fun ProviderChooser(
     error: String?,
     onStart: (OAuthProvider) -> Unit,
 ) {
+    val colors = LocalZemoteColors.current
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
@@ -145,26 +174,27 @@ private fun ProviderChooser(
             text = "登录后继续使用 Web 远程控制",
             style = ZemoteType.uiXl,
             fontWeight = FontWeight.Medium,
+            color = colors.foreground,
         )
         Spacer(Modifier.height(8.dp))
         Text(
             text = "请选择与电脑端相同的登录平台，并使用同一账号。",
             style = ZemoteType.uiSm,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = colors.foregroundSubtle,
         )
         Spacer(Modifier.height(24.dp))
 
         OAuthProvider.entries.forEach { provider ->
             ProviderButton(provider = provider, enabled = !busy, onClick = { onStart(provider) })
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
         }
 
         if (error != null) {
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(4.dp))
             Text(
                 text = error,
                 style = ZemoteType.uiSm,
-                color = MaterialTheme.colorScheme.error,
+                color = colors.destructive,
                 textAlign = TextAlign.Start,
             )
         }
@@ -172,35 +202,53 @@ private fun ProviderChooser(
         Text(
             text = "Z.ai 与 BigModel 的账号数据不互通。请确认与电脑端选择了同一平台。",
             style = ZemoteType.uiXs,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = colors.foregroundSubtlest,
         )
     }
 }
 
 @Composable
 private fun ProviderButton(provider: OAuthProvider, enabled: Boolean, onClick: () -> Unit) {
-    Button(
+    val colors = LocalZemoteColors.current
+    val shape = RoundedCornerShape(ZemoteRadius.xl)
+    Surface(
         onClick = onClick,
         enabled = enabled,
+        shape = shape,
+        color = colors.primary.copy(alpha = if (enabled) 1f else 0.35f),
         modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(10.dp),
     ) {
-        Text(provider.actionLabel, style = ZemoteType.uiBase)
-        Spacer(Modifier.width(8.dp))
-        Surface(
-            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.14f),
-            shape = RoundedCornerShape(999.dp),
-            modifier = Modifier.border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.28f),
-                shape = RoundedCornerShape(999.dp),
-            ),
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = provider.regionLabel,
-                style = ZemoteType.ui2xs,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                text = provider.actionLabel,
+                style = ZemoteType.uiBase,
+                fontWeight = FontWeight.Medium,
+                color = colors.primaryForeground.copy(alpha = if (enabled) 1f else 0.5f),
+                maxLines = 1,
             )
+            Spacer(Modifier.width(8.dp))
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(colors.primaryForeground.copy(alpha = 0.14f))
+                    .border(
+                        width = 1.dp,
+                        color = colors.primaryForeground.copy(alpha = 0.28f),
+                        shape = RoundedCornerShape(999.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = provider.regionLabel,
+                    style = ZemoteType.ui2xs,
+                    color = colors.primaryForeground.copy(alpha = if (enabled) 1f else 0.5f),
+                )
+            }
         }
     }
 }
@@ -209,7 +257,7 @@ private fun ProviderButton(provider: OAuthProvider, enabled: Boolean, onClick: (
 private fun OAuthWebView(url: String, onCallback: (String) -> Unit) {
     val context = LocalContext.current
     AndroidView(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize(),
         factory = {
             WebView(context).apply {
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)

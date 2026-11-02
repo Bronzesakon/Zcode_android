@@ -1,24 +1,44 @@
 package app.zemote.ui.pairing
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import app.zemote.pairing.RejectReason
+import app.zemote.ui.common.NoticeBar
+import app.zemote.ui.common.OutlineActionButton
+import app.zemote.ui.common.PageHeader
+import app.zemote.ui.common.PrimaryActionButton
+import app.zemote.ui.common.SettingsGroupHeader
+import app.zemote.ui.common.ZemoteCard
+import app.zemote.ui.theme.LocalZemoteColors
+import app.zemote.ui.theme.ZemoteRadius
+import app.zemote.ui.theme.ZemoteType
 
 /**
- * 配对页（扫码 / 粘贴链接 → 建会话 → 存设备）。
+ * 配对页（手动粘贴链接 / 从扫码页转来）。
  *
  * 无状态：状态来自 [PairingUiState]，动作走回调，接线在 `AppNavHost`。
- *
- * 本文件**不做视觉决策**（颜色/字号/间距/圆角/阴影/动效一律不设），需要设计的位置留 `TODO(UI)`。
- * 唯一的例外是 [BasicTextField]：它是 foundation 的无装饰原语，不设样式就没有样式，
- * 而「粘贴链接」是这个界面存在的理由，去掉它界面就没法用。
+ * 视觉：44dp 页头、12dp 圆角卡片、8dp 圆角输入框（`input` 底 + `inputBorder` 边框）、
+ * 4dp 栅格；业务逻辑（前置筛查、建会话、入库）全部留在 [PairingViewModel]。
  */
 @Composable
 fun PairingScreen(
@@ -29,53 +49,108 @@ fun PairingScreen(
     onBack: () -> Unit,
     onDismissNotice: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        // TODO(UI): 返回栏（网页版对话页是 h-11 的 header，这里配对页要对齐它的形态）。
-        Row {
-            Button(onClick = onBack) { Text("返回") }
-            Text(text = "配对设备")
-        }
+    val colors = LocalZemoteColors.current
 
-        Text(text = "扫桌面端 ZCode 的远控二维码，或把远控链接粘贴到下面。")
-
-        // TODO(UI): 输入框样式（网页版是 shadcn Input：三态边框 + bg-input）。
-        BasicTextField(
-            value = state.input,
-            onValueChange = onInputChanged,
-            enabled = !state.busy,
-        )
-
-        Row {
-            // 扫码能力尚未接入时 scanner.scan() 返回 null（视为用户取消），按钮照常可点。
-            Button(onClick = onScan, enabled = !state.busy) { Text("扫码") }
-            Button(onClick = onSubmit, enabled = !state.busy) { Text("连接并保存") }
-        }
-
-        if (state.busy) {
-            // TODO(UI): 加载态（转圈 + 遮罩）。
-            CircularProgressIndicator()
-            Text(text = "正在建会话…")
-        }
-
-        state.rejection?.let { reason ->
-            // 前置筛查的拒绝原因：语义来自 PairingUrl，文案在这里（TODO(i18n)）。
-            Text(text = reason.toMessage())
-        }
-
-        state.error?.let { message ->
-            // TODO(UI): 错误条。
-            Text(text = message)
-        }
+    Column(Modifier.fillMaxSize().background(colors.background)) {
+        PageHeader(title = "配对电脑", onBack = onBack)
 
         state.notice?.let { message ->
-            Text(text = message)
-            Button(onClick = onDismissNotice) { Text("好") }
+            NoticeBar(text = message, onClose = onDismissNotice)
         }
 
-        state.paired?.let { device ->
-            // 入库成功：`AppNavHost` 看到 paired 非空就会退回设备列表。
-            Text(text = "已配对：${device.name}（${device.host}）")
+        Column(
+            modifier = Modifier.fillMaxSize().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "扫桌面端 ZCode 的远控二维码，或把远控链接粘贴到下面。",
+                style = ZemoteType.uiSm,
+                color = colors.foregroundSubtle,
+            )
+
+            SettingsGroupHeader("远控链接")
+            ZemoteCard {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    LinkField(
+                        value = state.input,
+                        enabled = !state.busy,
+                        onValueChange = onInputChanged,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 扫码能力尚未接入时 scanner.scan() 返回 null（视为用户取消），按钮照常可点。
+                        OutlineActionButton("扫码", onClick = onScan, enabled = !state.busy)
+                        PrimaryActionButton("连接并保存", onClick = onSubmit, enabled = !state.busy)
+                    }
+                }
+            }
+
+            if (state.busy) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("正在建会话…", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
+                }
+            }
+
+            state.rejection?.let { reason ->
+                // 前置筛查的拒绝原因：语义来自 PairingUrl，文案在这里（TODO(i18n)）。
+                Text(reason.toMessage(), style = ZemoteType.uiSm, color = colors.destructive)
+            }
+
+            state.error?.let { message ->
+                Text(message, style = ZemoteType.uiSm, color = colors.destructive)
+            }
+
+            state.paired?.let { device ->
+                // 入库成功：`AppNavHost` 看到 paired 非空就会退回主界面。
+                Text(
+                    text = "已配对：${device.name}（${device.host}）",
+                    style = ZemoteType.uiSm,
+                    color = colors.success,
+                )
+            }
         }
+    }
+}
+
+/** 链接输入框：`input` 底、1px `inputBorder`、8dp 圆角，空值时显示占位。 */
+@Composable
+private fun LinkField(
+    value: String,
+    enabled: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    val colors = LocalZemoteColors.current
+    val shape = RoundedCornerShape(ZemoteRadius.lg)
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 80.dp)
+            .clip(shape)
+            .background(colors.input)
+            .border(1.dp, colors.inputBorder, shape)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        if (value.isEmpty()) {
+            Text(
+                text = "https://…/remote/v4?sid=…&hash=…",
+                style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
+                color = colors.foregroundSubtlest,
+            )
+        }
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            enabled = enabled,
+            textStyle = ZemoteType.uiSm.copy(
+                fontFamily = FontFamily.Monospace,
+                color = colors.foreground,
+            ),
+            cursorBrush = SolidColor(colors.foreground),
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

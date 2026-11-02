@@ -1,19 +1,17 @@
 package app.zemote.ui.nav
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -25,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -266,40 +265,82 @@ private fun PairingRouteContent(
             ?: state.rejection?.toPairingMessage()
             ?: state.notice
         if (state.busy || message != null) {
-            Surface(
-                color = Color.Black.copy(alpha = 0.78f),
-                shape = RoundedCornerShape(14.dp),
+            // 配对等待 / 失败：压在取景画面上的居中状态卡（对齐网页连接状态卡）。
+            val colors = app.zemote.ui.theme.LocalZemoteColors.current
+            val shape = RoundedCornerShape(app.zemote.ui.theme.ZemoteRadius.xl)
+            Box(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(16.dp)
-                    .fillMaxWidth(),
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (state.busy) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = Color.White,
-                            )
-                            Spacer(Modifier.width(10.dp))
-                        }
-                        Text(
-                            text = if (state.busy) "正在连接电脑…" else message.orEmpty(),
-                            style = ZemoteType.uiSm,
-                            color = Color.White,
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 512.dp)
+                        .clip(shape)
+                        .background(colors.card)
+                        .border(1.dp, colors.cardBorder, shape)
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        app.zemote.ui.common.StatusDot(
+                            color = if (state.busy) colors.warning else colors.destructive,
                         )
+                        Text(
+                            text = if (state.busy) "正在连接电脑…" else "配对没有完成",
+                            style = ZemoteType.uiBase,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                            color = colors.foreground,
+                        )
+                    }
+                    if (!state.busy) {
+                        Text(
+                            text = message.orEmpty(),
+                            style = ZemoteType.uiSm,
+                            color = colors.foregroundSubtle,
+                        )
+                    }
+                    if (state.busy) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PairingStep("连接中转服务")
+                            PairingStep("设备鉴权")
+                            PairingStep("等待桌面端配对")
+                            PairingStep("同步工作区")
+                        }
                     }
                     if (!state.busy && state.notice != null) {
                         TextButton(onClick = onDismissNotice) {
-                            Text("知道了", style = ZemoteType.uiXs, color = Color.White)
+                            Text("知道了", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
                         }
                     }
                 }
             }
         }
     }
+}
+
+/** 连接状态卡里的一步（网页 `rounded-lg border bg-surface px-3 py-2`）。 */
+@Composable
+private fun PairingStep(text: String) {
+    val colors = app.zemote.ui.theme.LocalZemoteColors.current
+    val shape = RoundedCornerShape(app.zemote.ui.theme.ZemoteRadius.lg)
+    Text(
+        text = text,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(colors.surface)
+            .border(1.dp, colors.border, shape)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        style = ZemoteType.uiSm,
+        color = colors.foregroundSubtle,
+    )
 }
 
 private fun app.zemote.pairing.RejectReason.toPairingMessage(): String = when (this) {

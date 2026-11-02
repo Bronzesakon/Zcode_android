@@ -2,15 +2,17 @@
 //  由 design/tokens/typography.json 机械翻译的 Web 字体令牌（Android / Compose 侧）
 //
 //  数据来源：design/tokens/typography.json
+//    - 3.17.1 复核：Reference_web/3.17.1/assets/index-BgVjt5KE.css
+//      `--ui-font-size:14px`、`--text-ui-*` 档位与 3.15.3 一致，未改值。
 //    - 上游快照：Reference_web/3.15.3/assets/index-BD2BL4Cc.css
 //    - 上游 CSS sha256：40894faf46c4aaf3508873aaa4e808eb1d41343029f6d8aa070f5b6a997ebc2f
-//  生成时间：2026-10-16 23:20
 //
 //  【不要直接改这个文件】改值请改 design/tokens/typography.json 后重新生成。
 //
 //  口径说明：
 //    1. 字号阶梯用的是应用自有的 font_size_ui_scale（基准 --ui-font-size:14px），
-//       不是 Tailwind 的 --text-xs/sm/base。7 档：9 / 10 / 12 / 13 / 14 / 16 / 18 px。
+//       不是 Tailwind 的 --text-xs/sm/base。3.17.1 实测 ui 档位：
+//       10 / 12 / 13 / 14 / 16 / 18 px；另仍有 ui-2xs = 9px（保留兼容，见 ui2xs）。
 //       全部写成 sp —— sp 会跟随系统字号缩放，这是 Android 上正确的无障碍行为；
 //       写 dp 反而会让「跟随系统字号」失效。
 //    2. 这套 ui-* 档位在 CSS 里没有配对的 --text-*--line-height，行高是继承的，
@@ -35,6 +37,15 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+
+/** 网页排版基准（3.17.1 实测）：正文 14px、行高 1.5。 */
+object ZemoteFontSize {
+    /** --ui-font-size = 14px（正文基准） */
+    const val BaseSp = 14f
+
+    /** html,:host { line-height: 1.5 } */
+    const val LineHeightMultiplier = 1.5f
+}
 
 /** 快照里真正被定义的 4 档字重（typography.json font_weight）。 */
 object ZemoteFontWeight {
@@ -81,7 +92,7 @@ val ZemoteType: ZemoteTypography = run {
         fontFamily = sans,
         fontWeight = ZemoteFontWeight.Normal,
         fontSize = px.sp,
-        lineHeight = (px * 1.5f).sp,
+        lineHeight = (px * ZemoteFontSize.LineHeightMultiplier).sp,
     )
 
     ZemoteTypography(
@@ -89,11 +100,11 @@ val ZemoteType: ZemoteTypography = run {
         uiXs = ui(10f),
         uiSm = ui(12f),
         uiCaption = ui(13f),
-        uiBase = ui(14f),
+        uiBase = ui(ZemoteFontSize.BaseSp),
         uiLg = ui(16f),
         uiXl = ui(18f),
         mobileInputSafe = ui(16f),
-        mono = ui(14f).copy(fontFamily = mono),
+        mono = ui(ZemoteFontSize.BaseSp).copy(fontFamily = mono),
     )
 }
 
