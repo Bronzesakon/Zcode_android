@@ -2,6 +2,8 @@ package app.zemote.ui.devices
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.zemote.auth.RemoteTokenException
+import app.zemote.data.AuthStore
 import app.zemote.data.DeviceRecord
 import app.zemote.engine.RelayState
 import app.zemote.ui.EnginePort
@@ -60,6 +62,7 @@ data class DevicesUiState(
 class DevicesViewModel(
     private val repository: DeviceRepository,
     private val engine: EnginePort,
+    private val authStore: AuthStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DevicesUiState())
@@ -101,7 +104,16 @@ class DevicesViewModel(
                 _state.update { it.copy(notice = "「${device.name}」的凭据不可用，需要重新配对") }
                 return@launch
             }
-            engine.ensureSession(url)
+            try {
+                engine.ensureSession(url, authStore.token())
+            } catch (e: RemoteTokenException) {
+                if (e.authRequired) {
+                    authStore.clear()
+                    _state.update { it.copy(notice = "登录已失效，请重新登录") }
+                } else {
+                    fail(e)
+                }
+            }
         }
     }
 

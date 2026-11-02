@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.CircularProgressIndicator
@@ -109,11 +110,17 @@ fun HomeScreen(
         HomeHeader(
             deviceName = state.deviceName,
             relayState = state.relayState,
+            onOpenPairing = onOpenPairing,
         )
         HorizontalDivider(color = colors.border)
 
         if (state.error != null) {
-            ErrorBanner(text = state.error, onRetry = onRefresh, onDismiss = onDismissError)
+            ErrorBanner(
+                text = state.error,
+                onRetry = onRefresh,
+                onDismiss = onDismissError,
+                onRepair = if (state.relayState != RelayState.Paired) onOpenPairing else null,
+            )
         }
         if (state.bridgeDegraded != null) {
             ErrorBanner(
@@ -142,8 +149,17 @@ fun HomeScreen(
                         item(key = "pinned-header") {
                             SectionLabel("已置顶")
                         }
-                        items(state.pinnedTasks, key = { "pinned-${it.id}" }) { task ->
-                            val workspace = state.visibleWorkspaces.firstOrNull {
+                        items(
+                            state.pinnedTasks,
+                            // 去重键与 web 一致：workspaceKey + taskId（跨 host 可能同名 id）。
+                            key = { "pinned-${it.workspaceKey.orEmpty()}-${it.id}" },
+                        ) { task ->
+                            // 优先按 (workspaceKey, taskId) 定位，避免跨 host 同名 id 找错工作区。
+                            val workspace = state.visibleWorkspaces.firstOrNull { ws ->
+                                ws.tasks.any {
+                                    it.id == task.id && it.workspaceKey == task.workspaceKey
+                                }
+                            } ?: state.visibleWorkspaces.firstOrNull {
                                 it.tasks.any { t -> t.id == task.id }
                             }
                             if (workspace != null) {
@@ -188,6 +204,7 @@ fun HomeScreen(
 private fun HomeHeader(
     deviceName: String?,
     relayState: RelayState,
+    onOpenPairing: () -> Unit,
 ) {
     val colors = LocalZemoteColors.current
 
@@ -209,6 +226,15 @@ private fun HomeHeader(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        // 常驻入口：即使已经有一台设备，也能随时重新扫码/粘贴链接覆盖它。
+        IconButton(onClick = onOpenPairing, modifier = Modifier.size(40.dp)) {
+            Icon(
+                Icons.Default.QrCodeScanner,
+                contentDescription = "扫码或粘贴链接",
+                tint = colors.foregroundSubtle,
+                modifier = Modifier.size(20.dp),
+            )
+        }
         Box(
             Modifier
                 .size(7.dp)
@@ -226,7 +252,12 @@ private fun HomeHeader(
 }
 
 @Composable
-private fun ErrorBanner(text: String, onRetry: () -> Unit, onDismiss: (() -> Unit)?) {
+private fun ErrorBanner(
+    text: String,
+    onRetry: () -> Unit,
+    onDismiss: (() -> Unit)?,
+    onRepair: (() -> Unit)? = null,
+) {
     val colors = LocalZemoteColors.current
     Row(
         modifier = Modifier
@@ -250,6 +281,9 @@ private fun ErrorBanner(text: String, onRetry: () -> Unit, onDismiss: (() -> Uni
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
+        if (onRepair != null) {
+            TextButton(onClick = onRepair) { Text("重新扫码", style = ZemoteType.uiSm) }
+        }
         TextButton(onClick = onRetry) { Text("重试", style = ZemoteType.uiSm) }
         if (onDismiss != null) {
             IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
@@ -613,6 +647,10 @@ private fun EmptyState(
                 Text(error, style = ZemoteType.uiSm, color = colors.destructive)
                 Spacer(Modifier.height(12.dp))
                 ButtonPrimary("重试", onRefresh)
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onOpenPairing) {
+                    Text("重新扫码 / 覆盖链接", style = ZemoteType.uiSm)
+                }
             }
             else -> {
                 Text("这台电脑还没有工作区", style = ZemoteType.uiBase, color = colors.foreground)

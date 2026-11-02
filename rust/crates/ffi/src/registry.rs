@@ -254,10 +254,18 @@ mod tests {
 
         // 解析失败仍是 badInput，且不占 handle。
         let before = NEXT_HANDLE.load(Ordering::Relaxed);
-        let broken = create(r#"{"url":"https://zcode.z.ai/remote/v4?sid=S","dryRun":true}"#);
+        let broken = create(r#"{"url":"http://zcode.z.ai/remote/v4?sid=S","dryRun":true}"#);
         assert_eq!(broken["ok"], json!(false));
         assert_eq!(broken["error"]["kind"], json!("badInput"));
         assert_eq!(NEXT_HANDLE.load(Ordering::Relaxed), before);
+
+        // 3.16.1 新链接（无 hash/t）在 dryRun 下只校验 sid：配对页登录前就能验证链接。
+        let modern = create(
+            r#"{"url":"https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=S&mid=M","dryRun":true}"#,
+        );
+        assert_eq!(modern["ok"], json!(true));
+        assert_eq!(modern["parsed"]["relayUri"], json!("wss://zcode.z.ai/api/v1/remote/ws2?mid=M"));
+        assert!(modern["handle"].is_null(), "dryRun 不该占 handle");
     }
 
     #[test]
@@ -375,7 +383,7 @@ mod tests {
         assert_eq!(envelope["ok"], json!(true));
         // §3：每个 native 方法都带 `events`。
         assert_eq!(envelope["events"], json!([]));
-        assert_eq!(envelope["abi"], json!(1));
+        assert_eq!(envelope["abi"], json!(2));
         assert_eq!(envelope["protocolVersion"], json!("0.1.0"));
         assert_eq!(envelope["features"], json!(["conversation", "automation"]));
     }

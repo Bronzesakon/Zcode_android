@@ -7,13 +7,19 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.zemote.BuildConfig
+import app.zemote.auth.OAuthTokenClient
+import app.zemote.auth.RemoteTokenClient
 import app.zemote.data.AppSettings
 import app.zemote.data.AppTheme
+import app.zemote.data.AuthStore
+import app.zemote.data.DataStoreAuthStore
 import app.zemote.data.DeviceStore
 import app.zemote.notify.NotificationCoordinator
 import app.zemote.pairing.UnavailableQrScanner
 import app.zemote.ui.chat.ChatOps
 import app.zemote.ui.chat.ChatViewModel
+import app.zemote.ui.auth.LoginViewModel
+import app.zemote.ui.chat.ConversationRegistry
 import app.zemote.ui.chat.EngineChatOps
 import app.zemote.ui.devices.DeviceRepository
 import app.zemote.ui.devices.DevicesViewModel
@@ -82,6 +88,14 @@ class AppContainer private constructor(context: Context) {
     /** **唯一**的 [DeviceStore] 实例。 */
     val deviceStore: DeviceStore by lazy { DeviceStore.create(appContext) }
 
+    /** 3.16.1 OAuth 登录态（JWT 加密落盘，与设备凭据分开）。 */
+    val authStore: AuthStore by lazy { DataStoreAuthStore.create(appContext) }
+
+    private val oauthTokenClient: OAuthTokenClient by lazy { OAuthTokenClient() }
+
+    /** OAuth JWT → ws2 的 terminal token（3.16.1 必需）。 */
+    private val remoteTokenClient: RemoteTokenClient by lazy { RemoteTokenClient() }
+
     private val repository: DeviceRepository by lazy { StoreDeviceRepository(deviceStore) }
 
     /** 设置页要直接改主题/字号；表现层通过它走 `updateSettings`。 */
@@ -133,6 +147,7 @@ class AppContainer private constructor(context: Context) {
             appVersion = BuildConfig.VERSION_NAME,
             deviceName = android.os.Build.MODEL,
             theme = { themeSnapshot.value },
+            terminalTokenProvider = { host, jwt -> remoteTokenClient.exchange(host, jwt).token },
         )
     }
 
@@ -144,6 +159,7 @@ class AppContainer private constructor(context: Context) {
             // scope 由调用方（`ChatViewModel`）显式给：它才知道真实 workspacePath 与 identity。
             // 这里的兜底是空对象，只为「忘传」时不崩，不是可用值。
             defaultScope = { JsonObject(emptyMap()) },
+            registry = conversationRegistry,
         )
     }
 
@@ -173,6 +189,15 @@ class AppContainer private constructor(context: Context) {
         app.zemote.data.ChatCache(appContext)
     }
 
+    /**
+     * 进程级对话保活：按工作区复用桥与 conversation，离开页面不关闭。
+     *
+     * 只有任务删除（[ChatViewModel] 调 `close`）或进程结束才释放。
+     */
+    private val conversationRegistry: ConversationRegistry by lazy {
+        ConversationRegistry(engine, appScope)
+    }
+
     private val apkInstaller: ApkInstaller by lazy { AndroidApkInstaller(appContext) }
 
     /** 通知总控：任务卡、完成提醒、前台服务。进程级，跟着容器一起活。 */
@@ -199,7 +224,11 @@ class AppContainer private constructor(context: Context) {
         viewModelFactory { initializer { NavViewModel() } }
 
     fun devicesFactory(): ViewModelProvider.Factory =
-        viewModelFactory { initializer { DevicesViewModel(repository = repository, engine = engine) } }
+        viewModelFactory {
+            initializer {
+                DevicesViewModel(repository = repository, engine = engine, authStore = authStore)
+            }
+        }
 
     fun pairingFactory(): ViewModelProvider.Factory = viewModelFactory {
         initializer {
@@ -208,8 +237,14 @@ class AppContainer private constructor(context: Context) {
                 // 扫码能力尚未接入（CameraX / ML Kit / zxing 属界面层）：占位实现永远「用户取消」。
                 scanner = UnavailableQrScanner,
                 engine = engine,
+                authStore = authStore,
             )
         }
+    }
+
+    /** 3.16.1 OAuth 登录页。 */
+    fun loginFactory(): ViewModelProvider.Factory = viewModelFactory {
+        initializer { LoginViewModel(authStore = authStore, tokenClient = oauthTokenClient) }
     }
 
     /**
@@ -222,20 +257,30 @@ class AppContainer private constructor(context: Context) {
         deviceId: String,
         workspaceKey: String?,
         taskId: String?,
+        workspacePath: String? = null,
+        workspaceIdentity: String? = null,
+        hostId: String? = null,
+        projectId: String? = null,
     ): ViewModelProvider.Factory =
         viewModelFactory {
             initializer {
                 ChatViewModel(
                     repository = repository,
                     engine = engine,
+                    authStore = authStore,
                     chatOps = chatOps,
                     deviceId = deviceId,
                     initialWorkspaceKey = workspaceKey,
                     initialTaskId = taskId,
+                    initialWorkspacePath = workspacePath,
+                    initialWorkspaceIdentity = workspaceIdentity,
+                    initialHostId = hostId,
+                    initialProjectId = projectId,
                     onAttention = { taskId, title, workspaceKey, active ->
                         notifications.onAttention(taskId, title, workspaceKey, active)
                     },
                     cache = chatCache,
+                    registry = conversationRegistry,
                 )
             }
         }
@@ -245,12 +290,28 @@ class AppContainer private constructor(context: Context) {
 
     /** 「对话」Tab。 */
     fun homeFactory(): ViewModelProvider.Factory =
-        viewModelFactory { initializer { HomeViewModel(repository = repository, engine = engine) } }
+        viewModelFactory {
+            initializer {
+                HomeViewModel(
+                    repository = repository,
+                    engine = engine,
+                    authStore = authStore,
+                    registry = conversationRegistry,
+                    cache = chatCache,
+                )
+            }
+        }
 
     /** 设置二级页（本机设置 + 桌面 `setting` 通道）。 */
     fun settingsSectionFactory(): ViewModelProvider.Factory =
         viewModelFactory {
-            initializer { SettingsSectionViewModel(repository = repository, engine = engine) }
+            initializer {
+                SettingsSectionViewModel(
+                    repository = repository,
+                    engine = engine,
+                    authStore = authStore,
+                )
+            }
         }
 
     fun updateFactory(): ViewModelProvider.Factory = viewModelFactory {

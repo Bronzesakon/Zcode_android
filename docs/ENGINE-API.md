@@ -40,6 +40,7 @@ class RemoteViewModel(app: Application) : AndroidViewModel(app) {
         engine.start(
             EngineConfig(
                 url = url,                          // 深链解析出的 https://zcode.z.ai/remote/v4?... 原样传
+                token = terminalToken,              // 3.16.1：用 OAuth JWT 换来的 ws2 短 token；旧链接可为 null
                 appVersion = BuildConfig.VERSION_NAME,
                 deviceName = Build.MODEL,
                 theme = if (isSystemInDarkTheme()) "dark" else "light",

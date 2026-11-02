@@ -9,9 +9,9 @@
 //  【不要在这里硬编码颜色/字号】令牌本体在 Color.kt / Type.kt / Dimens.kt，
 //  它们又来自 design/tokens/*.json；改值请改令牌后重新生成。
 //
-//  主题口径：应用默认主题是快照里的 .theme-zai-light / .theme-zai-dark（应用启动
-//  默认 zai-dark，见 colors.json _meta.cascade_model.app_default_theme）。Color.kt 里
-//  的 ZemoteColors.Light / .Dark 就是 zai 口径的解析值。
+//  主题口径：明暗两套按快照的**默认主题**解析（`:root,:host` + `.dark`），不套用
+//  `.theme-zai-*` 皮肤；Color.kt 里的 ZemoteColors.Light / .Dark 就是这个口径的值。
+//  明暗跟随系统设置（`isSystemInDarkTheme()`）。
 // ---------------------------------------------------------------------------
 
 package app.zemote.ui.theme

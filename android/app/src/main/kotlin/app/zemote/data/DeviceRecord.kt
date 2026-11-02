@@ -71,10 +71,12 @@ enum class RelayStatus {
  *
  * ## 内存明文 / 落盘密文（重要）
  *
- * [remoteUrl] 在**内存里始终是明文**：整条 URL
- * `https://zcode.z.ai/remote/v4?sid=…&hash=<passHash>&t=…&mid=…&name=…`
- * 里的 `hash` 是配对用的密钥材料（Rust 侧拿它做 HMAC 证明），引擎要拿它去握手，
- * 所以内存中必须是可用的明文。
+ * [remoteUrl] 在**内存里始终是明文**：
+ * - 3.16.1+：`https://zcode.z.ai/remote/v4?app_version=…&sid=…&mid=…&name=…`
+ *   （认证用 OAuth JWT，JWT 存在 [AuthStore]，不在 URL 里）；
+ * - legacy：`https://zcode.z.ai/remote/v4?sid=…&hash=<passHash>&t=…&mid=…&name=…`
+ *   （`hash` 是配对密钥材料，Rust 侧拿它做 HMAC 证明）。
+ * 引擎要拿它去握手，所以内存中必须是可用的明文。
  *
  * 但它**绝不明文落盘**：[DeviceStore] 在写盘时用 [SecretCipher] 把整条 URL 加密，
  * 磁盘上只有 `enc:v1:<base64(iv||ciphertext)>`；读盘时再解密回明文。
@@ -99,6 +101,9 @@ enum class RelayStatus {
  * @property addedAt 首次添加时间（epoch millis）。重复添加同一台设备时**保持不变**。
  * @property lastConnectedAt 最后一次连接时间（epoch millis）；从未连接过为 `null`。
  * @property lastRelayStatus 最后一次已知的 relay 状态。
+ * @property lastRelayError 最后一次 relay 失败的原因码（`auth-failed` / `invalid-mobile-connection` …）；
+ *   进入 `paired` 后清空。只用于诊断展示，不参与连接决策。
+ * @property lastRelayErrorMessage 最后一次 relay 失败的详情（服务端 message / 关闭原因），可能为空。
  * @property sortKey 列表排序键（越小越靠前）。新设备取「当前最大 + 1」追加到末尾；
  *   用独立整数而不是时间戳，是为了同一毫秒内连续添加也能有稳定顺序。
  */
@@ -112,6 +117,8 @@ data class DeviceRecord(
     val addedAt: Long,
     val lastConnectedAt: Long? = null,
     val lastRelayStatus: RelayStatus = RelayStatus.DEFAULT,
+    val lastRelayError: String? = null,
+    val lastRelayErrorMessage: String? = null,
     val sortKey: Long,
 ) {
     /** 凭据不可用（Keystore 密钥丢失或密文损坏）⇒ 这台设备需要重新扫码/粘贴链接配对。 */

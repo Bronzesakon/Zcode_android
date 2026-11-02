@@ -38,7 +38,9 @@ use crate::recording_transport::Action;
 // ===========================================================================
 
 /// 契约版本号。**改任何 schema 就 +1**（§4）。
-pub const ABI: u64 = 1;
+///
+/// 2：`nativeQuery` 新增 `{"query":"conversation"}`（对话层快照，含 `sessionsIndex`）。
+pub const ABI: u64 = 2;
 
 /// 本 .so 的版本（§4 的 `protocolVersion`）。
 pub const PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -811,6 +813,10 @@ pub enum CallCommand {
         workspace_key: String,
         /// 初始任务 id。
         task_id: Option<String>,
+        /// 任务所属 host（项目树任务用；桌面端据此触发 `prepareProjectWorkspace`）。
+        task_host_id: Option<String>,
+        /// 项目意图 `{projectId, hostId?, draftId?, reuseDraft?}`（新建项目草稿用）。
+        project: Option<Map<String, Value>>,
         /// 超时。
         timeout_ms: i64,
     },
@@ -876,7 +882,7 @@ pub enum CallCommand {
         /// `op` 的参数（缺省或 `null` 视为 `{}`）。
         args: Map<String, Value>,
     },
-    /// `{"method":"channel_call","session":N,"channel":"...","method":"...","args":[...]}`。
+    /// `{"method":"channel_call","session":N,"channel":"...","rpcMethod":"...","args":[...]}`。
     ///
     /// 通用通道调用：`setting` / `window-controller` / `skills` / `plugins` /
     /// `subagents` / `usage-stats` 等通道都走这里。`args` 是**位置参数数组**
@@ -935,6 +941,11 @@ pub fn parse_call_command(value: &Value) -> Result<CallCommand, BadInput> {
         "open_bridge" => CallCommand::OpenBridge {
             workspace_key: required_string(map, "workspaceKey")?.to_string(),
             task_id: optional_string(map, "taskId")?,
+            task_host_id: optional_string(map, "taskHostId")?,
+            project: {
+                let project = optional_object(map, "project")?;
+                if project.is_empty() { None } else { Some(project) }
+            },
             timeout_ms: optional_i64(map, "timeoutMs")?.unwrap_or(default_timeouts::OPEN_BRIDGE_MS),
         },
         "reconnect_workspace" => CallCommand::ReconnectWorkspace {
@@ -977,7 +988,9 @@ pub fn parse_call_command(value: &Value) -> Result<CallCommand, BadInput> {
         "channel_call" => CallCommand::ChannelCall {
             session: BridgeSessionId(required_u64(map, "session")?),
             channel: required_string(map, "channel")?.to_string(),
-            method: required_string(map, "method")?.to_string(),
+            // `method` 已经被顶层用来选命令（值是 `channel_call`），通道方法必须用
+            // 独立键，否则会被覆盖成 `channel_call` 本身。
+            method: required_string(map, "rpcMethod")?.to_string(),
             args: optional_value_array(map, "args")?,
             timeout_ms: optional_i64(map, "timeoutMs")?.unwrap_or(default_timeouts::REQUEST_MS),
         },
@@ -1108,7 +1121,7 @@ mod tests {
                 "ok": true,
                 // §3：每个 native 方法都返回 `events`（这里是空数组）。
                 "events": [],
-                "abi": 1,
+                "abi": 2,
                 "protocolVersion": "0.1.0",
                 // §13 接完后能力如实反映（Kotlin 据此判断该 .so 是否含对话层）。
                 "features": ["conversation", "automation"],
@@ -2029,6 +2042,8 @@ mod tests {
                 CallCommand::OpenBridge {
                     workspace_key: "wk".to_string(),
                     task_id: None,
+                    task_host_id: None,
+                    project: None,
                     timeout_ms: 30_000,
                 },
             ),
@@ -2107,6 +2122,53 @@ mod tests {
         }
     }
 
+    /// 3.17.1 项目导航：`taskHostId` / `project` 必须逐字进入命令。
+    #[test]
+    fn open_bridge_reads_project_navigation_fields() {
+        let task = parse_call_command(&obj(
+            r#"{"method":"open_bridge","workspaceKey":"wk","taskId":"t1","taskHostId":"host-2"}"#,
+        ));
+        assert_eq!(
+            task,
+            Ok(CallCommand::OpenBridge {
+                workspace_key: "wk".to_string(),
+                task_id: Some("t1".to_string()),
+                task_host_id: Some("host-2".to_string()),
+                project: None,
+                timeout_ms: 30_000,
+            })
+        );
+
+        let draft = parse_call_command(&obj(
+            r#"{"method":"open_bridge","workspaceKey":"wk","taskId":null,"project":{"projectId":"p1","hostId":"local"}}"#,
+        ));
+        match draft {
+            Ok(CallCommand::OpenBridge {
+                workspace_key,
+                task_id,
+                task_host_id,
+                project: Some(project),
+                ..
+            }) => {
+                assert_eq!(workspace_key, "wk");
+                assert_eq!(task_id, None);
+                assert_eq!(task_host_id, None);
+                assert_eq!(project.get("projectId"), Some(&json!("p1")));
+                assert_eq!(project.get("hostId"), Some(&json!("local")));
+            }
+            other => panic!("project 未按对象读入: {other:?}"),
+        }
+
+        // 空对象等价于没给意图，而不是发一个空 project 触发桌面端 prepare。
+        let empty = parse_call_command(&obj(
+            r#"{"method":"open_bridge","workspaceKey":"wk","project":{}}"#,
+        ));
+        assert!(matches!(
+            empty,
+            Ok(CallCommand::OpenBridge { project: None, .. })
+        ));
+    }
+
     /// §8：未给的 `timeoutMs` 用协议 crate 的常量默认值。
     #[test]
     fn omitted_timeouts_use_core_defaults() {
@@ -2119,6 +2181,8 @@ mod tests {
             Ok(CallCommand::OpenBridge {
                 workspace_key: "wk".to_string(),
                 task_id: None,
+                task_host_id: None,
+                project: None,
                 timeout_ms: 30_000,
             })
         );
@@ -2192,6 +2256,29 @@ mod tests {
         .is_err());
         assert!(parse_call_command(&obj(
             r#"{"method":"automation_call","session":1,"op":"list","args":"x"}"#
+        ))
+        .is_err());
+    }
+
+    /// `channel_call` 的通道方法必须走 `rpcMethod`：顶层 `method` 是命令名，不能复用。
+    #[test]
+    fn channel_call_reads_the_rpc_method_from_its_own_key() {
+        let parsed = parse_call_command(&obj(
+            r#"{"method":"channel_call","session":3,"channel":"zcode-task","rpcMethod":"listPinnedTasks","args":[{}]}"#,
+        ))
+        .expect("合法 channel_call");
+        match parsed {
+            CallCommand::ChannelCall {
+                channel, method, ..
+            } => {
+                assert_eq!(channel, "zcode-task");
+                assert_eq!(method, "listPinnedTasks");
+            }
+            other => panic!("应解析成 ChannelCall，实际 {other:?}"),
+        }
+        // 缺 `rpcMethod` 必须报错，不能悄悄把 `channel_call` 当通道方法发出去。
+        assert!(parse_call_command(&obj(
+            r#"{"method":"channel_call","session":1,"channel":"x"}"#
         ))
         .is_err());
     }

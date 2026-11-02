@@ -5,6 +5,8 @@ import android.util.Log
 import app.zemote.data.AppSettings
 import app.zemote.engine.EngineEvent
 import app.zemote.ui.EnginePort
+import app.zemote.ui.chat.SessionsIndexProjection
+import app.zemote.ui.chat.TaskItem
 import app.zemote.ui.chat.WorkspaceItem
 import app.zemote.ui.chat.WorkspaceProjection
 import kotlinx.coroutines.CancellationException
@@ -58,6 +60,9 @@ class NotificationCoordinator(
 
     /** sessionId → lastAssistantPreview。 */
     private var previews: Map<String, String> = emptyMap()
+
+    /** workspaceKey → sessions-index 投影出的任务（workspace-list 本身不带 tasks）。 */
+    private val tasksByWorkspace = HashMap<String, List<TaskItem>>()
 
     /** 已经发过「等待确认」的任务；回到无待交互时移除。 */
     private val attentionPosted = mutableSetOf<String>()
@@ -145,19 +150,41 @@ class NotificationCoordinator(
         when (event) {
             is EngineEvent.WorkspaceListUpdated -> {
                 val snapshot = WorkspaceProjection.snapshotOrNull(event.value) ?: return
-                syncTasks(snapshot.workspaces)
+                // workspace-list 不再带 tasks；已有任务来自 sessions-index，按 key 保留。
+                val next = HashMap<String, List<TaskItem>>()
+                for (workspace in snapshot.workspaces) {
+                    next[workspace.key] = if (workspace.tasks.isNotEmpty()) {
+                        workspace.tasks
+                    } else {
+                        tasksByWorkspace[workspace.key].orEmpty()
+                    }
+                }
+                tasksByWorkspace.clear()
+                tasksByWorkspace.putAll(next)
+                syncTrackedTasks()
             }
 
             is EngineEvent.ConversationEvent -> {
                 val type = (event.event as? JsonObject)
                     ?.get("type")?.let { (it as? JsonPrimitive)?.contentOrNull }
-                if (type == "sessionsIndexUpdated" || type == "stateChanged") {
-                    refreshPreviews()
+                when (type) {
+                    // 任务状态只在 sessions-index 里；不从这里同步，运行卡/完成提醒永远为空。
+                    "sessionsIndexUpdated" -> refreshFromIndex(event.session, event.key, syncTasks = true)
+                    "stateChanged" -> refreshFromIndex(event.session, event.key, syncTasks = false)
                 }
             }
 
             else -> Unit
         }
+    }
+
+    /** 把各工作区的 tasks 合成整表喂给 [syncTasks]（通知 id 仍按 workspaceKey+taskId）。 */
+    private fun syncTrackedTasks() {
+        syncTasks(
+            tasksByWorkspace.map { (key, tasks) ->
+                WorkspaceItem(key = key, path = key, label = key, tasks = tasks)
+            },
+        )
     }
 
     private fun syncTasks(workspaces: List<WorkspaceItem>) {
@@ -242,11 +269,17 @@ class NotificationCoordinator(
         }
     }
 
-    /** 从引擎快照的 `sessionsIndex[i].list` 里捞 `lastAssistantPreview`。 */
-    private fun refreshPreviews() {
+    /**
+     * 从对话层快照的 `sessionsIndex` 里捞 `lastAssistantPreview`，并在需要时同步任务状态。
+     *
+     * `sessionsIndex` 属于 `ConversationTransport`（不是核心快照），要按触发事件里的
+     * 桥句柄 + conversation key 查。任务列表也只在这里（workspace-list 是空的）。
+     */
+    private fun refreshFromIndex(session: Long, key: String, syncTasks: Boolean) {
         scope.launch {
             try {
-                val snapshot = engine.snapshot() as? JsonObject ?: return@launch
+                val snapshot = engine.conversationSnapshot(session, key) as? JsonObject
+                    ?: return@launch
                 val entries = snapshot["sessionsIndex"] as? JsonArray ?: return@launch
                 val merged = HashMap<String, String>()
                 for (entry in entries) {
@@ -261,6 +294,16 @@ class NotificationCoordinator(
                     }
                 }
                 if (merged.isNotEmpty()) previews = previews + merged
+
+                if (syncTasks) {
+                    val workspace = WorkspaceItem(key = key, path = key, label = key)
+                    val tasks = SessionsIndexProjection.tasks(workspace, entries)
+                    // 初始快照还没到时 list 为空，不能当成「任务全没了」。
+                    if (tasks.isNotEmpty()) {
+                        tasksByWorkspace[key] = tasks
+                        syncTrackedTasks()
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

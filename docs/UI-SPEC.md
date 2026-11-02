@@ -2,7 +2,7 @@
 
 > 本文件是界面层的**唯一口径**。所有页面、控件、布局、交互都以这里为准；
 > 与代码不一致时，先改这里再改代码。设计令牌来自 `design/tokens/`，
-> 协议字段来自 `docs/remote-v4/` 与 `docs/desktop/`。
+> 协议字段来自 `archive/pre-3.16.1-auth/docs/remote-v4/` 与 `archive/pre-3.16.1-auth/docs/desktop/`。
 
 ## 0. 全局
 

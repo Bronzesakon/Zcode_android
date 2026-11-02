@@ -181,6 +181,34 @@ impl Uri {
     pub fn query_parameters(&self) -> &HashMap<String, String> {
         &self.query_parameters
     }
+
+    /// 按**原始 query 顺序**返回解码后的键值对（重复键后者胜，但保留首次出现的位置）。
+    ///
+    /// 对应 Dart `Map` 的插入序语义：`uri.replace(queryParameters: ...)` 依赖它，日志里
+    /// 的参数顺序才能与线上 URL 一致。`query_parameters()` 是 `HashMap`，顺序随机，不能用于此。
+    pub fn query_parameter_pairs(&self) -> Vec<(String, String)> {
+        let Some(query) = self.query.as_deref() else {
+            return Vec::new();
+        };
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for element in query.split('&') {
+            if element.is_empty() {
+                continue;
+            }
+            let (raw_key, raw_value) = match element.find('=') {
+                Some(0) => continue,
+                Some(i) => (&element[..i], &element[i + 1..]),
+                None => (element, ""),
+            };
+            let key = decode_query_component(raw_key).unwrap_or_else(|_| raw_key.to_string());
+            let value = decode_query_component(raw_value).unwrap_or_else(|_| raw_value.to_string());
+            match pairs.iter_mut().find(|(existing, _)| *existing == key) {
+                Some(slot) => slot.1 = value,
+                None => pairs.push((key, value)),
+            }
+        }
+        pairs
+    }
 }
 
 /// 对应 Dart `Uri.toString()` 的分量拼接。
@@ -427,10 +455,18 @@ fn parse_int_like_dart(raw: &str) -> Option<i64> {
 pub struct ZemoteConnectionParams {
     /// 对应 `deviceSid`（query `sid`，必填）。
     pub device_sid: String,
-    /// 对应 `passHash`（query `hash`，必填）。
-    pub pass_hash: String,
-    /// 对应 `timestamp`（query `t`，必填；Unix 秒/毫秒由对端语义决定，这里只透传）。
-    pub timestamp: i64,
+    /// 对应 `passHash`（query `hash`）。
+    ///
+    /// 3.16.1 起远控链接改为 OAuth JWT 鉴权，`hash` 不再出现；旧链接仍可能带它，
+    /// 所以这里是 `Option`。新旧两条认证路径由 [`Self::auth_token`] 是否存在区分。
+    pub pass_hash: Option<String>,
+    /// 对应 `timestamp`（query `t`）。旧链接必填；3.16.1 起不再下发，故为 `Option`。
+    pub timestamp: Option<i64>,
+    /// OAuth JWT（`zcodejwttoken`），由宿主登录后注入，**不来自 URL**。
+    ///
+    /// 存在时 relay 走 `wss://<host>/api/v1/remote/ws2?token=<jwt>&mid=…` 的 token 鉴权路径，
+    /// 不再需要 `auth_challenge` / HMAC proof。字段**绝不**进入任何快照或日志。
+    pub auth_token: Option<String>,
     /// 对应 `deviceMid`（query `mid`，可选）。
     pub device_mid: Option<String>,
     /// 对应 `deviceName`（query `name`，可选）。
@@ -446,14 +482,18 @@ pub struct ZemoteConnectionParams {
 impl ZemoteConnectionParams {
     /// 对应 Dart `ZemoteConnectionParams.parse`（网页端 `zC()`）。
     ///
-    /// 要求 scheme 为 `https` / `wss`，且 `sid` / `hash` / `t` 三个参数都存在且可用；
-    /// 任一不满足返回 `None`（对应 Dart 的 `return null`）。
+    /// 要求 scheme 为 `https` / `wss`，且 `sid` 存在。`hash` / `t` 是旧链接的可选字段：
+    /// 3.16.1 起远控链接只带 `sid` / `mid` / `name` / `app_version`，认证改由宿主注入
+    /// [`Self::auth_token`]。`t` 若存在仍必须是可解析的整数（非法值视为无效链接）。
     pub fn parse(raw: &str) -> Option<ZemoteConnectionParams> {
         // Dart 先 `Uri.parse(raw.trim())`，解析失败（FormatException）返回 null。
         let uri = Uri::parse(raw.trim()).ok()?;
         let device_sid = get_param(&uri, "sid")?;
-        let pass_hash = get_param(&uri, "hash")?;
-        let timestamp = parse_int_like_dart(&get_param(&uri, "t")?)?;
+        let pass_hash = get_param(&uri, "hash");
+        let timestamp = match get_param(&uri, "t") {
+            Some(raw) => Some(parse_int_like_dart(&raw)?),
+            None => None,
+        };
         if uri.scheme != "https" && uri.scheme != "wss" {
             return None;
         }
@@ -461,6 +501,7 @@ impl ZemoteConnectionParams {
             device_sid,
             pass_hash,
             timestamp,
+            auth_token: None,
             device_mid: get_param(&uri, "mid"),
             device_name: get_param(&uri, "name"),
             app_version: get_param(&uri, "app_version"),
@@ -469,11 +510,19 @@ impl ZemoteConnectionParams {
         })
     }
 
-    /// 对应 Dart `relayWsUri`（网页端 `Jc()` / `pen.connect()`）：
-    /// `${ws(s)://<host>/ws`，仅当 `mid` 存在时追加 `?mid=`。
+    /// 对应 Dart `relayWsUri`（网页端 `Jc()` / `pen.connect()`）。
+    ///
+    /// - **token 模式**（3.16.1+）：`wss://<host>/api/v1/remote/ws2?token=…&mid=…`
+    ///   （网页端 `Id()`，`validation-*.js`；token 由 OAuth 登录取得）。
+    /// - **legacy 模式**：`wss://<host>/ws?mid=…`，配合 `auth_challenge` / HMAC proof。
     pub fn relay_ws_uri(&self) -> Uri {
         let scheme = if self.uri_scheme_is_secure() { "wss" } else { "ws" };
         // 对应 `port: source.hasPort ? source.port : null`：没有显式端口时不带端口。
+        let path = if self.auth_token.is_some() {
+            "/api/v1/remote/ws2"
+        } else {
+            "/ws"
+        };
         let base = Uri::from_parts(
             scheme,
             &self.source.host,
@@ -482,7 +531,42 @@ impl ZemoteConnectionParams {
             } else {
                 None
             },
-            "/ws",
+            path,
+        );
+        let mut parameters: Vec<(&str, &str)> = Vec::new();
+        if let Some(token) = &self.auth_token {
+            parameters.push(("token", token.as_str()));
+        }
+        if let Some(mid) = &self.device_mid {
+            parameters.push(("mid", mid.as_str()));
+        }
+        if parameters.is_empty() {
+            base
+        } else {
+            base.with_query_parameters(&parameters)
+        }
+    }
+
+    /// 给配对层展示/去重用的 relay URI：**不含 token**。
+    ///
+    /// `dryRun` 的 `parsed.relayUri` 会回给 Kotlin，不能把 JWT 带出去。
+    pub fn relay_ws_uri_for_display(&self) -> Uri {
+        let scheme = if self.uri_scheme_is_secure() { "wss" } else { "ws" };
+        // 无 hash 的新链接即使还没登录，也按 token 模式展示（登录后才会真正建连）。
+        let path = if self.auth_token.is_some() || self.pass_hash.is_none() {
+            "/api/v1/remote/ws2"
+        } else {
+            "/ws"
+        };
+        let base = Uri::from_parts(
+            scheme,
+            &self.source.host,
+            if self.source.has_port() {
+                self.source.port()
+            } else {
+                None
+            },
+            path,
         );
         match &self.device_mid {
             None => base,
@@ -516,14 +600,30 @@ mod tests {
     fn params_with_source(raw: &str) -> ZemoteConnectionParams {
         ZemoteConnectionParams {
             device_sid: "sid".to_string(),
-            pass_hash: "hash".to_string(),
-            timestamp: 1,
+            pass_hash: Some("hash".to_string()),
+            timestamp: Some(1),
+            auth_token: None,
             device_mid: None,
             device_name: None,
             app_version: None,
             theme: None,
             source: Uri::parse(raw).expect("source uri should parse"),
         }
+    }
+
+    // ---- query 参数顺序（Dart Map 插入序） ----
+
+    #[test]
+    fn query_parameter_pairs_preserve_wire_order_and_last_wins() {
+        let uri = Uri::parse("wss://zcode.z.ai/api/v1/remote/ws2?token=JWT&mid=MID-1&token=NEW")
+            .expect("uri should parse");
+        assert_eq!(
+            uri.query_parameter_pairs(),
+            vec![
+                ("token".to_string(), "NEW".to_string()),
+                ("mid".to_string(), "MID-1".to_string()),
+            ]
+        );
     }
 
     // ---- group uriSchemeIsSecure（6 条） ----
@@ -602,13 +702,60 @@ mod tests {
     }
 
     #[test]
-    fn parse_missing_hash_returns_none() {
-        assert!(ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid=s&t=1").is_none());
+    fn parse_missing_hash_is_allowed() {
+        // 3.16.1：新链接不再带 hash，认证由 OAuth token 承担。
+        let params = ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid=s&t=1")
+            .expect("should parse");
+        assert!(params.pass_hash.is_none());
     }
 
     #[test]
-    fn parse_missing_t_returns_none() {
-        assert!(ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid=s&hash=h").is_none());
+    fn parse_missing_t_is_allowed() {
+        // 3.16.1：新链接不再带 t。
+        let params = ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid=s&hash=h")
+            .expect("should parse");
+        assert!(params.timestamp.is_none());
+    }
+
+    #[test]
+    fn parse_new_3161_link_without_hash_and_t() {
+        let params = ZemoteConnectionParams::parse(
+            "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=SID&mid=MID&name=Mac",
+        )
+        .expect("should parse");
+        assert_eq!(params.device_sid, "SID");
+        assert_eq!(params.device_mid.as_deref(), Some("MID"));
+        assert_eq!(params.device_name.as_deref(), Some("Mac"));
+        assert_eq!(params.app_version.as_deref(), Some("3.16.1"));
+        assert!(params.pass_hash.is_none());
+        assert!(params.timestamp.is_none());
+        assert!(params.auth_token.is_none());
+    }
+
+    #[test]
+    fn relay_ws_uri_token_mode_uses_ws2_and_token() {
+        let mut params = ZemoteConnectionParams::parse(
+            "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=SID&mid=MID",
+        )
+        .expect("should parse");
+        params.auth_token = Some("JWT".to_string());
+        assert_eq!(
+            params.relay_ws_uri().to_string(),
+            "wss://zcode.z.ai/api/v1/remote/ws2?token=JWT&mid=MID"
+        );
+    }
+
+    #[test]
+    fn relay_ws_uri_for_display_omits_token() {
+        let mut params = ZemoteConnectionParams::parse(
+            "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=SID&mid=MID",
+        )
+        .expect("should parse");
+        params.auth_token = Some("JWT".to_string());
+        assert_eq!(
+            params.relay_ws_uri_for_display().to_string(),
+            "wss://zcode.z.ai/api/v1/remote/ws2?mid=MID"
+        );
     }
 
     #[test]
@@ -625,7 +772,7 @@ mod tests {
             ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid= SID &hash= HASH &t=1")
                 .expect("should parse");
         assert_eq!(params.device_sid, "SID");
-        assert_eq!(params.pass_hash, "HASH");
+        assert_eq!(params.pass_hash.as_deref(), Some("HASH"));
     }
 
     #[test]

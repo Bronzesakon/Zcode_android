@@ -105,6 +105,12 @@ pub const TRANSPORT_CHANNEL: &str = Channels::ZCODE_AGENT;
 pub const ZCODE_TASK_CHANNEL: &str = Channels::ZCODE_TASK;
 /// 对应 `skills()` 用的通道（`Channels.skills`）。
 pub const SKILLS_CHANNEL: &str = Channels::SKILLS;
+/// 模型选择视图通道（桌面 `model-selection` 服务）。
+pub const MODEL_SELECTION_CHANNEL: &str = Channels::MODEL_SELECTION;
+/// 模型选择视图方法名。
+pub const MODEL_SELECTION_GET_VIEW_METHOD: &str = "getView";
+/// 模型选择视图超时（与 `skills` 同档）。
+pub const MODEL_SELECTION_TIMEOUT_SECS: u64 = 20;
 /// 对应 `handshake()` 第一步 `helloConversationV4`。
 pub const HELLO_METHOD: &str = "helloConversationV4";
 /// 对应 `handshake()` 第二步 `initializeConversationV4`。
@@ -732,6 +738,11 @@ enum SimpleCall {
     },
     /// `skills()`（通道 `skills`，无握手前置）。
     Skills,
+    /// `modelSelectionView(selection?)`（通道 `model-selection.getView`）。
+    ModelSelectionView {
+        /// 可选 `{providerId, modelId, options?}`，用于让服务端给出 effectiveSelection。
+        selection: Option<JsonMap>,
+    },
 }
 
 /// 附件上传的阶段。
@@ -966,6 +977,7 @@ impl ConversationTransport {
         "fileChanges",
         "fileRewindPreview",
         "rowsRange",
+        "modelSelectionView",
         // ---- 附件 ----
         "attachmentPut",
         "attachmentRead",
@@ -1323,6 +1335,9 @@ impl ConversationTransport {
             "sendText" => {
                 let session_id = req_str(op, args, "sessionId")?;
                 let text = req_str(op, args, "text")?;
+                let mode = opt_str(op, args, "mode")?;
+                let plan_enabled = opt_bool(op, args, "planEnabled")?;
+                let model_selection = opt_obj(op, args, "modelSelection")?;
                 let attachments = opt_obj_list(op, args, "attachments")?;
                 let held_queue_disposition = opt_str(op, args, "heldQueueDisposition")?;
                 let expected = opt_str_list(op, args, "expectedHeldQueueItemIds")?;
@@ -1333,6 +1348,9 @@ impl ConversationTransport {
                 let tool_disallowlist = opt_str_list(op, args, "toolDisallowlist")?;
                 let payload = send_text_payload(
                     &text,
+                    mode.as_deref(),
+                    plan_enabled,
+                    model_selection.as_ref(),
                     attachments.as_deref(),
                     held_queue_disposition.as_deref(),
                     expected.as_deref(),
@@ -1632,6 +1650,15 @@ impl ConversationTransport {
                 self.enqueue_flow(
                     op,
                     FlowKind::Simple(Box::new(SimpleCall::Skills)),
+                    FlowStage::Ready,
+                    events,
+                );
+            }
+            "modelSelectionView" => {
+                let selection = opt_obj(op, args, "selection")?;
+                self.enqueue_flow(
+                    op,
+                    FlowKind::Simple(Box::new(SimpleCall::ModelSelectionView { selection })),
                     FlowStage::Ready,
                     events,
                 );
@@ -2643,6 +2670,12 @@ impl ConversationTransport {
                         SKILLS_LIST_METHOD,
                         skills_args(&self.scope),
                         SKILLS_TIMEOUT_SECS as i64 * 1000,
+                    ),
+                    SimpleCall::ModelSelectionView { selection } => (
+                        MODEL_SELECTION_CHANNEL,
+                        MODEL_SELECTION_GET_VIEW_METHOD,
+                        model_selection_args(selection),
+                        MODEL_SELECTION_TIMEOUT_SECS as i64 * 1000,
                     ),
                 };
                 let call = self.call_json(token, channel, method, arg, timeout_ms, channels);
@@ -3780,6 +3813,18 @@ fn skills_args(scope: &JsonMap) -> Value {
     Value::Object(m)
 }
 
+/// `model-selection.getView` 的唯一位置参数：`{selection?: {providerId, modelId, options?}}`。
+fn model_selection_args(selection: &Option<JsonMap>) -> Value {
+    let mut m = JsonMap::new();
+    if let Some(selection) = selection {
+        m.insert(
+            "selection".to_string(),
+            Value::Object(selection.clone()),
+        );
+    }
+    Value::Object(m)
+}
+
 /// `SkillEntry` → JSON（对应 Dart 的 `SkillEntry` 字段）。
 fn skill_entry_to_json(entry: &SkillEntry) -> Value {
     json!({
@@ -4887,8 +4932,8 @@ mod tests {
                 "kind": "complete",
                 "frame": {
                     "subscriptionId": "sub-1",
-                    "fromSeq": 5,
-                    "toSeq": 6,
+                    "fromSeq": 8,
+                    "toSeq": 12,
                     "payload": {"kind": "deltas", "deltas": []}
                 }
             }),
@@ -4931,8 +4976,8 @@ mod tests {
                 "kind": "complete",
                 "frame": {
                     "subscriptionId": "sub-1",
-                    "fromSeq": 5,
-                    "toSeq": 6,
+                    "fromSeq": 8,
+                    "toSeq": 12,
                     "payload": {"kind": "deltas", "deltas": []}
                 }
             })
@@ -4969,7 +5014,8 @@ mod tests {
                 "kind": "complete",
                 "frame": {
                     "subscriptionId": "sub-1",
-                    "fromSeq": 5,
+                    "fromSeq": 8,
+                    "toSeq": 12,
                     "payload": {"kind": "deltas", "deltas": []}
                 }
             }),
@@ -5865,7 +5911,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// 对端 3.15.3 **没有** `zcode-task.prepareWorkspace`（只有 `zcode-agent.prepareStorage`，
     /// 语义是启动 agent 客户端并等 storage 就绪，不返回 configOptions/slashCommands）。
     /// 所以这个 op **不发任何 RPC**，直接回空 prep 并缓存；`refresh` 只重新生成。
@@ -6519,7 +6564,7 @@ mod tests {
 
     #[test]
     fn ops_list_covers_every_dart_method() {
-        assert_eq!(ConversationTransport::OPS.len(), 40);
+        assert_eq!(ConversationTransport::OPS.len(), 41);
         for name in [
             "handshake",
             "subscribe",
@@ -6561,6 +6606,8 @@ mod tests {
             "optimisticPatch",
             "optimisticRowUpdate",
             "optimisticRemoveQueueItem",
+            // 扩展 op（Dart 没有）：对话内模型目录查询。
+            "modelSelectionView",
         ] {
             assert!(ConversationTransport::OPS.contains(&name), "缺 {name}");
         }

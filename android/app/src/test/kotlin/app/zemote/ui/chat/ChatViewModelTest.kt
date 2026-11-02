@@ -3,6 +3,7 @@ package app.zemote.ui.chat
 import app.zemote.engine.EngineEvent
 import app.zemote.engine.EngineState
 import app.zemote.engine.RelayState
+import app.zemote.ui.FakeAuthStore
 import app.zemote.ui.FakeChatOps
 import app.zemote.ui.FakeDeviceRepository
 import app.zemote.ui.FakeEnginePort
@@ -17,8 +18,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,6 +61,7 @@ class ChatViewModelTest {
     private fun viewModel(
         repository: FakeDeviceRepository = FakeDeviceRepository(initialDevices = listOf(deviceRecord())),
         engine: FakeEnginePort = FakeEnginePort(),
+        authStore: FakeAuthStore = FakeAuthStore(),
         chatOps: FakeChatOps = FakeChatOps(),
         deviceId: String = "d1",
         workspaceKey: String? = null,
@@ -65,6 +69,7 @@ class ChatViewModelTest {
     ) = ChatViewModel(
         repository = repository,
         engine = engine,
+        authStore = authStore,
         chatOps = chatOps,
         deviceId = deviceId,
         initialWorkspaceKey = workspaceKey,
@@ -126,15 +131,8 @@ class ChatViewModelTest {
         assertEquals("id-proj", workspaces[0].identity)
         assertEquals("remote", workspaces[0].kind)
         assertEquals("connected", workspaces[0].connectionState)
-        // 任务从**顶层** tasks 数组按 workspaceKey 归位。
-        assertEquals(1, workspaces[0].taskCount)
-        assertEquals("t1", workspaces[0].tasks[0].id)
-        assertEquals("running", workspaces[0].tasks[0].displayStatus)
-        assertEquals("running", workspaces[0].tasks[0].status)
-        assertEquals(123L, workspaces[0].tasks[0].updatedAt)
-        assertEquals(456L, workspaces[0].tasks[0].unreadAt)
-        assertTrue(workspaces[0].tasks[0].unread)
-        assertTrue(workspaces[0].tasks[0].running)
+        // 3.16.1 的 bootstrap 不带任务；任务由 sessions-index 订阅提供，这里应为空。
+        assertEquals(0, workspaces[0].taskCount)
         // 没有 label 的工作区用路径末段兜底
         assertEquals("备用", workspaces[1].name)
         assertEquals(0, workspaces[1].taskCount)
@@ -183,7 +181,9 @@ class ChatViewModelTest {
 
         assertEquals(EngineState.Fatal("Rust 核心发生 panic", "内部路径"), model.state.value.engineState)
         assertEquals(RelayState.Reconnecting, model.state.value.relayState)
-        assertEquals(42L, model.state.value.bridgeSession)
+        // 全局 `bridgeSession` 是「最近一次 openBridge」，可能是别的页面/工作区的桥；
+        // 本页身份只能由 ensureRouteBridge 设置，不能被它覆盖（否则事件门禁会丢帧）。
+        assertNull(model.state.value.bridgeSession)
     }
 
     // ------------------------------------------------------------------
@@ -263,8 +263,29 @@ class ChatViewModelTest {
         assertEquals(ChatOps.OP_SEND_TEXT, chatOps.calls[0].first)
         assertEquals("t1", chatOps.calls[0].second["sessionId"]!!.jsonPrimitive.content)
         assertEquals("你好", chatOps.calls[0].second["text"]!!.jsonPrimitive.content)
+        // 3.17.1 的 sendText 强制带 mode/planEnabled（没有 config 时默认 build/false）。
+        assertEquals("build", chatOps.calls[0].second["mode"]!!.jsonPrimitive.content)
+        assertFalse(chatOps.calls[0].second["planEnabled"]!!.jsonPrimitive.boolean)
         assertFalse(model.state.value.sending)
         assertNull(model.state.value.error)
+    }
+
+    @Test
+    fun `发送失败把文本回填输入框`() = runTest(mainRule.dispatcher) {
+        val chatOps = FakeChatOps().apply { failure = engineError("timeout", "操作超时") }
+        val model = viewModel(chatOps = chatOps)
+        advanceUntilIdle()
+
+        model.selectTask("t1")
+        model.sendText("  你好  ")
+        advanceUntilIdle()
+
+        // 界面在点击发送时已清空输入框；失败必须由 ViewModel 交回文本。
+        assertEquals("你好", model.state.value.draftRestore)
+        assertFalse(model.state.value.sending)
+
+        model.consumeDraftRestore()
+        assertNull(model.state.value.draftRestore)
     }
 
     @Test
@@ -278,6 +299,37 @@ class ChatViewModelTest {
 
         assertTrue(chatOps.calls.isEmpty())
         assertEquals("工作区还没就绪，请稍后再试", model.state.value.error)
+    }
+
+    @Test
+    fun `新建会话用 workspaceKey 兜底，首条消息走 sendText`() = runTest(mainRule.dispatcher) {
+        val engine = FakeEnginePort().apply { bootstrapResult = workspacesJson() }
+        val chatOps = FakeChatOps().apply { result = JsonPrimitive("new-1") }
+        val model = viewModel(
+            engine = engine,
+            chatOps = chatOps,
+            workspaceKey = "id-proj",
+            taskId = null,
+        )
+        advanceUntilIdle()
+        model.onEnter()
+        advanceUntilIdle()
+
+        model.sendText("hi")
+        advanceUntilIdle()
+
+        val create = chatOps.calls.firstOrNull { it.first == "createSession" }
+        assertTrue("应发送 createSession，实际 ${chatOps.calls.map { it.first }}", create != null)
+        // 3.17.1 预热路径用 workspaceKey（identity 优先），不是裸路径。
+        assertEquals("id-proj", create!!.second["workspaceId"]!!.jsonPrimitive.content)
+        // 首条消息不随 createSession 提交，而是等拿到 sessionId 后单独 sendText。
+        assertFalse(create.second.containsKey("firstText"))
+        assertEquals(90L, create.second["timeoutSecs"]!!.jsonPrimitive.long)
+        val send = chatOps.calls.lastOrNull { it.first == ChatOps.OP_SEND_TEXT }
+        assertTrue("应发送 sendText，实际 ${chatOps.calls.map { it.first }}", send != null)
+        assertEquals("new-1", send!!.second["sessionId"]!!.jsonPrimitive.content)
+        assertEquals("hi", send.second["text"]!!.jsonPrimitive.content)
+        assertNull(model.state.value.error)
     }
 
     @Test
@@ -625,25 +677,38 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `顶层 tasks 按 workspaceKey 归位 并取权威字段`() {
+    fun `顶层 tasks 已不是 bootstrap 形状 必须忽略`() {
+        // 3.16.1 的 bootstrap / workspace-list 都没有顶层 tasks；任务由 sessions-index 提供。
         val json: JsonObject = Json.parseToJsonElement(
             """
             {"workspaces":[{"workspacePath":"/w"}],
-             "tasks":[{"taskId":"t1","title":"任务","workspacePath":"/w","displayStatus":"error",
-                       "unreadAt":9,"hasBackgroundWork":true,"pinned":true}]}
+             "tasks":[{"taskId":"t1","title":"任务","workspacePath":"/w","pinned":true}],
+             "activeWorkspaceKey":"/w","activeTaskId":"t1"}
             """.trimIndent(),
         ) as JsonObject
         val snapshot = WorkspaceProjection.snapshotOrNull(json)!!
-        val task = snapshot.workspaces.single().tasks.single()
-        assertEquals("t1", task.id)
-        assertEquals("任务", task.title)
-        assertEquals("error", task.displayStatus)
-        assertEquals("error", task.status)
-        assertTrue(task.unread)
-        assertTrue(task.hasBackgroundWork)
-        assertTrue(task.pinned)
-        assertTrue(task.running) // hasBackgroundWork 也算「在跑」
-        assertEquals(1, snapshot.tasks.size)
+        assertEquals(0, snapshot.workspaces.single().taskCount)
+        assertEquals("/w", snapshot.activeWorkspaceKey)
+        assertEquals("t1", snapshot.activeTaskId)
+    }
+
+    @Test
+    fun `workspace-list-updated 合并时保留本地 tasks`() {
+        val old = listOf(
+            WorkspaceItem(
+                key = "/w",
+                path = "/w",
+                label = "old",
+                tasks = listOf(TaskItem(id = "t1", title = "任务")),
+            ),
+        )
+        val updated = listOf(WorkspaceItem(key = "/w", path = "/w", label = "new"))
+
+        val merged = WorkspaceProjection.merge(old, updated).single()
+
+        assertEquals("new", merged.label)
+        assertEquals(1, merged.tasks.size)
+        assertEquals("t1", merged.tasks.single().id)
     }
 
     @Test

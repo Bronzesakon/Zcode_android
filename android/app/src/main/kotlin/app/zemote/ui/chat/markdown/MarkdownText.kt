@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.zemote.ui.chat.rich.RichBlock
 import app.zemote.ui.chat.rich.RichBlockType
 import app.zemote.ui.theme.LocalZemoteColors
@@ -94,7 +95,7 @@ fun MarkdownText(
         blocks = blocks,
         modifier = modifier,
         onImageClick = onImageClick,
-        spacing = ZemoteSpacing.space2,
+        spacing = ZemoteSpacing.space4,
     )
 }
 
@@ -130,7 +131,12 @@ private fun MarkdownBlock(block: MdBlock, onImageClick: (String) -> Unit) {
             } else {
                 InlineText(
                     inlines = block.inlines,
-                    style = ZemoteType.uiBase.copy(color = colors.foreground),
+                    style = ZemoteType.uiBase.copy(
+                        color = colors.foreground,
+                        // 网页正文 14px / 1.75，字距 0.025em。
+                        lineHeight = 24.5.sp,
+                        letterSpacing = 0.35.sp,
+                    ),
                     onImageClick = onImageClick,
                 )
             }
@@ -138,12 +144,12 @@ private fun MarkdownBlock(block: MdBlock, onImageClick: (String) -> Unit) {
 
         is MdBlock.Heading -> {
             val base = when (block.level) {
-                1 -> ZemoteType.uiXl.copy(fontWeight = FontWeight.Bold)
-                2 -> ZemoteType.uiLg.copy(fontWeight = FontWeight.Bold)
-                3 -> ZemoteType.uiBase.copy(fontWeight = FontWeight.Bold)
+                1 -> ZemoteType.uiXl.copy(fontWeight = FontWeight.SemiBold)
+                2 -> ZemoteType.uiLg.copy(fontWeight = FontWeight.SemiBold)
+                3 -> ZemoteType.uiBase.copy(fontWeight = FontWeight.SemiBold)
                 4 -> ZemoteType.uiBase.copy(fontWeight = FontWeight.SemiBold)
                 5 -> ZemoteType.uiBase.copy(fontWeight = FontWeight.Medium)
-                else -> ZemoteType.uiSm.copy(fontWeight = FontWeight.Medium)
+                else -> ZemoteType.uiBase
             }
             val style = if (block.level == 6) {
                 base.copy(color = colors.foregroundSubtle)
@@ -327,7 +333,7 @@ private fun TableBlock(table: MdBlock.Table, onImageClick: (String) -> Unit) {
     val colors = LocalZemoteColors.current
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer()
-    val cellStyle = ZemoteType.uiSm.copy(color = colors.foreground)
+    val cellStyle = ZemoteType.uiBase.copy(color = colors.foreground)
     val headerStyle = cellStyle.copy(fontWeight = FontWeight.SemiBold)
 
     val annotatedRows = remember(table, colors) {
@@ -488,6 +494,7 @@ private fun buildInlineAnnotated(
                 is MdInline.Code -> withStyle(
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
                         background = colors.markdownInlineCode,
                         color = colors.foreground,
                     ),
@@ -495,7 +502,7 @@ private fun buildInlineAnnotated(
                     append(node.text)
                 }
 
-                is MdInline.Strong -> withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                is MdInline.Strong -> withStyle(SpanStyle(fontWeight = FontWeight.Medium)) {
                     appendAll(node.children)
                 }
 

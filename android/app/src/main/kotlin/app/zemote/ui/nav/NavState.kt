@@ -28,12 +28,22 @@ sealed interface Route {
      *   点任务行时会异步写 `setCurrentDevice`，而对话页紧接着就组合出来了，
      *   去读「当前电脑」有真实竞态。
      * @param workspaceKey 进入时要打开的工作区；`null` = 进页后由用户选。
+     * @param workspacePath 真实磁盘路径（`conversation_open` 的 cwd）。项目树工作区
+     *   不在 bootstrap 里，必须由路由带上；否则对话层只能拿 key 当路径。
+     * @param workspaceIdentity 远端工作区标识；本地工作区缺席。
      * @param taskId 进入时要定位的任务；`null` = 新建对话的空页。
+     * @param hostId 任务/项目所属 host（`local` 或远端 id）。项目树任务靠它触发
+     *   桌面端的 `prepareProjectWorkspace`，否则非当前 tab 的项目会拒绝开桥。
+     * @param projectId `project.readTree` 的项目 id；在项目里新建对话时用。
      */
     data class Chat(
         val deviceId: String,
         val workspaceKey: String? = null,
         val taskId: String? = null,
+        val workspacePath: String? = null,
+        val workspaceIdentity: String? = null,
+        val hostId: String? = null,
+        val projectId: String? = null,
     ) : Route
 
     /** 设置二级页。 */

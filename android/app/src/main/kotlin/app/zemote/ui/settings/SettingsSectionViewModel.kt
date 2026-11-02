@@ -2,7 +2,9 @@ package app.zemote.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.zemote.auth.RemoteTokenException
 import app.zemote.data.AppSettings
+import app.zemote.data.AuthStore
 import app.zemote.data.DeviceRecord
 import app.zemote.engine.RelayState
 import app.zemote.ui.EnginePort
@@ -56,6 +58,7 @@ data class SettingsSectionUiState(
 class SettingsSectionViewModel(
     private val repository: DeviceRepository,
     private val engine: EnginePort,
+    private val authStore: AuthStore,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsSectionUiState())
@@ -98,8 +101,15 @@ class SettingsSectionViewModel(
             _state.update { it.copy(error = "凭据不可用，需要重新配对") }
             return
         }
-        engine.ensureSession(url)
-        _state.update { it.copy(notice = "正在重新连接…") }
+        viewModelScope.launch {
+            try {
+                engine.ensureSession(url, authStore.token())
+                _state.update { it.copy(notice = "正在重新连接…") }
+            } catch (e: RemoteTokenException) {
+                if (e.authRequired) authStore.clear()
+                _state.update { it.copy(error = e.toUserMessage()) }
+            }
+        }
     }
 
     /** 只断开连接，保留配对信息（UI-SPEC §3.1）。 */
@@ -189,7 +199,12 @@ class SettingsSectionViewModel(
             ?: throw IllegalStateException("还没有连接电脑")
         val url = device.remoteUrl
             ?: throw IllegalStateException("凭据不可用，需要重新配对")
-        engine.ensureSession(url)
+        try {
+            engine.ensureSession(url, authStore.token())
+        } catch (e: RemoteTokenException) {
+            if (e.authRequired) authStore.clear()
+            throw e
+        }
         engine.waitPaired(30_000)
         val snapshot = engine.bootstrap()
         val workspaces = WorkspaceProjection.from(snapshot)

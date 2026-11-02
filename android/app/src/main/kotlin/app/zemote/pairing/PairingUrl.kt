@@ -1,8 +1,11 @@
 package app.zemote.pairing
 
 /**
- * 配对链接（桌面端 ZCode 生成的远控 URL，也是二维码内容）的**前置筛查**：
- * `https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...&mid=...&name=...`
+ * 配对链接（桌面端 ZCode 生成的远控 URL，也是二维码内容）。
+ *
+ * - 3.16.1+：`https://zcode.z.ai/remote/v4?app_version=...&sid=...&mid=...&name=...`
+ *   （无 `hash` / `t`；认证改为登录后取得的 OAuth JWT）
+ * - legacy：`https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...&mid=...&name=...`
  *
  * ## 这不是权威校验
  *
@@ -19,7 +22,7 @@ package app.zemote.pairing
  * 必要条件的代价只是"多跑一次引擎、多弹一个 badInput"；多一条自创规则的代价是
  * **假阴性**——用户手里明明是 Rust 能解析的链接，却被前置筛查拦死。所以：
  *
- * - 只查"有没有"：scheme 是不是 http(s)/wss、有没有 host、有没有 `sid` / `hash`；
+ * - 只查"有没有"：scheme 是不是 http(s)/wss、有没有 host、有没有 `sid`；
  * - 不查"合不合法"：`t` 不做数字检查，path 不做 `/remote/` 检查，host 不做白名单
  *   （Rust 的 `parse` 完全不看 host，任何 host 都能解析，基于 host 的拒绝必然制造假阴性）；
  * - 唯一的例外是 [RejectReason.MISSING_HOST]：Rust 的 `parse` 连空 host 都收（它不校验
@@ -55,10 +58,11 @@ object PairingUrl {
         }
         if (parts.host.isEmpty()) return PreflightResult.Rejected(RejectReason.MISSING_HOST)
         val params = queryParams(parts.query)
-        // `sid` / `hash` 只查"解码 + trim 后非空"——这正是 Rust `_get` 的语义
+        // `sid` 只查"解码 + trim 后非空"——这正是 Rust `_get` 的语义
         // （空串视为不存在），不是额外发明的规则。
         if (params.value("sid").isEmpty()) return PreflightResult.Rejected(RejectReason.MISSING_SID)
-        if (params.value("hash").isEmpty()) return PreflightResult.Rejected(RejectReason.MISSING_HASH)
+        // 3.16.1 起链接不再带 `hash`（认证改为 OAuth token），所以这里不再要求它。
+        // 旧链接带 `hash` 也照常放行；真正的认证材料由 PairingViewModel 在登录后注入。
         return PreflightResult.Ok(parts.normalized)
     }
 
@@ -69,6 +73,15 @@ object PairingUrl {
      */
     fun deviceLabel(raw: String): String? =
         split(raw)?.let { queryParams(it.query).value("name").ifEmpty { null } }
+
+    /**
+     * 旧链接是否带 `hash`。
+     *
+     * 3.16.1 起新链接不带 `hash`，必须先用 OAuth 登录拿 JWT；旧链接可以继续走 HMAC proof。
+     * 缺 host / 缺 sid 时返回 `false`（这种串本来就会被 preflight 拒掉）。
+     */
+    fun hasPassHash(raw: String): Boolean =
+        split(raw)?.let { queryParams(it.query).value("hash").isNotEmpty() } ?: false
 
     /**
      * 设备去重键：`host` + `sid`（与持久化层的规则一致——同 host 同 sid 视为同一台设备）。
@@ -290,9 +303,6 @@ enum class RejectReason {
 
     /** 没有可用的 `sid`（缺失，或解码 + trim 后为空）。 */
     MISSING_SID,
-
-    /** 没有可用的 `hash`（缺失，或解码 + trim 后为空）。 */
-    MISSING_HASH,
 
     /**
      * 看起来是别的站点的链接。

@@ -5,37 +5,39 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -44,7 +46,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.MoreVert
@@ -60,13 +61,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -75,17 +76,28 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import app.zemote.ui.chat.markdown.MarkdownText
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import app.zemote.ui.chat.media.ImageViewerDialog
-import app.zemote.ui.chat.media.RemoteImage
 import app.zemote.ui.chat.media.fetchImageBytes
+import app.zemote.ui.chat.timeline.ConversationTimeline
+import app.zemote.ui.chat.timeline.formatBytes
+import app.zemote.ui.chat.timeline.statusLabel
 import app.zemote.ui.theme.LocalZemoteColors
 import app.zemote.ui.theme.ZemoteType
 import kotlinx.coroutines.Dispatchers
@@ -93,7 +105,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import java.util.Locale
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * 对话页（UI-SPEC §2）。
@@ -101,18 +115,10 @@ import java.util.Locale
  * ```
  * 顶栏（返回 + 标题）
  * 头部（工作区名 + 路径 + ⋮ 菜单）
- * 时间线（9 种行类型）
+ * 时间线（9 种行，见 timeline 包）
  * 待交互卡片 / 队列卡片
  * 输入区（文本 + 附件 + 模型 + 发送/停止）
  * ```
- *
- * 无状态：状态来自 [ChatUiState]，动作走回调，接线在 `AppNavHost`。
- *
- * 折叠规则（与用户确认过的行为）：
- * - `turnHeader` 是段标题（工作中/已工作 + 时长），点击折叠整轮的推理/工具行；
- * - `reasoning` / `toolCall` 默认只留一行，所在轮次有流式行时自动展开；
- *   该轮流式结束后自动折回（除非用户手动展开过）；
- * - `subagent` 点击进下一屏（这里是全屏对话框，行本身只留一行摘要）。
  */
 @Composable
 fun ChatScreen(
@@ -128,11 +134,15 @@ fun ChatScreen(
     onRename: (String) -> Unit,
     onSwitchMode: (String) -> Unit,
     onSwitchThought: (String) -> Unit,
-    onResolveInteraction: (String, String?) -> Unit,
+    onSwitchModel: (String, String) -> Unit = { _, _ -> },
+    onLoadModelView: () -> Unit = {},
+    onResolveInteraction: (String, String?, String?, String?, JsonObject?) -> Unit,
+    onResumeQueue: () -> Unit = {},
     onDismissError: () -> Unit,
     onAttach: (String, String, ByteArray) -> Unit = { _, _, _ -> },
     onRemoveAttachment: (Int) -> Unit = {},
     onLoadAttachment: suspend (String) -> ByteArray? = { null },
+    onDraftRestored: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalZemoteColors.current
@@ -145,12 +155,15 @@ fun ChatScreen(
     var subagentDetail by remember { mutableStateOf<JsonObject?>(null) }
     var previewKey by remember { mutableStateOf<String?>(null) }
 
-    val listState = rememberLazyListState()
+    // 发送失败时把文本还给用户：ViewModel 只负责记录，输入框状态在这里。
+    // 如果用户在发送在途时又输入了新内容，把失败文本放在前面而不是覆盖（两段都不能丢）。
+    LaunchedEffect(state.draftRestore) {
+        val restore = state.draftRestore ?: return@LaunchedEffect
+        input = if (input.isBlank()) restore else restore + "\n" + input
+        onDraftRestored()
+    }
+
     val scope = rememberCoroutineScope()
-    val expandedTurns = remember { mutableStateOf(setOf<String>()) }
-    val collapsedTurns = remember { mutableStateOf(setOf<String>()) }
-    val openTools = remember { mutableStateOf(setOf<Long>()) }
-    val openReasoning = remember { mutableStateOf(setOf<Long>()) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -169,34 +182,14 @@ fun ChatScreen(
         }
     }
 
-    val runningTurns = remember(state.rows) {
-        state.rows.filter { it.isStreaming() }
-            .mapNotNull { it["turnId"].asString() }
-            .toSet()
-    }
-
-    val atBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            last >= info.totalItemsCount - 2
-        }
-    }
-
-    LaunchedEffect(state.rows.size, state.isRunning) {
-        if (state.rows.isNotEmpty() && atBottom) {
-            listState.animateScrollToItem(state.rows.lastIndex)
-        }
-    }
-
     Column(modifier = modifier.fillMaxSize().background(colors.background)) {
-        ChatTopBar(title = state.selectedTask?.title ?: "新对话", onBack = onBack)
-
-        ChatHeader(
+        ChatHeaderBar(
+            title = state.selectedTask?.title ?: "新对话",
             workspace = state.selectedWorkspace,
             pinned = state.selectedTask?.pinned == true,
             menuOpen = menuOpen,
             onMenuOpenChange = { menuOpen = it },
+            onBack = onBack,
             onPin = onPin,
             onRename = { menuOpen = false; renameOpen = true },
             onArchive = { menuOpen = false; onArchive() },
@@ -211,143 +204,59 @@ fun ChatScreen(
             )
         }
 
-        if (state.error != null) {
-            ChatErrorBanner(state.error, onRefresh, onDismissError)
+        // 对话页也要能看见连接状态：否则桥降级/掉线时只能看到消息不再更新。
+        val statusText = state.error
+            ?: state.bridgeDegraded?.let { "工作区连接已降级：$it" }
+            ?: if (state.relayFailureVisible) {
+                "连接中断${state.relayFailure?.reason?.let { "：$it" }.orEmpty()}"
+            } else {
+                null
+            }
+        if (statusText != null) {
+            ChatErrorBanner(statusText, onRefresh, onDismissError)
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (state.rows.isEmpty()) {
-                EmptyChat(running = state.isRunning, isNew = state.selectedTaskId == null)
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 12.dp, end = 12.dp, top = 8.dp, bottom = 12.dp,
-                    ),
-                ) {
-                    items(state.rows, key = { it.rowId() }) { row ->
-                        val turnId = row["turnId"].asString()
-                        val kind = row.kind()
-                        val isWorkRow = kind in WORK_ROW_KINDS
-                        val expanded = when {
-                            turnId == null -> true
-                            turnId in expandedTurns.value -> true
-                            turnId in collapsedTurns.value -> false
-                            else -> turnId in runningTurns
-                        }
-                        if (isWorkRow && !expanded) return@items
-
-                        when (kind) {
-                            "turnHeader" -> TurnHeaderRow(
-                                row = row,
-                                expanded = expanded,
-                                onToggle = {
-                                    val id = turnId.orEmpty()
-                                    if (expanded) {
-                                        expandedTurns.value -= id
-                                        collapsedTurns.value += id
-                                    } else {
-                                        expandedTurns.value += id
-                                        collapsedTurns.value -= id
-                                    }
-                                },
-                            )
-
-                            "userInput" -> UserInputRow(
-                                row = row,
-                                onImageClick = { key -> previewKey = key },
-                                imageLoader = imageLoader,
-                            )
-
-                            "assistantText" -> AssistantTextRow(
-                                row = row,
-                                onImageClick = { key -> previewKey = key },
-                            )
-
-                            "reasoning" -> ReasoningRow(
-                                row = row,
-                                open = row.rowId() in openReasoning.value || row.isStreaming(),
-                                onToggle = {
-                                    if (row.rowId() in openReasoning.value) {
-                                        openReasoning.value -= row.rowId()
-                                    } else {
-                                        openReasoning.value += row.rowId()
-                                    }
-                                },
-                            )
-
-                            "toolCall" -> ToolCallRow(
-                                row = row,
-                                open = row.rowId() in openTools.value || row.isStreaming(),
-                                onToggle = {
-                                    if (row.rowId() in openTools.value) {
-                                        openTools.value -= row.rowId()
-                                    } else {
-                                        openTools.value += row.rowId()
-                                    }
-                                },
-                            )
-
-                            "artifact" -> ArtifactRow(row)
-
-                            "subagent" -> SubagentRow(row) { subagentDetail = row }
-
-                            "hookInvocation" -> HookRow(row)
-
-                            "timelineMarker" -> MarkerRow(row)
-
-                            else -> UnknownRow(row)
-                        }
-                    }
-
-                    if (state.totalCount > state.rows.size) {
-                        item(key = "load-older") {
-                            TextButton(
-                                onClick = onLoadOlder,
-                                modifier = Modifier.fillMaxWidth(),
-                            ) { Text("加载更早的消息", style = ZemoteType.uiSm) }
-                        }
-                    }
-                }
-            }
-
-            if (!atBottom && state.rows.isNotEmpty()) {
-                Surface(
-                    onClick = {
-                        scope.launch {
-                            if (state.rows.isNotEmpty()) {
-                                listState.animateScrollToItem(state.rows.lastIndex)
-                            }
-                        }
-                    },
-                    shape = CircleShape,
-                    color = colors.card,
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                ) {
-                    Icon(
-                        Icons.Default.ArrowUpward,
-                        contentDescription = "回到底部",
-                        tint = colors.foregroundSubtle,
-                        modifier = Modifier.padding(8.dp).size(18.dp),
-                    )
-                }
-            }
+            ConversationTimeline(
+                rows = state.rows,
+                isRunning = state.isRunning,
+                canLoadOlder = state.canLoadOlder,
+                loadingOlder = state.loadingOlder,
+                onLoadOlder = onLoadOlder,
+                onImageClick = { key -> previewKey = key },
+                imageLoader = imageLoader,
+                onSubagentClick = { subagentDetail = it },
+            )
         }
 
         InteractionCard(state.pendingInteractions, onResolveInteraction)
-        QueueCards(state.queueItems, state.isRunning)
+        QueueCards(
+            queue = state.queueItems,
+            running = state.isRunning,
+            autoDrain = state.queueAutoDrain,
+            pauseReason = state.queuePauseReason,
+            onResume = onResumeQueue,
+        )
 
         Composer(
             value = input,
             onValueChange = { input = it },
             sending = state.sending,
             uploading = state.uploading,
+            uploadIndex = state.uploadIndex,
+            uploadProgress = state.uploadProgress,
             running = state.isRunning,
+            hasHistory = state.rows.isNotEmpty(),
             attachments = state.attachments,
-            model = state.config?.get("model").asString(),
+            model = modelLabel(state.config),
             mode = state.config?.get("mode").asString(),
+            thought = state.config?.get("thought").asString(),
+            levels = currentModelReasoningLevels(state.modelView, state.config)
+                .ifEmpty {
+                    (state.config?.get("thoughtLevels") as? JsonArray)
+                        ?.mapNotNull { it.asString() }
+                        .orEmpty()
+                },
             onSend = {
                 val text = input.trim()
                 if (text.isNotEmpty() || state.attachments.isNotEmpty()) {
@@ -356,18 +265,29 @@ fun ChatScreen(
                 }
             },
             onStop = onStop,
-            onOpenModel = { showModelSheet = true },
+            onOpenModel = {
+                showModelSheet = true
+                onLoadModelView()
+            },
             onPickAttachment = { picker.launch(arrayOf("*/*")) },
             onRemoveAttachment = onRemoveAttachment,
+            onMode = onSwitchMode,
+            onThought = onSwitchThought,
         )
     }
 
     if (showModelSheet) {
         ModelSheet(
             config = state.config,
+            view = state.modelView,
+            loading = state.modelViewLoading,
+            error = state.modelViewError,
             onDismiss = { showModelSheet = false },
-            onMode = { mode -> onSwitchMode(mode); showModelSheet = false },
-            onThought = { thought -> onSwitchThought(thought); showModelSheet = false },
+            onReload = onLoadModelView,
+            onPick = { provider, model ->
+                onSwitchModel(provider, model)
+                showModelSheet = false
+            },
         )
     }
 
@@ -409,7 +329,7 @@ fun ChatScreen(
     }
 
     subagentDetail?.let { row ->
-        SubagentDetailDialog(row = row, onDismiss = { subagentDetail = null })
+        SubagentSidePane(row = row, onDismiss = { subagentDetail = null })
     }
 
     previewKey?.let { key ->
@@ -417,46 +337,18 @@ fun ChatScreen(
     }
 }
 
-private val WORK_ROW_KINDS = setOf("reasoning", "toolCall", "hookInvocation", "subagent")
-
 // ---------------------------------------------------------------------------
 // 顶栏 / 头部
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun ChatTopBar(title: String, onBack: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(colors.header)
-            .statusBarsPadding()
-            .height(44.dp)
-            .padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "返回", modifier = Modifier.size(18.dp))
-        }
-        Text(
-            text = title,
-            modifier = Modifier.weight(1f),
-            style = ZemoteType.uiBase,
-            fontWeight = FontWeight.Medium,
-            color = colors.foreground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-    HorizontalDivider(color = colors.border)
-}
-
-@Composable
-private fun ChatHeader(
+private fun ChatHeaderBar(
+    title: String,
     workspace: WorkspaceItem?,
     pinned: Boolean,
     menuOpen: Boolean,
     onMenuOpenChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
     onPin: (Boolean) -> Unit,
     onRename: () -> Unit,
     onArchive: () -> Unit,
@@ -467,30 +359,41 @@ private fun ChatHeader(
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.header)
-            .padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 8.dp),
+            .statusBarsPadding()
+            .height(48.dp)
+            .padding(start = 2.dp, end = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = workspace?.label ?: "工作区",
-                style = ZemoteType.uiSm,
-                color = colors.foreground,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = workspace?.path.orEmpty(),
-                style = ZemoteType.uiXs.copy(fontFamily = FontFamily.Monospace),
-                color = colors.foregroundSubtle,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 2.dp),
-            )
+        IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Default.ArrowBack, contentDescription = "返回", modifier = Modifier.size(18.dp))
         }
+        Text(
+            text = title,
+            style = ZemoteType.uiBase,
+            fontWeight = FontWeight.Medium,
+            color = colors.foreground,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = workspace?.path.orEmpty(),
+            style = ZemoteType.ui2xs.copy(fontFamily = FontFamily.Monospace),
+            color = colors.foregroundSubtle,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .widthIn(max = 150.dp),
+        )
         Box {
-            IconButton(onClick = { onMenuOpenChange(true) }) {
-                Icon(Icons.Default.MoreVert, contentDescription = "更多", tint = colors.foregroundSubtle)
+            IconButton(onClick = { onMenuOpenChange(true) }, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.MoreVert,
+                    contentDescription = "更多",
+                    tint = colors.foregroundSubtle,
+                    modifier = Modifier.size(18.dp),
+                )
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenuOpenChange(false) }) {
                 DropdownMenuItem(
@@ -522,6 +425,7 @@ private fun ChatErrorBanner(text: String, onRetry: () -> Unit, onDismiss: () -> 
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.destructive.copy(alpha = 0.10f))
+            .semantics { liveRegion = LiveRegionMode.Assertive }
             .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -542,434 +446,22 @@ private fun ChatErrorBanner(text: String, onRetry: () -> Unit, onDismiss: () -> 
 }
 
 // ---------------------------------------------------------------------------
-// 行渲染
-// ---------------------------------------------------------------------------
-
-@Composable
-private fun TurnHeaderRow(row: JsonObject, expanded: Boolean, onToggle: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    val state = row["state"].asString()
-    val running = state == "running"
-    val duration = durationMs(row)
-    val label = when (state) {
-        "running" -> "工作中 ${formatDuration(duration)}"
-        "completedInterrupted" -> "已停止 · ${formatDuration(duration)}"
-        "failed" -> "已失败 · ${formatDuration(duration)}"
-        else -> "已工作 ${formatDuration(duration)}"
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onToggle)
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (running) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(12.dp),
-                strokeWidth = 1.5.dp,
-                color = colors.foregroundSubtle,
-            )
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(label, style = ZemoteType.uiSm, color = colors.foregroundSubtle)
-        Spacer(Modifier.width(4.dp))
-        Icon(
-            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-            contentDescription = null,
-            tint = colors.foregroundSubtle,
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(Modifier.weight(1f))
-        HorizontalDivider(color = colors.border.copy(alpha = 0.5f), modifier = Modifier.width(24.dp))
-    }
-}
-
-@Composable
-private fun UserInputRow(
-    row: JsonObject,
-    onImageClick: (String) -> Unit,
-    imageLoader: suspend (String) -> ByteArray?,
-) {
-    val colors = LocalZemoteColors.current
-    val text = row["text"].asString().orEmpty()
-    val attachments = row["attachments"] as? JsonArray
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalAlignment = Alignment.End,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth(0.88f)
-                .clip(RoundedCornerShape(12.dp, 2.dp, 12.dp, 12.dp))
-                .background(colors.surface)
-                .border(1.dp, colors.border, RoundedCornerShape(12.dp, 2.dp, 12.dp, 12.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-        ) {
-            if (text.isNotBlank()) {
-                MarkdownText(text = text, onImageClick = onImageClick)
-            }
-            if (!attachments.isNullOrEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                attachments.forEach { item ->
-                    val obj = item as? JsonObject ?: return@forEach
-                    val mime = obj["mime"].asString().orEmpty()
-                    val ref = obj["ref"].asString()
-                    if (mime.startsWith("image/") && ref != null) {
-                        RemoteImage(
-                            key = ref,
-                            loader = imageLoader,
-                            modifier = Modifier
-                                .width(160.dp)
-                                .height(120.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(colors.background),
-                            onClick = { onImageClick(ref) },
-                        )
-                        Spacer(Modifier.height(4.dp))
-                    } else {
-                        AttachmentPill(obj)
-                        Spacer(Modifier.height(4.dp))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AttachmentPill(obj: JsonObject) {
-    val colors = LocalZemoteColors.current
-    val name = obj["fileName"].asString() ?: obj["name"].asString() ?: "附件"
-    val bytes = obj["bytes"].asLong() ?: obj["sizeBytes"].asLong()
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(colors.background)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Default.InsertDriveFile, null, tint = colors.foregroundSubtle, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(
-            text = if (bytes != null) "$name · ${formatBytes(bytes)}" else name,
-            style = ZemoteType.uiSm,
-            color = colors.foreground,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun AssistantTextRow(row: JsonObject, onImageClick: (String) -> Unit) {
-    val colors = LocalZemoteColors.current
-    val text = row["text"].asString().orEmpty()
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        MarkdownText(text = text, onImageClick = onImageClick)
-        if (row.isStreaming()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(10.dp),
-                    strokeWidth = 1.5.dp,
-                    color = colors.foregroundSubtle,
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("正在生成…", style = ZemoteType.uiXs, color = colors.foregroundSubtle)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReasoningRow(row: JsonObject, open: Boolean, onToggle: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    val duration = row["durationMs"].asLong() ?: 0L
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 8.dp, top = 4.dp, bottom = 4.dp)
-            .border(
-                width = 1.dp,
-                color = colors.border.copy(alpha = 0.6f),
-                shape = RoundedCornerShape(8.dp),
-            )
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = if (duration > 0) "思考 · ${formatDuration(duration)}" else "思考",
-                style = ZemoteType.uiXs,
-                color = colors.foregroundSubtle,
-            )
-            Spacer(Modifier.weight(1f))
-            Icon(
-                if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = colors.foregroundSubtle,
-                modifier = Modifier.size(14.dp),
-            )
-        }
-        if (open) {
-            Spacer(Modifier.height(6.dp))
-            MarkdownText(
-                text = row["text"].asString().orEmpty(),
-                modifier = Modifier.heightIn(max = 320.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun ToolCallRow(row: JsonObject, open: Boolean, onToggle: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    val status = row["status"].asString().orEmpty()
-    val name = row["toolName"].asString().orEmpty().ifBlank { "tool" }
-    val summary = toolSummary(row)
-    val duration = durationMs(row)
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(colors.surface.copy(alpha = 0.55f)),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onToggle)
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ToolStatusIcon(status)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = name,
-                style = ZemoteType.uiSm.copy(fontFamily = FontFamily.Monospace),
-                color = colors.foreground,
-                fontWeight = FontWeight.Medium,
-            )
-            if (summary.isNotBlank()) {
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = summary,
-                    style = ZemoteType.uiXs.copy(fontFamily = FontFamily.Monospace),
-                    color = colors.foregroundSubtle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-            } else {
-                Spacer(Modifier.weight(1f))
-            }
-            if (duration > 0) {
-                Text(
-                    text = formatDuration(duration),
-                    style = ZemoteType.ui2xs,
-                    color = colors.foregroundSubtle,
-                )
-                Spacer(Modifier.width(4.dp))
-            }
-            Icon(
-                if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = colors.foregroundSubtle,
-                modifier = Modifier.size(14.dp),
-            )
-        }
-        if (open) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
-            ) {
-                val inputText = row["inputText"].asString().orEmpty()
-                if (inputText.isNotBlank()) {
-                    MonoBlock("输入", inputText)
-                }
-                val outputText = row["output"].asObj()?.get("text").asString()
-                    ?: row["outputPreview"].asString()
-                    ?: ""
-                if (outputText.isNotBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    MonoBlock("输出", outputText)
-                }
-                val error = row["error"].asObj()?.get("message").asString()
-                if (!error.isNullOrBlank()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(error, style = ZemoteType.uiXs, color = colors.destructive)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MonoBlock(label: String, text: String) {
-    val colors = LocalZemoteColors.current
-    Column(Modifier.fillMaxWidth()) {
-        Text(label, style = ZemoteType.ui2xs, color = colors.foregroundSubtlest)
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = text,
-            style = ZemoteType.uiXs.copy(fontFamily = FontFamily.Monospace),
-            color = colors.foregroundSubtle,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 220.dp)
-                .verticalScroll(rememberScrollState()),
-        )
-    }
-}
-
-@Composable
-private fun ToolStatusIcon(status: String) {
-    val colors = LocalZemoteColors.current
-    when (status) {
-        "running", "inputStreaming", "pendingApproval" -> CircularProgressIndicator(
-            modifier = Modifier.size(12.dp),
-            strokeWidth = 1.5.dp,
-            color = colors.foregroundSubtle,
-        )
-
-        "success" -> Icon(Icons.Default.Check, null, tint = colors.success, modifier = Modifier.size(14.dp))
-        "error" -> Icon(Icons.Default.Close, null, tint = colors.destructive, modifier = Modifier.size(14.dp))
-        else -> Box(Modifier.size(12.dp))
-    }
-}
-
-@Composable
-private fun ArtifactRow(row: JsonObject) {
-    val colors = LocalZemoteColors.current
-    val name = row["displayName"].asString() ?: "产物"
-    val size = row["sizeBytes"].asLong()
-    Row(
-        modifier = Modifier
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(999.dp))
-            .background(colors.surface)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(Icons.Default.InsertDriveFile, null, tint = colors.foregroundSubtle, modifier = Modifier.size(14.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(name, style = ZemoteType.uiXs, color = colors.foreground)
-        if (size != null) {
-            Text(" · ${formatBytes(size)}", style = ZemoteType.ui2xs, color = colors.foregroundSubtle)
-        }
-    }
-}
-
-@Composable
-private fun SubagentRow(row: JsonObject, onClick: () -> Unit) {
-    val colors = LocalZemoteColors.current
-    val type = row["subagentType"].asString() ?: "子代理"
-    val status = row["status"].asString().orEmpty()
-    val summary = row["summaryText"].asString().orEmpty()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(colors.surface)
-            .clickable(onClick = onClick)
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(26.dp).clip(CircleShape).background(colors.card),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(type.take(1).uppercase(), style = ZemoteType.uiXs, color = colors.foregroundSubtle)
-        }
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(type, style = ZemoteType.uiSm, color = colors.foreground, fontWeight = FontWeight.Medium)
-            if (summary.isNotBlank()) {
-                Text(
-                    summary,
-                    style = ZemoteType.uiXs,
-                    color = colors.foregroundSubtle,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Text(statusLabel(status), style = ZemoteType.ui2xs, color = colors.foregroundSubtle)
-    }
-}
-
-@Composable
-private fun HookRow(row: JsonObject) {
-    val colors = LocalZemoteColors.current
-    val event = row["hookEventName"].asString() ?: "hook"
-    val count = row["hookCount"].asLong() ?: 1L
-    val state = row["state"].asString().orEmpty()
-    Text(
-        text = "$event · $count 个钩子 · ${statusLabel(state)}",
-        style = ZemoteType.uiXs,
-        color = colors.foregroundSubtle,
-        modifier = Modifier.padding(vertical = 4.dp),
-    )
-}
-
-@Composable
-private fun MarkerRow(row: JsonObject) {
-    val colors = LocalZemoteColors.current
-    val type = row["marker"].asObj()?.get("type").asString().orEmpty()
-    val label = when (type) {
-        "compact" -> "上下文已压缩"
-        "forkNotice" -> "已分叉"
-        "forkCreated" -> "新分叉已创建"
-        "modelChange" -> "模型切换"
-        "goalSet" -> "目标已设置"
-        "goalVerify" -> "目标已校验"
-        "retryNotice" -> "已重试"
-        "checkpointRestored" -> "检查点已恢复"
-        else -> type.ifBlank { "标记" }
-    }
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        HorizontalDivider(Modifier.width(24.dp), color = colors.border)
-        Text(
-            text = "  $label  ",
-            style = ZemoteType.ui2xs,
-            color = colors.foregroundSubtlest,
-            textAlign = TextAlign.Center,
-        )
-        HorizontalDivider(Modifier.width(24.dp), color = colors.border)
-    }
-}
-
-@Composable
-private fun UnknownRow(row: JsonObject) {
-    val colors = LocalZemoteColors.current
-    Text(
-        text = "[${row.kind()}]",
-        style = ZemoteType.ui2xs,
-        color = colors.foregroundSubtlest,
-        modifier = Modifier.padding(vertical = 2.dp),
-    )
-}
-
-// ---------------------------------------------------------------------------
 // 待交互 / 队列
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun InteractionCard(interactions: JsonArray?, onResolve: (String, String?) -> Unit) {
+private fun InteractionCard(
+    interactions: JsonArray?,
+    onResolve: (String, String?, String?, String?, JsonObject?) -> Unit,
+) {
     val colors = LocalZemoteColors.current
     val first = (interactions?.firstOrNull() as? JsonObject) ?: return
     val payload = first["payload"].asObj() ?: return
+    val interactionId = first["interactionId"].asString().orEmpty()
     val kind = payload["kind"].asString()
     val options = payload["options"] as? JsonArray
+    val questions = payload["questions"] as? JsonArray
+    val freeText = payload["freeText"].asBool() == true
     val title = if (kind == "permission") {
         "权限请求 · ${payload["toolName"].asString().orEmpty()}"
     } else {
@@ -978,6 +470,10 @@ private fun InteractionCard(interactions: JsonArray?, onResolve: (String, String
     val detail = payload["summary"].asString()
         ?: payload["prompt"].asString()
         ?: ""
+
+    // 表单答案：question 文本 → 选中的 value 列表（与网页 `content.answers` 同构）。
+    val answers = remember(interactionId) { mutableStateMapOf<String, List<String>>() }
+    var freeInput by remember(interactionId) { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -997,24 +493,167 @@ private fun InteractionCard(interactions: JsonArray?, onResolve: (String, String
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
-        if (options != null && options.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        // 表单式 userInput：逐题渲染选项，提交时带 content.answers。
+        if (questions != null && questions.isNotEmpty()) {
+            questions.forEachIndexed { index, element ->
+                val question = element as? JsonObject ?: return@forEachIndexed
+                val text = question["question"].asString().orEmpty()
+                val label = question["header"].asString()?.takeIf { it.isNotBlank() } ?: text
+                val multi = question["multiSelect"].asBool() == true
+                val selected = answers[text].orEmpty()
+                Text(
+                    "${index + 1}. $label",
+                    style = ZemoteType.uiSm,
+                    color = colors.foreground,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                val qOptions = question["options"] as? JsonArray
+                if (qOptions != null && qOptions.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        qOptions.forEach { opt ->
+                            val obj = opt as? JsonObject ?: return@forEach
+                            val value = obj["value"].asString() ?: return@forEach
+                            val optionLabel = obj["label"].asString() ?: value
+                            val isSelected = value in selected
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(
+                                        if (isSelected) colors.selected else Color.Transparent,
+                                    )
+                                    .border(1.dp, colors.border, RoundedCornerShape(999.dp))
+                                    .clickable {
+                                        val next = if (multi) {
+                                            if (isSelected) selected - value else selected + value
+                                        } else {
+                                            listOf(value)
+                                        }
+                                        if (next.isEmpty()) {
+                                            answers.remove(text)
+                                        } else {
+                                            answers[text] = next
+                                        }
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                            ) {
+                                Text(
+                                    optionLabel,
+                                    style = ZemoteType.uiXs,
+                                    color = if (isSelected) colors.foreground else colors.foregroundSubtle,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            TextButton(
+                onClick = {
+                    val content = buildJsonObject {
+                        put(
+                            "answers",
+                            buildJsonObject {
+                                answers.forEach { (question, values) ->
+                                    put(
+                                        question,
+                                        JsonArray(values.map { JsonPrimitive(it) }),
+                                    )
+                                }
+                            },
+                        )
+                    }
+                    onResolve(interactionId, null, null, "accept", content)
+                },
+                enabled = answers.isNotEmpty(),
+                modifier = Modifier.align(Alignment.End),
+            ) {
+                Text("提交答案", style = ZemoteType.uiSm)
+            }
+        } else if (options != null && options.isNotEmpty()) {
+            // 权限卡片：optionId + action=accept + content{value,label,kind}。
+            Row(
+                modifier = Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 options.forEach { option ->
                     val obj = option as? JsonObject ?: return@forEach
-                    val label = obj["label"].asString() ?: obj["value"].asString() ?: "确定"
                     val optionId = obj["optionId"].asString()
+                    val label = obj["label"].asString()?.takeIf { it.isNotBlank() }
+                        ?: permissionOptionLabel(obj["kind"].asString())
+                        ?: optionId
+                        ?: "确定"
                     TextButton(onClick = {
-                        onResolve(first["interactionId"].asString().orEmpty(), optionId)
+                        val content = buildJsonObject {
+                            obj["value"]?.let { put("value", it) }
+                            obj["label"]?.let { put("label", it) }
+                            obj["kind"]?.let { put("kind", it) }
+                        }
+                        onResolve(
+                            interactionId,
+                            optionId,
+                            null,
+                            "accept",
+                            content.takeIf { it.isNotEmpty() },
+                        )
                     }) { Text(label, style = ZemoteType.uiXs) }
+                }
+            }
+        }
+
+        if (freeText) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = freeInput,
+                    onValueChange = { freeInput = it },
+                    modifier = Modifier.weight(1f),
+                    textStyle = ZemoteType.uiSm.copy(color = colors.foreground),
+                    singleLine = true,
+                    placeholder = {
+                        Text("输入回复…", style = ZemoteType.uiSm, color = colors.foregroundSubtlest)
+                    },
+                )
+                IconButton(
+                    onClick = {
+                        onResolve(interactionId, null, freeInput.trim(), null, null)
+                        freeInput = ""
+                    },
+                    enabled = freeInput.isNotBlank(),
+                ) {
+                    Icon(Icons.Default.Send, "发送回复", modifier = Modifier.size(18.dp))
                 }
             }
         }
     }
 }
 
+/** 权限选项的兜底文案（网页 `_optionLabel` 同款）。 */
+private fun permissionOptionLabel(kind: String?): String? = when (kind) {
+    "allowOnce" -> "允许一次"
+    "allowAlways" -> "总是允许"
+    "deny" -> "拒绝"
+    "custom" -> "自定义"
+    else -> null
+}
+
 @Composable
-private fun QueueCards(queue: JsonArray?, running: Boolean) {
+private fun QueueCards(
+    queue: JsonArray?,
+    running: Boolean,
+    autoDrain: Boolean,
+    pauseReason: String?,
+    onResume: () -> Unit,
+) {
     val colors = LocalZemoteColors.current
     if (queue.isNullOrEmpty()) return
     Column(
@@ -1022,6 +661,36 @@ private fun QueueCards(queue: JsonArray?, running: Boolean) {
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 2.dp),
     ) {
+        if (!autoDrain) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.surface)
+                    .border(1.dp, colors.border.copy(alpha = 0.7f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = when (pauseReason) {
+                        "stopped" -> "由于你中断了当前响应，队列已暂停"
+                        "error" -> "由于当前响应出错，队列已暂停（内容未丢失）"
+                        else -> "队列已暂停"
+                    },
+                    modifier = Modifier.weight(1f),
+                    style = ZemoteType.uiBase,
+                    color = colors.foreground,
+                )
+                TextButton(onClick = onResume) {
+                    Text(
+                        text = "继续",
+                        style = ZemoteType.uiSm,
+                        color = colors.foregroundSubtle,
+                    )
+                }
+            }
+        }
         queue.forEach { item ->
             val obj = item as? JsonObject ?: return@forEach
             val text = obj["text"].asString().orEmpty()
@@ -1062,304 +731,406 @@ private fun Composer(
     onValueChange: (String) -> Unit,
     sending: Boolean,
     uploading: Boolean,
+    uploadIndex: Int,
+    uploadProgress: Float,
     running: Boolean,
+    hasHistory: Boolean,
     attachments: List<ChatAttachment>,
     model: String?,
     mode: String?,
+    thought: String?,
+    levels: List<String>,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onOpenModel: () -> Unit,
     onPickAttachment: () -> Unit,
     onRemoveAttachment: (Int) -> Unit,
+    onMode: (String) -> Unit,
+    onThought: (String) -> Unit,
 ) {
     val colors = LocalZemoteColors.current
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // edge-to-edge：先让出导航条，再让 IME；网页没有安全区，但 Android 必须有。
+            .navigationBarsPadding()
             .imePadding()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            // 网页 dock 内容层 px-4 pb-4（无顶部内边距）。
+            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
     ) {
-        if (attachments.isNotEmpty()) {
-            Row(
+        // 网页结构：输入卡片 = 附件（topContent）+ 编辑器（独占一行）+ 工具栏
+        // （左侧 +/Mode，右侧模型/Effort/发送）。
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.input)
+                .border(
+                    width = 1.dp,
+                    color = if (focused) colors.inputBorderFocused else colors.inputBorder,
+                    shape = RoundedCornerShape(16.dp),
+                )
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (attachments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    attachments.forEachIndexed { index, attachment ->
+                        val progress = if (uploading && index == uploadIndex) uploadProgress else null
+                        Row(
+                            modifier = Modifier
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.surface)
+                                .border(1.dp, colors.border, RoundedCornerShape(8.dp))
+                                .padding(start = 6.dp, end = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(colors.background),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Default.InsertDriveFile,
+                                    contentDescription = null,
+                                    tint = colors.foregroundSubtle,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                if (progress != null) {
+                                    UploadProgress(progress)
+                                }
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.widthIn(max = 160.dp)) {
+                                Text(
+                                    text = attachment.name,
+                                    style = ZemoteType.uiSm,
+                                    color = colors.foreground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = if (progress != null) {
+                                        "${(progress * 100).toInt()}%"
+                                    } else {
+                                        formatBytes(attachment.bytes.size.toLong())
+                                    },
+                                    style = ZemoteType.ui2xs,
+                                    color = if (progress != null) colors.brand else colors.foregroundSubtle,
+                                )
+                            }
+                            IconButton(
+                                onClick = { onRemoveAttachment(index) },
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "移除附件 ${attachment.name}",
+                                    tint = colors.foregroundSubtle,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            val placeholder = when {
+                running -> "继续输入以排队后续修改"
+                hasHistory -> "提出后续修改要求"
+                else -> "向 ZCode 提问…"
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                interactionSource = interaction,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    .heightIn(min = 40.dp, max = 160.dp),
+                textStyle = ZemoteType.mobileInputSafe.copy(color = colors.foreground),
+                maxLines = 8,
+                // 移动端网页 Enter 只换行，发送靠按钮（报告 06 §4.3）。
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                decorationBox = { inner ->
+                    Box(Modifier.fillMaxWidth()) {
+                        if (value.isEmpty()) {
+                            Text(
+                                placeholder,
+                                style = ZemoteType.mobileInputSafe,
+                                color = colors.foregroundSubtlest,
+                            )
+                        }
+                        inner()
+                    }
+                },
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                attachments.forEachIndexed { index, attachment ->
-                    Row(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(colors.surface)
-                            .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = "${attachment.name} · ${formatBytes(attachment.bytes.size.toLong())}",
-                            style = ZemoteType.uiXs,
-                            color = colors.foreground,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 200.dp),
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onPickAttachment, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            Icons.Default.Add,
+                            "添加上下文",
+                            tint = colors.foregroundSubtle,
+                            modifier = Modifier.size(20.dp),
                         )
-                        IconButton(
-                            onClick = { onRemoveAttachment(index) },
-                            modifier = Modifier.size(24.dp),
+                    }
+                    ChipMenu(
+                        label = mode ?: "build",
+                        options = modeOptions(mode),
+                        current = mode,
+                        onSelect = onMode,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (model != null) {
+                        TextButton(
+                            onClick = onOpenModel,
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                            modifier = Modifier.widthIn(max = 110.dp),
+                        ) {
+                            Text(
+                                text = model,
+                                style = ZemoteType.uiXs,
+                                color = colors.foregroundSubtle,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    if (levels.isNotEmpty()) {
+                        ChipMenu(
+                            label = thought ?: levels.first(),
+                            options = levels,
+                            current = thought,
+                            onSelect = onThought,
+                        )
+                    }
+                    // 网页：运行中且输入为空才显示停止；有输入时显示发送（加入队列）。
+                    if (running && value.isBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.secondary)
+                                .clickable(onClick = onStop),
+                            contentAlignment = Alignment.Center,
                         ) {
                             Icon(
-                                Icons.Default.Close,
-                                contentDescription = "移除附件",
-                                tint = colors.foregroundSubtle,
-                                modifier = Modifier.size(14.dp),
+                                Icons.Default.Stop,
+                                "停止生成",
+                                tint = colors.foreground,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    } else {
+                        val canSend = (value.isNotBlank() || attachments.isNotEmpty()) &&
+                            !sending && !uploading
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (canSend) colors.brand else colors.brand.copy(alpha = 0.4f),
+                                )
+                                .clickable(enabled = canSend, onClick = onSend),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.ArrowUpward,
+                                "发送",
+                                tint = colors.foregroundInverse,
+                                modifier = Modifier.size(16.dp),
                             )
                         }
                     }
                 }
             }
         }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(colors.input)
-                .border(1.dp, colors.inputBorder, RoundedCornerShape(16.dp))
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            IconButton(onClick = onPickAttachment, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.AttachFile, "附件", tint = colors.foregroundSubtle, modifier = Modifier.size(18.dp))
-            }
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
-                textStyle = ZemoteType.uiBase.copy(color = colors.foreground),
-                maxLines = 6,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { onSend() }),
-                decorationBox = { inner ->
-                    if (value.isEmpty()) {
-                        Text("发消息给 ZCode…", style = ZemoteType.uiBase, color = colors.foregroundSubtlest)
-                    }
-                    inner()
-                },
-            )
-            if (running) {
-                IconButton(onClick = onStop, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.Stop, "停止", tint = colors.destructive, modifier = Modifier.size(18.dp))
-                }
-            } else {
-                IconButton(
-                    onClick = onSend,
-                    enabled = (value.isNotBlank() || attachments.isNotEmpty()) && !sending,
-                    modifier = Modifier.size(34.dp),
-                ) {
-                    if (sending || uploading) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 1.5.dp)
-                    } else {
-                        Icon(
-                            Icons.Default.Send,
-                            "发送",
-                            tint = if (value.isNotBlank() || attachments.isNotEmpty()) {
-                                colors.primary
-                            } else {
-                                colors.foregroundSubtlest
-                            },
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onOpenModel) {
-                Text(
-                    text = listOfNotNull(model, mode).joinToString(" · ").ifBlank { "模型" },
-                    style = ZemoteType.ui2xs,
-                    color = colors.foregroundSubtle,
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Text("↵ 发送", style = ZemoteType.ui2xs, color = colors.foregroundSubtlest)
-        }
     }
 }
 
+private fun modeOptions(current: String?): List<String> {
+    // 网页端 Mode 菜单不含 plan（plan 由独立开关控制）；兼容值 edit 按需兜底。
+    val base = listOf("build", "guarded", "yolo")
+    return if (current != null && current.isNotBlank() && current !in base) {
+        base + current
+    } else {
+        base
+    }
+}
+
+/** 上传进度环：36dp 容器、2dp 描边、7sp 百分比（网页 `r=9 / strokeWidth=2`）。 */
 @Composable
-private fun ModelSheet(
-    config: JsonObject?,
-    onDismiss: () -> Unit,
-    onMode: (String) -> Unit,
-    onThought: (String) -> Unit,
+private fun UploadProgress(progress: Float) {
+    val colors = LocalZemoteColors.current
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(colors.background.copy(alpha = 0.85f))
+            .semantics {
+                progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize().padding(2.dp)) {
+            val stroke = 2.dp.toPx()
+            drawArc(
+                color = colors.border,
+                startAngle = -90f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(width = stroke),
+            )
+            drawArc(
+                color = colors.brand,
+                startAngle = -90f,
+                sweepAngle = 360f * progress.coerceIn(0f, 1f),
+                useCenter = false,
+                style = Stroke(width = stroke),
+            )
+        }
+        Text(
+            text = "${(progress * 100).toInt()}%",
+            style = ZemoteType.ui2xs.copy(fontSize = 7.sp),
+            color = colors.foreground,
+        )
+    }
+}
+
+/** 输入区下方的小选择器（Mode / Effort）。 */
+@Composable
+private fun ChipMenu(
+    label: String,
+    options: List<String>,
+    current: String?,
+    onSelect: (String) -> Unit,
 ) {
     val colors = LocalZemoteColors.current
-    val provider = config?.get("provider").asString()
-    val model = config?.get("model").asString()
-    val currentMode = config?.get("mode").asString()
-    val thought = config?.get("thought").asString()
-    val levels = (config?.get("thoughtLevels") as? JsonArray)
-        ?.mapNotNull { it.asString() }
-        .orEmpty()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("模型与模式") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    text = listOfNotNull(provider, model).joinToString(" / ").ifBlank { "未提供" },
-                    style = ZemoteType.uiSm,
-                    color = colors.foreground,
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .clickable { open = true }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(label, style = ZemoteType.uiXs, color = colors.foregroundSubtle)
+            Icon(
+                Icons.Default.ExpandMore,
+                contentDescription = null,
+                tint = colors.foregroundSubtlest,
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option) },
+                    onClick = { open = false; onSelect(option) },
+                    trailingIcon = if (option == current) {
+                        { Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp)) }
+                    } else {
+                        null
+                    },
                 )
-                Spacer(Modifier.height(12.dp))
-                Text("模式", style = ZemoteType.uiXs, color = colors.foregroundSubtle)
-                listOf("build", "edit", "plan", "yolo").forEach { mode ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().clickable { onMode(mode) }.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(mode, Modifier.weight(1f), style = ZemoteType.uiBase)
-                        if (mode == currentMode) {
-                            Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-                if (levels.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("思考级别", style = ZemoteType.uiXs, color = colors.foregroundSubtle)
-                    levels.forEach { level ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().clickable { onThought(level) }.padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(level, Modifier.weight(1f), style = ZemoteType.uiBase)
-                            if (level == thought) {
-                                Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                    }
-                }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
-}
-
-// ---------------------------------------------------------------------------
-// 空态 / 子代理详情
-// ---------------------------------------------------------------------------
-
-@Composable
-private fun EmptyChat(running: Boolean, isNew: Boolean) {
-    val colors = LocalZemoteColors.current
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        if (running) {
-            CircularProgressIndicator(color = colors.foregroundSubtle)
-            Spacer(Modifier.height(12.dp))
-            Text("正在加载对话…", style = ZemoteType.uiSm, color = colors.foregroundSubtle)
-        } else {
-            Text(
-                text = if (isNew) "开始一个新对话" else "这个对话还没有内容",
-                style = ZemoteType.uiLg,
-                color = colors.foreground,
-            )
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = if (isNew) "输入第一条消息后会在电脑端创建会话。" else "在下方输入框继续对话。",
-                style = ZemoteType.uiSm,
-                color = colors.foregroundSubtle,
-                textAlign = TextAlign.Center,
-            )
         }
     }
 }
 
 @Composable
-private fun SubagentDetailDialog(row: JsonObject, onDismiss: () -> Unit) {
+/** 输入区模型按钮文案：默认 provider `glm` 省略前缀（网页 `uyt` 口径）。 */
+private fun modelLabel(config: JsonObject?): String? {
+    val provider = config?.get("provider").asString()
+    val model = config?.get("model").asString() ?: return null
+    return if (provider.isNullOrBlank() || provider == "glm") model else "$provider/$model"
+}
+
+// ---------------------------------------------------------------------------
+// 子代理详情
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SubagentSidePane(row: JsonObject, onDismiss: () -> Unit) {
     val colors = LocalZemoteColors.current
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text(row["subagentType"].asString() ?: "子代理") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            // 网页端是右侧 side-pane；手机上按屏宽 90%、上限 420dp。
+            val panelWidth = minOf(maxWidth * 0.9f, 420.dp)
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.32f))
+                    .clickable(onClick = onDismiss),
+            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(panelWidth)
+                    .background(colors.background)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(16.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = row["subagentType"].asString() ?: "子代理",
+                        style = ZemoteType.uiLg,
+                        color = colors.foreground,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "关闭", tint = colors.foregroundSubtle)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 Text(
                     text = "状态：${statusLabel(row["status"].asString().orEmpty())}",
                     style = ZemoteType.uiSm,
                     color = colors.foregroundSubtle,
                 )
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
                 Text(
                     text = row["summaryText"].asString().orEmpty().ifBlank { "（无摘要）" },
                     style = ZemoteType.uiSm,
                     color = colors.foreground,
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
                 )
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
-}
-
-// ---------------------------------------------------------------------------
-// 展示辅助
-// ---------------------------------------------------------------------------
-
-private fun durationMs(row: JsonObject): Long {
-    row["activeMs"].asLong()?.let { return it }
-    row["durationMs"].asLong()?.let { return it }
-    val start = row["startedAt"].asLong() ?: return 0L
-    val end = row["endedAt"].asLong() ?: System.currentTimeMillis()
-    return (end - start).coerceAtLeast(0L)
-}
-
-internal fun formatDuration(ms: Long): String {
-    if (ms <= 0) return "0秒"
-    if (ms < 1000) return String.format(Locale.US, "%.1f秒", ms / 1000.0)
-    val totalSeconds = ms / 1000
-    val hours = totalSeconds / 3600
-    val minutes = (totalSeconds % 3600) / 60
-    val seconds = totalSeconds % 60
-    return when {
-        hours > 0 -> "${hours}时${minutes}分"
-        minutes > 0 -> "${minutes}分${seconds}秒"
-        else -> "${seconds}秒"
+        }
     }
 }
 
-internal fun formatBytes(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-    bytes < 1024L * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
-    else -> String.format(Locale.US, "%.1f GB", bytes / 1024.0 / 1024.0 / 1024.0)
-}
-
-private fun toolSummary(row: JsonObject): String {
-    val input = row["input"].asObj()
-    val candidates = listOf("path", "file_path", "command", "query", "pattern", "url", "description")
-    for (key in candidates) {
-        input?.get(key).asString()?.takeIf { it.isNotBlank() }?.let { return it }
-    }
-    return row["inputText"].asString().orEmpty()
-        .lineSequence()
-        .firstOrNull { it.isNotBlank() }
-        .orEmpty()
-}
-
-private fun statusLabel(status: String): String = when (status) {
-    "running" -> "运行中"
-    "success", "completed" -> "已完成"
-    "failed", "error" -> "失败"
-    "cancelled" -> "已取消"
-    else -> status
-}
+// ---------------------------------------------------------------------------
+// 文件选择
+// ---------------------------------------------------------------------------
 
 /** 读取系统文件选择器的结果（名称 / MIME / 字节）；失败返回 `null`。 */
 private suspend fun readPickedFile(
@@ -1375,9 +1146,20 @@ private suspend fun readPickedFile(
             }
         }
         val mime = resolver.getType(uri) ?: "application/octet-stream"
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: return@withContext null
-        Triple(name, mime, bytes)
+        // 有界读取：先按 30MiB 上限截断，避免超大文件整读进内存导致 OOM。
+        val out = java.io.ByteArrayOutputStream()
+        var total = 0
+        resolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(8 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                total += read
+                if (total > ChatViewModel.MAX_ATTACHMENT_BYTES) return@withContext null
+                out.write(buffer, 0, read)
+            }
+        } ?: return@withContext null
+        Triple(name, mime, out.toByteArray())
     } catch (e: Exception) {
         null
     }

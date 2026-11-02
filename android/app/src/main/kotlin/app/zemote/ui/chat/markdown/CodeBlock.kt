@@ -17,14 +17,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,8 +39,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.zemote.ui.chat.timeline.LucideIcons
 import app.zemote.ui.theme.LocalZemoteColors
 import app.zemote.ui.theme.ZemoteRadius
 import app.zemote.ui.theme.ZemoteSpacing
@@ -93,48 +98,53 @@ fun CodeBlock(
         modifier = modifier
             .fillMaxWidth()
             .clip(ZemoteRadius.lgShape)
-            .background(colors.markdownInlineCode)
+            .background(colors.card)
             .border(1.dp, colors.border, ZemoteRadius.lgShape),
     ) {
-        // ---- 顶部：语言标签 + 复制 ----
+        // ---- 顶部：文件图标 + 语言 + 复制（网页 header 无下边框）----
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(colors.backgroundAlt)
-                .padding(
-                    start = ZemoteSpacing.space3,
-                    end = ZemoteSpacing.space2,
-                    top = ZemoteSpacing.space1,
-                    bottom = ZemoteSpacing.space1,
-                ),
+                .padding(start = ZemoteSpacing.space3, end = ZemoteSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
+            Icon(
+                imageVector = LucideIcons.File,
+                contentDescription = null,
+                tint = colors.foreground,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(ZemoteSpacing.space2))
             Text(
-                text = language?.trim()?.takeIf { it.isNotEmpty() } ?: "text",
-                style = ZemoteType.uiXs.copy(color = colors.foregroundSubtle),
+                text = (language?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "text"),
+                style = ZemoteType.uiBase.copy(
+                    fontFamily = FontFamily.Monospace,
+                    color = colors.foreground,
+                ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                text = if (copied) "已复制" else "复制",
-                style = ZemoteType.uiXs.copy(
-                    color = if (copied) colors.success else colors.foregroundSubtle,
-                ),
+            Box(
                 modifier = Modifier
+                    .size(28.dp)
                     .clip(ZemoteRadius.smShape)
                     .clickable {
                         clipboard.setText(AnnotatedString(code))
                         copied = true
-                    }
-                    .padding(horizontal = ZemoteSpacing.space2, vertical = ZemoteSpacing.space1),
-            )
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (copied) LucideIcons.Check else LucideIcons.Copy,
+                    contentDescription = "复制代码",
+                    tint = colors.foreground,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
         }
 
-        HorizontalDivider(color = colors.border)
-
-        // ---- 代码正文：不换行 + 横向滚动，保留缩进 ----
+        // ---- 代码正文：12/20 等宽、不换行 + 横向滚动 ----
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -142,22 +152,33 @@ fun CodeBlock(
         ) {
             Text(
                 text = highlighted,
-                style = ZemoteType.mono.copy(color = colors.foreground),
+                style = ZemoteType.mono.copy(
+                    color = colors.foreground,
+                    fontSize = 12.sp,
+                    lineHeight = 20.sp,
+                ),
                 softWrap = false,
-                modifier = Modifier.padding(ZemoteSpacing.space3),
+                modifier = Modifier.padding(
+                    start = ZemoteSpacing.space3,
+                    end = ZemoteSpacing.space2,
+                    bottom = ZemoteSpacing.space3,
+                ),
             )
         }
 
-        // ---- 折叠 / 展开 ----
+        // ---- 折叠 / 展开（移动端保留的可用性增强）----
         if (lineCount > COLLAPSE_LINE_THRESHOLD) {
-            HorizontalDivider(color = colors.border)
             Text(
                 text = if (expanded) "收起" else "展开全部 $lineCount 行",
-                style = ZemoteType.uiXs.copy(color = colors.foregroundSubtle),
+                style = ZemoteType.uiSm.copy(color = colors.foregroundSubtle),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { expanded = !expanded }
-                    .padding(horizontal = ZemoteSpacing.space3, vertical = ZemoteSpacing.space2),
+                    .padding(
+                        start = ZemoteSpacing.space3,
+                        end = ZemoteSpacing.space3,
+                        bottom = ZemoteSpacing.space2,
+                    ),
             )
         }
     }

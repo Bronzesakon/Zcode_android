@@ -77,20 +77,27 @@ data class ConversationRef(val session: Long, val key: String)
  *
  * ## 生命周期
  *
- * - `session` / `scope` 是**取当前值**的闭包（不是构造时快照）：桥会话与工作区都会变；
- * - 第一次 `call` 时 `conversation_open` 拿 key，之后缓存；缓存的 `session` 与当前不一致
- *   （换了桥）就重开——旧 conversation 归 Rust 侧的桥销毁路径回收；
- * - 并发 `call` 由 [mutex] 串行化，避免同一时刻开出两个对话。
+ * - 有注册表时：**只取现成句柄**（`handleFor`），不自己开桥/开对话。桥由首页或对话页
+ *   用「带 taskHostId/project 意图」的参数建立；这里再 ensure 会给非 tab 项目开一条
+ *   缺意图的桥（桌面必拒），也会让同一工作区出现第二条 transport。
+ * - 无注册表时（单测/旧路径）：退化为惰性 `conversation_open`，按当前桥缓存。
  *
  * @param engine 引擎会话面（§13 的 `conversation_*`）。
- * @param session 取当前桥会话号（生产是 `engine.bridgeSession.value`）；`null` ⇒ 抛
- *   `invalidState`（还没开桥，对话层无从谈起）。
+ * @param session 无注册表时取当前桥会话号；`null` ⇒ 抛 `invalidState`。
  * @param defaultScope 调用点没显式传 scope 时的兜底（至少含 `workspacePath`）。
  */
 class EngineChatOps(
     private val engine: EnginePort,
     private val session: () -> Long? = { engine.bridgeSession.value },
     private val defaultScope: () -> JsonObject = { JsonObject(emptyMap()) },
+    /**
+     * 进程级注册表：与首页/对话页共用同一条工作区桥。
+     *
+     * 没有它时这里会拿 `engine.bridgeSession` 上「最近一次打开的桥」另开一条对话；
+     * 若那条桥已被降级/重建，`helloConversationV4` 会抢不到应答，命令卡在
+     * `AwaitHandshake`，线上一个帧都发不出去。
+     */
+    private val registry: ConversationRegistry? = null,
 ) : ChatOps {
 
     private val mutex = Mutex()
@@ -112,10 +119,21 @@ class EngineChatOps(
 
     /** 取当前对话；没有、桥换了、或换了工作区就重开。 */
     private suspend fun ensureConversation(scope: JsonObject): ConversationRef = mutex.withLock {
+        val scopeKey = conversationKeyOf(scope)
+        if (registry != null && !scopeKey.isNullOrBlank()) {
+            // 桥/对话只由 ChatViewModel / HomeViewModel 用「带项目意图」的参数创建；
+            // 这里只取现成句柄，绝不自己 ensure——否则会给项目树工作区开一条缺
+            // taskHostId/project 的桥，被桌面端拒绝（或抢走 helloConversationV4 应答）。
+            val handle = registry.handleFor(scopeKey)
+                ?: throw EngineException(
+                    NativeError("invalidState", "工作区还在连接，请稍候再发送"),
+                )
+            return@withLock ConversationRef(session = handle.bridge, key = handle.key)
+        }
+
         val session = session() ?: throw EngineException(
             NativeError("invalidState", "还没有桥会话：先打开一个工作区再发对话操作"),
         )
-        val scopeKey = conversationKeyOf(scope)
         opened?.takeIf { it.session == session && openedScopeKey == scopeKey }?.let {
             return@withLock it
         }

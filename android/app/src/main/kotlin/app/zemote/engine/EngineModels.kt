@@ -301,6 +301,16 @@ data class EngineConfig(
     val deviceName: String? = null,
     val theme: String? = null,
     val mid: String? = null,
+    /**
+     * ws2 的 **terminal token**，不是 OAuth JWT。
+     *
+     * 3.16.1 宿主先用 OAuth JWT 调 `POST /api/v1/remote/token`（body `{"role":"terminal"}`）
+     * 换一个 22 字符短 token，再放进 `wss://<host>/api/v1/remote/ws2?token=…`。
+     * 旧链接（带 `hash`）传 `null`，继续走 HMAC proof。
+     *
+     * **绝不落盘、绝不进日志**：只存在于本次 `nativeCreate` 的配置里。
+     */
+    val token: String? = null,
 ) {
     /** 序列化成 `nativeCreate` 的入参（含 `nowMs`）。 */
     fun toJson(nowMs: Long): JsonObject = buildJsonObject {
@@ -312,6 +322,7 @@ data class EngineConfig(
         put("deviceName", deviceName.orNull())
         put("theme", theme.orNull())
         put("mid", mid.orNull())
+        put("token", token.orNull())
     }
 }
 
@@ -506,6 +517,23 @@ internal object EventParser {
  * 抽成纯函数是为了能在 JVM 单测里逐字段核对——这部分是宿主与核心之间唯一的「回喂」通道，
  * 一个字段名写错就会让核心按错误代次/错误码处理。
  */
+/**
+ * ws URL 的纯函数改写。
+ *
+ * 3.16.1 的重连会换一张新的 terminal token，但 URL 里还有 `mid` 等参数，不能整串重建。
+ * token 字符集是 `[A-Za-z0-9_-]`（22 字符），无需再编码。
+ */
+internal object RelayUri {
+
+    private val tokenParam = Regex("([?&])token=[^&]*")
+
+    /** 把 `token` 查询参数替换成 [token]；URL 里没有 `token` 时原样返回。 */
+    fun withToken(uri: String, token: String): String {
+        if (!tokenParam.containsMatchIn(uri)) return uri
+        return tokenParam.replaceFirst(uri, "$1token=$token")
+    }
+}
+
 internal object SocketInputs {
 
     fun ready(generation: Long): JsonObject = buildJsonObject {

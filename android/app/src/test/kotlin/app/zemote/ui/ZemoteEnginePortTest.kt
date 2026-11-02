@@ -1,5 +1,6 @@
 package app.zemote.ui
 
+import app.zemote.auth.RemoteTokenException
 import app.zemote.engine.EngineException
 import app.zemote.engine.EngineState
 import app.zemote.engine.FakeNativeBridge
@@ -44,11 +45,15 @@ class ZemoteEnginePortTest {
     private fun TestScope.newPort(
         bridge: FakeNativeBridge,
         engines: MutableList<ZemoteEngine> = mutableListOf(),
+        terminalToken: suspend (host: String, jwt: String) -> String = { _, _ ->
+            throw IllegalStateException("这个用例不该换 terminal token")
+        },
     ): ZemoteEnginePort = ZemoteEnginePort(
         scope = backgroundScope,
         appVersion = "1.2.3-test",
         deviceName = "test-device",
         theme = { theme },
+        terminalTokenProvider = terminalToken,
         newEngine = { scope ->
             ZemoteEngine(
                 bridge = bridge,
@@ -88,6 +93,51 @@ class ZemoteEnginePortTest {
         assertEquals("test-device", payload["deviceName"]!!.jsonPrimitive.content)
         assertEquals("android", payload["targetPlatform"]!!.jsonPrimitive.content)
         assertEquals("dark", payload["theme"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `新链接先换 terminal token 再建会话，重复调用不重复换`() = runTest(mainRule.dispatcher) {
+        val bridge = FakeNativeBridge()
+        var calls = 0
+        val port = newPort(bridge) { host, jwt ->
+            calls++
+            assertEquals("zcode.z.ai", host)
+            assertEquals("jwt-1", jwt)
+            "terminal-1"
+        }
+        val url = "https://zcode.z.ai/remote/v4?sid=a&app_version=3.16.1"
+
+        port.ensureSession(url, "jwt-1")
+        advanceUntilIdle()
+
+        assertEquals(1, calls)
+        val payload = createPayload(bridge)
+        assertEquals("terminal-1", payload["token"]!!.jsonPrimitive.content)
+
+        // 同一个 URL + 同一个 OAuth JWT：幂等，不能再换一次 token，也不能重建会话。
+        port.ensureSession(url, "jwt-1")
+        advanceUntilIdle()
+        assertEquals(1, calls)
+        assertEquals(1, bridge.methodCount("create"))
+    }
+
+    @Test
+    fun `terminal token 交换 401 会抛 auth-required 且不建会话`() = runTest(mainRule.dispatcher) {
+        val bridge = FakeNativeBridge()
+        val port = newPort(bridge) { _, _ ->
+            throw RemoteTokenException("auth-required", "登录已失效")
+        }
+        val url = "https://zcode.z.ai/remote/v4?sid=a&app_version=3.16.1"
+
+        try {
+            port.ensureSession(url, "jwt-1")
+            fail("应该抛 RemoteTokenException")
+        } catch (e: RemoteTokenException) {
+            assertTrue(e.authRequired)
+        }
+
+        assertNull(port.connectedUrl.value)
+        assertEquals(0, bridge.methodCount("create"))
     }
 
     @Test

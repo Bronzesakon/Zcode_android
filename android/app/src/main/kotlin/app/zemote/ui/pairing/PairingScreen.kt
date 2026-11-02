@@ -92,6 +92,5 @@ private fun RejectReason.toMessage(): String = when (this) {
     RejectReason.SCHEME_NOT_HTTP -> "只支持 http / https / wss 的链接。"
     RejectReason.MISSING_HOST -> "链接里没有主机名（host）。"
     RejectReason.MISSING_SID -> "链接里没有 sid 参数。"
-    RejectReason.MISSING_HASH -> "链接里没有 hash 参数。"
     RejectReason.NOT_ZEMOTE_LINK -> "这看起来不是 Zemote 的远控链接。"
 }

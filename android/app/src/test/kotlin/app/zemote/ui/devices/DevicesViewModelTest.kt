@@ -1,6 +1,7 @@
 package app.zemote.ui.devices
 
 import app.zemote.engine.RelayState
+import app.zemote.ui.FakeAuthStore
 import app.zemote.ui.FakeDeviceRepository
 import app.zemote.ui.FakeEnginePort
 import app.zemote.ui.MainDispatcherRule
@@ -33,7 +34,7 @@ class DevicesViewModelTest {
     fun `读到列表后从加载态进入就绪态`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
 
-        val viewModel = DevicesViewModel(repository = repository, engine = FakeEnginePort())
+        val viewModel = DevicesViewModel(repository = repository, engine = FakeEnginePort(), authStore = FakeAuthStore())
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.loading)
@@ -43,7 +44,7 @@ class DevicesViewModelTest {
 
     @Test
     fun `空列表也是就绪态`() = runTest(mainRule.dispatcher) {
-        val viewModel = DevicesViewModel(FakeDeviceRepository(), FakeEnginePort())
+        val viewModel = DevicesViewModel(FakeDeviceRepository(), FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.loading)
@@ -55,7 +56,7 @@ class DevicesViewModelTest {
     fun `读盘失败收敛成错误态而不是抛异常`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository().apply { readFailure = IllegalStateException("磁盘坏了") }
 
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         assertFalse(viewModel.state.value.loading)
@@ -66,7 +67,7 @@ class DevicesViewModelTest {
     fun `retry 重新订阅并在恢复后回到就绪态`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
             .apply { readFailure = IllegalStateException("临时故障") }
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
         assertTrue(viewModel.state.value.error != null)
 
@@ -82,7 +83,7 @@ class DevicesViewModelTest {
     @Test
     fun `dismissError 清掉错误条`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository().apply { readFailure = IllegalStateException("x") }
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.dismissError()
@@ -100,7 +101,7 @@ class DevicesViewModelTest {
             initialDevices = listOf(deviceRecord(id = "d1"), deviceRecord(id = "d2", sid = "s2")),
             initialCurrentId = "d2",
         )
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         assertEquals("d2", viewModel.state.value.currentDeviceId)
@@ -110,7 +111,7 @@ class DevicesViewModelTest {
     @Test
     fun `relay 状态映射进状态`() = runTest(mainRule.dispatcher) {
         val engine = FakeEnginePort()
-        val viewModel = DevicesViewModel(FakeDeviceRepository(), engine)
+        val viewModel = DevicesViewModel(FakeDeviceRepository(), engine, FakeAuthStore())
         advanceUntilIdle()
         assertEquals(RelayState.Idle, viewModel.state.value.relayState)
 
@@ -128,7 +129,7 @@ class DevicesViewModelTest {
     fun `打开设备会设为当前设备并建会话`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
         val engine = FakeEnginePort()
-        val viewModel = DevicesViewModel(repository, engine)
+        val viewModel = DevicesViewModel(repository, engine, FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.openDevice("d1")
@@ -143,7 +144,7 @@ class DevicesViewModelTest {
         val broken = deviceRecord(id = "d1", remoteUrl = null)
         val repository = FakeDeviceRepository(initialDevices = listOf(broken))
         val engine = FakeEnginePort()
-        val viewModel = DevicesViewModel(repository, engine)
+        val viewModel = DevicesViewModel(repository, engine, FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.openDevice("d1")
@@ -157,7 +158,7 @@ class DevicesViewModelTest {
     fun `打开不存在的设备是空操作`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
         val engine = FakeEnginePort()
-        val viewModel = DevicesViewModel(repository, engine)
+        val viewModel = DevicesViewModel(repository, engine, FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.openDevice("不存在")
@@ -173,7 +174,7 @@ class DevicesViewModelTest {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
             .apply { writeFailure = engineError(kind = "invalidState", message = "未知设备 id") }
         val engine = FakeEnginePort()
-        val viewModel = DevicesViewModel(repository, engine)
+        val viewModel = DevicesViewModel(repository, engine, FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.openDevice("d1")
@@ -190,7 +191,7 @@ class DevicesViewModelTest {
     @Test
     fun `删除设备后给一次性提示`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.removeDevice("d1")
@@ -205,7 +206,7 @@ class DevicesViewModelTest {
 
     @Test
     fun `删除不存在的设备也收敛成提示`() = runTest(mainRule.dispatcher) {
-        val viewModel = DevicesViewModel(FakeDeviceRepository(), FakeEnginePort())
+        val viewModel = DevicesViewModel(FakeDeviceRepository(), FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.removeDevice("ghost")
@@ -218,7 +219,7 @@ class DevicesViewModelTest {
     fun `删除失败收敛成错误态`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
             .apply { writeFailure = IllegalStateException("列表数据损坏") }
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.removeDevice("d1")
@@ -230,7 +231,7 @@ class DevicesViewModelTest {
     @Test
     fun `重命名成功给提示`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord()))
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.renameDevice("d1", "书房电脑")
@@ -243,7 +244,7 @@ class DevicesViewModelTest {
     @Test
     fun `重命名成同名不算改动`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord(name = "桌面")))
-        val viewModel = DevicesViewModel(repository, FakeEnginePort())
+        val viewModel = DevicesViewModel(repository, FakeEnginePort(), FakeAuthStore())
         advanceUntilIdle()
 
         viewModel.renameDevice("d1", "桌面")

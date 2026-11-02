@@ -1,9 +1,11 @@
 package app.zemote.ui.devices
 
 import app.zemote.data.RelayStatus
+import app.zemote.engine.EngineEvent
 import app.zemote.engine.RelayState
 import app.zemote.ui.FakeDeviceRepository
 import app.zemote.ui.FakeEnginePort
+import app.zemote.ui.RelayFailureWrite
 import app.zemote.ui.RelayStatusWrite
 import app.zemote.ui.deviceRecord
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -98,6 +100,49 @@ class RelayStatusWriterTest {
             "非 paired 的写入不该带时间戳",
             repository.relayStatusWrites.filter { it.status != RelayStatus.PAIRED }
                 .all { it.connectedAt == null },
+        )
+    }
+
+    @Test
+    fun `relay 失败原因会回写并在 paired 后清空`() = runTest {
+        val repository = FakeDeviceRepository(initialDevices = listOf(d1), initialCurrentId = "d1")
+        val engine = FakeEnginePort()
+        val writer = writer(repository, engine)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { writer.watch() }
+        advanceUntilIdle()
+
+        engine.relayFailureFlow.value = EngineEvent.RelayFailure(
+            reason = "invalid-mobile-connection",
+            message = "Desktop did not match this mobile connection before the waiting timeout.",
+        )
+        engine.relayStateFlow.value = RelayState.Error
+        advanceUntilIdle()
+
+        assertEquals(
+            "失败原因要落盘，否则用户只能看到笼统的超时",
+            "invalid-mobile-connection",
+            repository.currentFlow.value?.lastRelayError,
+        )
+        assertEquals(
+            "Desktop did not match this mobile connection before the waiting timeout.",
+            repository.currentFlow.value?.lastRelayErrorMessage,
+        )
+
+        engine.relayStateFlow.value = RelayState.Paired
+        advanceUntilIdle()
+
+        assertEquals(null, repository.currentFlow.value?.lastRelayError)
+        assertEquals(null, repository.currentFlow.value?.lastRelayErrorMessage)
+        assertEquals(
+            listOf(
+                RelayFailureWrite(
+                    "d1",
+                    "invalid-mobile-connection",
+                    "Desktop did not match this mobile connection before the waiting timeout.",
+                ),
+                RelayFailureWrite("d1", null, null),
+            ),
+            repository.relayFailureWrites,
         )
     }
 

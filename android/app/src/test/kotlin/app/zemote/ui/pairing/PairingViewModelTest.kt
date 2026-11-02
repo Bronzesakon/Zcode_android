@@ -3,6 +3,7 @@ package app.zemote.ui.pairing
 import app.zemote.engine.EngineState
 import app.zemote.pairing.QrScanner
 import app.zemote.pairing.RejectReason
+import app.zemote.ui.FakeAuthStore
 import app.zemote.ui.FakeDeviceRepository
 import app.zemote.ui.FakeEnginePort
 import app.zemote.ui.MainDispatcherRule
@@ -47,11 +48,13 @@ class PairingViewModelTest {
         repository: FakeDeviceRepository = FakeDeviceRepository(),
         scanner: QrScanner = FakeQrScanner(),
         engine: FakeEnginePort = FakeEnginePort(),
+        authStore: FakeAuthStore = FakeAuthStore(),
         connectTimeoutMs: Long = 50,
     ) = PairingViewModel(
         repository = repository,
         scanner = scanner,
         engine = engine,
+        authStore = authStore,
         connectTimeoutMs = connectTimeoutMs,
     )
 
@@ -85,12 +88,30 @@ class PairingViewModelTest {
     }
 
     @Test
-    fun `缺少 hash 被拒绝`() = runTest(mainRule.dispatcher) {
-        val model = viewModel()
-        model.submit("https://zcode.z.ai/remote/v4?sid=s1")
+    fun `新链接没有登录时进入登录流程`() = runTest(mainRule.dispatcher) {
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine)
+        model.submit("https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s1")
         advanceUntilIdle()
 
-        assertEquals(RejectReason.MISSING_HASH, model.state.value.rejection)
+        assertTrue(model.state.value.needsLogin)
+        assertEquals(
+            "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s1",
+            model.state.value.pendingUrl,
+        )
+        assertTrue(engine.ensuredUrls.isEmpty())
+    }
+
+    @Test
+    fun `已有登录态时新链接直接建会话并带上 token`() = runTest(mainRule.dispatcher) {
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine, authStore = FakeAuthStore(initialToken = "JWT"))
+        model.submit("https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s1")
+        advanceUntilIdle()
+
+        assertEquals(listOf("https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s1"), engine.ensuredUrls)
+        assertEquals(listOf<String?>("JWT"), engine.ensuredTokens)
+        assertFalse(model.state.value.needsLogin)
     }
 
     @Test

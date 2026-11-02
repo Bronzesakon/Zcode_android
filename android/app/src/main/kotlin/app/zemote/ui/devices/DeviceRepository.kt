@@ -80,6 +80,14 @@ interface DeviceRepository {
         status: RelayStatus,
         connectedAt: Long? = null,
     ): Boolean
+
+    /**
+     * 回写最后一次 relay 失败的原因与详情（诊断用）。传 `null` 清空。
+     *
+     * 与 [recordRelayStatus] 分开：失败事件与状态迁移不是一一对应的（例如 `waiting`
+     * 超时既会切到 `error`，也会带一条 `invalid-mobile-connection`），分开写不会互相覆盖。
+     */
+    suspend fun recordRelayFailure(id: String, reason: String?, message: String?): Boolean
 }
 
 /** 生产实现：逐字转发到 [DeviceStore]。 */
@@ -116,6 +124,12 @@ class StoreDeviceRepository(private val store: DeviceStore) : DeviceRepository {
             if (connectedAt != null) store.markConnected(id, connectedAt) else false
         return statusChanged || connectedChanged
     }
+
+    override suspend fun recordRelayFailure(
+        id: String,
+        reason: String?,
+        message: String?,
+    ): Boolean = store.setRelayFailure(id = id, reason = reason, message = message)
 }
 
 /**
@@ -156,31 +170,74 @@ class RelayStatusWriter(
     suspend fun watch() {
         // 已写进存储的 (设备 id, 状态)；null = 还没写过。
         var written: Pair<String, RelayStatus>? = null
-        combine(repository.currentDevice, engine.relayState) { device, relay -> device to relay }
-            .collect { (device, relay) ->
+        // 已写进存储的 (设备 id, 原因码, 详情)；null = 还没写过失败。
+        var writtenFailure: Triple<String, String?, String?>? = null
+        combine(
+            repository.currentDevice,
+            engine.relayState,
+            engine.relayFailure,
+        ) { device, relay, failure -> Triple(device, relay, failure) }
+            .collect { (device, relay, failure) ->
                 if (device == null) {
                     written = null
+                    writtenFailure = null
                     return@collect
                 }
                 val status = RelayStatus.fromWire(relay.wire)
                 // 首次以**持久化值**为基准：盘上已经是这个状态就不写（否则每次启动都白写一次）。
                 val previous = written ?: (device.id to device.lastRelayStatus)
-                if (previous.first == device.id && previous.second == status) return@collect
-                val enteringPaired = status == RelayStatus.PAIRED &&
-                    !(previous.first == device.id && previous.second == RelayStatus.PAIRED)
-                // 先记下「打算写什么」：写盘可能失败，但失败重试不该被同一条状态反复触发
-                // （下一次真的变化时再试）。这也让「只在变化时写」与写盘结果解耦。
-                written = device.id to status
-                try {
-                    repository.recordRelayStatus(
-                        id = device.id,
-                        status = status,
-                        connectedAt = if (enteringPaired) now() else null,
-                    )
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    log("回写 relay 状态失败（device=${device.id}, status=$status）：$e")
+                val statusChanged = previous.first != device.id || previous.second != status
+                if (statusChanged) {
+                    val enteringPaired = status == RelayStatus.PAIRED &&
+                        !(previous.first == device.id && previous.second == RelayStatus.PAIRED)
+                    // 先记下「打算写什么」：写盘可能失败，但失败重试不该被同一条状态反复触发
+                    // （下一次真的变化时再试）。这也让「只在变化时写」与写盘结果解耦。
+                    written = device.id to status
+                    try {
+                        repository.recordRelayStatus(
+                            id = device.id,
+                            status = status,
+                            connectedAt = if (enteringPaired) now() else null,
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        log("回写 relay 状态失败（device=${device.id}, status=$status）：$e")
+                    }
+                }
+
+                // 失败原因与状态分开写：`waiting` 超时会同时产生 `error` 状态和一条
+                // `invalid-mobile-connection` 失败，后者才是用户要看的诊断信息。
+                if (status == RelayStatus.PAIRED) {
+                    if (writtenFailure != null) {
+                        try {
+                            repository.recordRelayFailure(device.id, null, null)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            log("清空 relay 失败原因失败（device=${device.id}）：$e")
+                        }
+                        writtenFailure = null
+                    }
+                } else if (failure != null) {
+                    val key = Triple(device.id, failure.reason, failure.message)
+                    if (key != writtenFailure) {
+                        writtenFailure = key
+                        try {
+                            repository.recordRelayFailure(
+                                id = device.id,
+                                reason = failure.reason,
+                                message = failure.message,
+                            )
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            log(
+                                "回写 relay 失败原因失败（device=${device.id}, " +
+                                    "reason=${failure.reason}）：$e",
+                            )
+                        }
+                    }
                 }
             }
     }

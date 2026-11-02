@@ -357,6 +357,9 @@ pub fn create_session_payload(
 #[allow(clippy::too_many_arguments)]
 pub fn send_text_payload(
     text: &str,
+    mode: Option<&str>,
+    plan_enabled: Option<bool>,
+    model_selection: Option<&JsonMap>,
     attachments: Option<&[JsonMap]>,
     held_queue_disposition: Option<&str>,
     expected_held_queue_item_ids: Option<&[String]>,
@@ -368,6 +371,18 @@ pub fn send_text_payload(
 ) -> Value {
     let mut m = JsonMap::new();
     m.insert("text".to_string(), Value::String(text.to_string()));
+    // 3.17.1 的 `sendText` 客户端会强制带上这三键；缺了只能用工作区默认模型/模式。
+    if let Some(v) = mode {
+        m.insert("mode".to_string(), Value::String(v.to_string()));
+    }
+    if let Some(v) = plan_enabled {
+        m.insert("planEnabled".to_string(), Value::Bool(v));
+    }
+    if let Some(selection) = model_selection {
+        if !selection.is_empty() {
+            m.insert("modelSelection".to_string(), Value::Object(selection.clone()));
+        }
+    }
     if let Some(a) = attachments {
         if !a.is_empty() {
             m.insert("attachments".to_string(), arr_of_objects(a));
@@ -1605,6 +1620,10 @@ impl ConversationState {
                 self.apply_snapshot(&snap, to_seq)?;
             }
             Some("deltas") => {
+                // 3.16.1 网页：`toSeq <= seq` 的重复帧直接丢弃，不能重复 apply。
+                if to_seq <= self.seq {
+                    return Ok(());
+                }
                 let from_seq = num_of(frame_obj.get("fromSeq"))?.unwrap_or(self.seq);
                 if from_seq != self.seq {
                     on_gap();
@@ -2260,6 +2279,10 @@ impl SessionsIndexState {
                 self.seq = to_seq;
             }
             Some("deltas") => {
+                // 3.16.1 网页 `gvt`：snapshot 分支之后先判 `toSeq <= seq`，重复帧丢弃。
+                if to_seq <= self.seq {
+                    return Ok(());
+                }
                 let from_seq = num_of(frame_obj.get("fromSeq"))?.unwrap_or(self.seq);
                 if from_seq != self.seq {
                     on_gap();
@@ -2664,6 +2687,41 @@ mod tests {
             .clone()
     }
 
+    /// 3.17.1 sendText：`mode/planEnabled/modelSelection` 必须进入 payload，缺省则不出现。
+    #[test]
+    fn send_text_payload_carries_submission_fields() {
+        let mut selection = JsonMap::new();
+        selection.insert("providerId".to_string(), json!("p"));
+        selection.insert("modelId".to_string(), json!("m"));
+        let payload = send_text_payload(
+            "hi",
+            Some("build"),
+            Some(false),
+            Some(&selection),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(payload["text"], json!("hi"));
+        assert_eq!(payload["mode"], json!("build"));
+        assert_eq!(payload["planEnabled"], json!(false));
+        assert_eq!(payload["modelSelection"]["providerId"], json!("p"));
+        assert_eq!(payload["modelSelection"]["modelId"], json!("m"));
+
+        let bare = send_text_payload(
+            "hi", None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let map = bare.as_object().expect("payload 是对象");
+        assert!(!map.contains_key("mode"));
+        assert!(!map.contains_key("planEnabled"));
+        assert!(!map.contains_key("modelSelection"));
+    }
+
     /// 对应 Dart `_injectSnapshot(state, {seq, revision, rows, totalCount, firstRowId, snapshot})`。
     fn inject_snapshot(state: &mut ConversationState, spec: SnapSpec) {
         let mut rows_obj = JsonMap::new();
@@ -2784,6 +2842,37 @@ mod tests {
         assert_eq!(state.rows[0]["rowId"], json!(99));
         assert_eq!(state.seq, 2);
         assert_eq!(state.total_count, 1);
+    }
+
+    /// 3.16.1：`toSeq <= seq` 的重复帧直接丢弃，不能重复 append。
+    #[test]
+    fn duplicate_delta_frame_is_dropped() {
+        let mut state = ConversationState::new();
+        inject_snapshot(
+            &mut state,
+            SnapSpec {
+                seq: 1,
+                ..Default::default()
+            },
+        );
+
+        let frame = json!({
+            "payload": {
+                "kind": "deltas",
+                "deltas": [
+                    {"op": "row.appended", "row": {"rowId": 9, "kind": "user", "text": "dup"}},
+                ],
+            },
+            "fromSeq": 1,
+            "toSeq": 1,
+        });
+        let mut on_gap = || {
+            panic!("duplicate frame must not gap");
+        };
+        state.apply_frame(&frame, &mut on_gap).unwrap();
+
+        assert!(state.rows.is_empty());
+        assert_eq!(state.seq, 1);
     }
 
     /// 对应 `row.upserted replaces existing row`。
@@ -3333,6 +3422,39 @@ mod tests {
         let list = state.list();
         assert_eq!(list[0].session_id, "newer");
         assert_eq!(list[1].session_id, "older");
+    }
+
+    /// 3.16.1 网页 `gvt`：重复的 sessions-index 增量帧必须丢弃。
+    #[test]
+    fn duplicate_sessions_delta_frame_is_dropped() {
+        let mut state = SessionsIndexState::new();
+        inject_sessions_snapshot(&mut state, Vec::new()); // seq = 1
+
+        let frame = json!({
+            "payload": {
+                "kind": "deltas",
+                "deltas": [
+                    {
+                        "op": "session.upserted",
+                        "session": {
+                            "sessionId": "dup",
+                            "phase": "draft",
+                            "lastActivityAt": 1,
+                            "createdAt": 1,
+                        },
+                    },
+                ],
+            },
+            "fromSeq": 1,
+            "toSeq": 1,
+        });
+        let mut on_gap = || {
+            panic!("duplicate frame must not gap");
+        };
+        state.apply_frame(&frame, &mut on_gap).unwrap();
+
+        assert!(state.sessions.is_empty());
+        assert_eq!(state.seq, 1);
     }
 
     /// 对应 `session.upserted delta`。

@@ -726,6 +726,8 @@ impl Channels {
     pub const CODING_PLAN_SUBSCRIPTION: &'static str = "coding-plan-subscription";
     /// 对应 Dart `Channels.skills`。
     pub const SKILLS: &'static str = "skills";
+    /// 模型选择视图（桌面 `model-selection` 服务）。
+    pub const MODEL_SELECTION: &'static str = "model-selection";
     /// 对应 Dart `Channels.skillSync`。
     pub const SKILL_SYNC: &'static str = "skill-sync";
     /// 对应 Dart `Channels.mcpSync`。

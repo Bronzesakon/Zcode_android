@@ -319,6 +319,17 @@ impl ConversationLayer {
         self.conversations.contains_key(&(bridge, key.to_string()))
     }
 
+    /// §9 扩展 `{"query":"conversation"}`：某个 conversation 的传输层快照。
+    ///
+    /// 核心的 `Session::snapshot` 只有 relay/桥状态；`conversations` 与 `sessionsIndex`
+    /// （含 `lastAssistantPreview`）属于本层的 `ConversationTransport`，只能从这里取。
+    /// 未登记（没 open 过、或已 close）时返回 `None`。
+    pub fn snapshot(&self, bridge: BridgeSessionId, key: &str) -> Option<Value> {
+        self.conversations
+            .get(&(bridge, key.to_string()))
+            .map(|entry| entry.transport.snapshot())
+    }
+
     // -----------------------------------------------------------------------
     // 4.1 §13.2 对话层
     // -----------------------------------------------------------------------

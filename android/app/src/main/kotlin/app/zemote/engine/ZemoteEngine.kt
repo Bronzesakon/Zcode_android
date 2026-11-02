@@ -3,6 +3,7 @@ package app.zemote.engine
 import android.util.Log
 import app.zemote.core.NativeBridge
 import java.util.concurrent.Executors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -29,7 +30,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /** Kotlin 侧期望的 FFI ABI 版本（契约 §4：改任何 schema 就 +1）。 */
-const val EXPECTED_ABI: Int = 1
+const val EXPECTED_ABI: Int = 2
 
 /** 挂起操作在宿主侧的兜底超时（native 未给 `timeoutMs` 时的默认值）。 */
 private const val DEFAULT_OPERATION_TIMEOUT_MS = 30_000L
@@ -96,6 +97,7 @@ class ZemoteEngine private constructor(
     private val clock: () -> Long,
     private val dispatcher: CoroutineDispatcher,
     private val ownsDispatcher: Boolean,
+    private val sockets: RelayWebSocket,
 ) {
 
     constructor(
@@ -109,7 +111,17 @@ class ZemoteEngine private constructor(
         clock = clock,
         dispatcher = dispatcher ?: newEngineDispatcher(),
         ownsDispatcher = dispatcher == null,
+        sockets = RelayWebSocket(),
     )
+
+    /** 单测注入假 socket；生产走上面的公开构造器。 */
+    internal constructor(
+        bridge: NativeBridge,
+        scope: CoroutineScope,
+        clock: () -> Long,
+        dispatcher: CoroutineDispatcher,
+        sockets: RelayWebSocket,
+    ) : this(bridge, scope, clock, dispatcher, ownsDispatcher = false, sockets = sockets)
 
     private val engineJob = SupervisorJob(scope.coroutineContext[Job])
     private val engineScope = CoroutineScope(engineJob + dispatcher)
@@ -157,7 +169,18 @@ class ZemoteEngine private constructor(
     // ---- 内部 ----
 
     private val timers = TimerScheduler(engineScope)
-    private val sockets = RelayWebSocket()
+
+    /**
+     * ws 重连前的 terminal token 刷新钩子。
+     *
+     * 3.16.1 网页/桌面每次 `_connect()` 都重新换 token，不是只在登录时换一次。首次连接
+     * （generation == 1）沿用 [EngineConfig.token]；之后每次 `ws_connect` 都调用本钩子。
+     * 返回 `null` / 抛异常时回喂一次 `socket_failed`，让核心按退避重连。
+     *
+     * 由 [app.zemote.ui.ZemoteEnginePort] 注入；`null` = 不刷新（旧链接走 HMAC）。
+     */
+    @Volatile
+    internal var terminalTokenRefresher: (suspend () -> String?)? = null
 
     private var handle: Long? = null
     private val pending = HashMap<String, CompletableDeferred<CompletionOutcome>>()
@@ -261,12 +284,23 @@ class ZemoteEngine private constructor(
      * `open_bridge`：为工作区开一个桥。返回 `bridgeSessionId`。
      *
      * @param taskId 可空；`null` 序列化成 JSON `null`（契约 §3：键不省）。
+     * @param taskHostId 项目树任务所属 host。与 `taskId` 一起给时，桌面端会先
+     *   `prepareProjectWorkspace`，因此不在当前桌面窗口 tab 里的项目任务也能开桥。
+     * @param project 项目草稿意图 `{projectId, hostId?, draftId?, reuseDraft?}`；新建对话用。
+     *   不能与 `taskId` 同时给（桌面端会拒绝）。
      */
-    suspend fun openBridge(workspaceKey: String, taskId: String? = null): Long {
+    suspend fun openBridge(
+        workspaceKey: String,
+        taskId: String? = null,
+        taskHostId: String? = null,
+        project: JsonObject? = null,
+    ): Long {
         val command = buildJsonObject {
             put("method", "open_bridge")
             put("workspaceKey", workspaceKey)
             put("taskId", taskId?.let { JsonPrimitive(it) } ?: JsonNull)
+            taskHostId?.let { put("taskHostId", it) }
+            project?.let { put("project", it) }
             put("timeoutMs", DEFAULT_OPEN_BRIDGE_TIMEOUT_MS)
         }
         return when (val outcome = invoke(command)) {
@@ -386,15 +420,56 @@ class ZemoteEngine private constructor(
         key: String,
         op: String,
         args: JsonObject,
-    ): JsonElement = call(
-        buildJsonObject {
-            put("method", "conversation_call")
-            put("session", session)
-            put("key", key)
-            put("op", op)
-            put("args", args)
-        },
-    )
+    ): JsonElement = call(conversationCommand(session, key, op, args))
+
+    /**
+     * 发送一个**订阅类**对话 op（`subscribe` / `subscribeSessionsIndex`），**不等 `completed`**。
+     *
+     * ## 为什么不能用 [conversationCall]
+     *
+     * **wire 上没有顶层 `completed`**：对端只回 `{ack:{subscriptionId}}`。Rust 在收到 ack 后
+     * 会合成一个 host-level `Completed`（`on_subscribe_response`），但订阅本身是**长期事件
+     * 流**——用 [conversationCall] 等它只会把 ack 延迟变成界面阻塞，还会让调用方误以为
+     * 「拿到 ack 就结束了」。
+     *
+     * 这里只发送命令并处理本次返回的事件；后续帧通过 `conversation_event` 到达。
+     * 普通命令继续用 [conversationCall]。
+     */
+    suspend fun conversationCallNoWait(
+        session: Long,
+        key: String,
+        op: String,
+        args: JsonObject,
+    ) {
+        withContext(dispatcher) {
+            if (disposed) throw EngineException(NativeError("invalidState", "引擎已销毁"))
+            (_state.value as? EngineState.Fatal)?.let {
+                throw EngineException(NativeError("invalidState", "引擎处于 Fatal：${it.reason}"))
+            }
+            val h = handle
+                ?: throw EngineException(NativeError("invalidState", "引擎尚未启动（先调用 start()）"))
+            val command = conversationCommand(session, key, op, args)
+            val raw = runCatching { bridge.call(h, command.toString(), clock()) }.getOrNull()
+                ?: throw EngineException(NativeError("protocol", "nativeCall() 调用失败"))
+            val env = decodeEnvelope(raw)
+                ?: throw EngineException(NativeError("protocol", "nativeCall() 返回无法解析"))
+            dispatchEnvelope(env, fatalOnError = false, raw = raw)
+            env.error?.let { throw EngineException(it) }
+        }
+    }
+
+    private fun conversationCommand(
+        session: Long,
+        key: String,
+        op: String,
+        args: JsonObject,
+    ): JsonObject = buildJsonObject {
+        put("method", "conversation_call")
+        put("session", session)
+        put("key", key)
+        put("op", op)
+        put("args", args)
+    }
 
     /**
      * `conversation_close`（§13.2）：释放一个对话（撤定时器/监听器，清路由）。不产生挂起操作，
@@ -461,7 +536,8 @@ class ZemoteEngine private constructor(
             put("method", "channel_call")
             put("session", session)
             put("channel", channel)
-            put("method", method)
+            // 顶层 `method` 已用于选命令；通道方法走 `rpcMethod`，不能再写 `method`。
+            put("rpcMethod", method)
             put("args", args)
             put("timeoutMs", timeoutMs)
         },
@@ -483,6 +559,30 @@ class ZemoteEngine private constructor(
         env.error?.let { throw EngineException(it) }
         env.snapshot ?: JsonNull
     }
+
+    /**
+     * `nativeQuery {"query":"conversation","session":…,"key":…}`（契约 §9.1，abi 2）。
+     *
+     * 返回该对话传输层的完整快照：`conversations`（按 sessionId）与 `sessionsIndex`。
+     * 核心快照里没有这两块。
+     */
+    suspend fun conversationSnapshot(session: Long, key: String): JsonElement =
+        withContext(dispatcher) {
+            if (disposed) throw EngineException(NativeError("invalidState", "引擎已销毁"))
+            val h = handle ?: throw EngineException(NativeError("invalidState", "引擎尚未启动"))
+            val query = buildJsonObject {
+                put("query", "conversation")
+                put("session", session)
+                put("key", key)
+            }.toString()
+            val raw = runCatching { bridge.query(h, query) }.getOrNull()
+                ?: throw EngineException(NativeError("protocol", "nativeQuery() 调用失败"))
+            val env = decodeEnvelope(raw)
+                ?: throw EngineException(NativeError("protocol", "nativeQuery() 返回无法解析"))
+            dispatchEnvelope(env, fatalOnError = false, raw = raw)
+            env.error?.let { throw EngineException(it) }
+            env.snapshot ?: JsonNull
+        }
 
     // ----------------------------------------------------------------------
     // 生命周期收尾
@@ -597,9 +697,15 @@ class ZemoteEngine private constructor(
      *   宿主判超时——那会把一条正常的长操作变成假失败。
      */
     private fun hostTimeoutMs(command: JsonObject): Long {
+        val conversationSecs = conversationTimeoutSecs(command)
         val declaredMs = (command["timeoutMs"] as? JsonPrimitive)?.longOrNull
-            ?: conversationTimeoutSecs(command)
-        return (declaredMs ?: DEFAULT_OPERATION_TIMEOUT_MS) + HOST_TIMEOUT_GRACE_MS
+            ?: conversationSecs
+        // 对话命令在桥降级时还要先等 `bridge_wait_healthy`（45s）；这段预算不在核心的
+        // 命令超时里，宿主必须补上。对所有 `conversation_call` 生效（sendText 没有
+        // timeoutSecs，但同样可能先等 healthy，否则 35s 假超时后重试会重复投递消息）。
+        val healthyBudget =
+            if (command.str("method") == "conversation_call") DEFAULT_WAIT_HEALTHY_TIMEOUT_MS else 0L
+        return (declaredMs ?: DEFAULT_OPERATION_TIMEOUT_MS) + HOST_TIMEOUT_GRACE_MS + healthyBudget
     }
 
     /** §13.5.1 的 `args.timeoutSecs`（秒）→ 毫秒；没有就 `null`。 */
@@ -655,7 +761,7 @@ class ZemoteEngine private constructor(
 
         when (event) {
             // §7.1 传输动作
-            is EngineEvent.WsConnect -> sockets.connect(event.generation, event.uri, socketListener)
+            is EngineEvent.WsConnect -> connect(event.generation, event.uri)
             is EngineEvent.WsSendText -> sockets.sendText(event.generation, event.text)
             is EngineEvent.WsClose -> sockets.close(event.generation, event.code, event.reason)
 
@@ -664,7 +770,13 @@ class ZemoteEngine private constructor(
             is EngineEvent.RelayLog -> logLine(event.line)
             // relay_payload 只作旁路透出：门面已按 _dispatchPayload 消费过它的语义
             is EngineEvent.RelayPayload -> Unit
-            is EngineEvent.RelayFailure -> _relayFailure.value = event
+            is EngineEvent.RelayFailure -> {
+                _relayFailure.value = event
+                logLine(
+                    "[relay] failure: ${event.reason}" +
+                        (event.message?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""),
+                )
+            }
 
             is EngineEvent.RelayTimerStart -> timers.startRelay(
                 slot = event.timer,
@@ -693,6 +805,46 @@ class ZemoteEngine private constructor(
         }
     }
 
+    /**
+     * `ws_connect`：首连直接用配置里的 token，重连先换一张新的 terminal token。
+     *
+     * 3.16.1 网页的 `connect()` 第一行就是 `await getToken()`，桌面端同构；token 的
+     * `expires_in` 三端都不读，靠「每次建连都换」保证不过期。交换是挂起的，所以在
+     * [engineScope] 里完成后才开 socket；期间引擎被 dispose 就放弃。
+     */
+    private fun connect(generation: Long, uri: String) {
+        val refresher = terminalTokenRefresher
+        if (generation <= 1L || refresher == null) {
+            sockets.connect(generation, uri, socketListener)
+            return
+        }
+        engineScope.launch {
+            val fresh = try {
+                refresher()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logLine("[relay] terminal token refresh failed: $e")
+                null
+            }
+            if (disposed) return@launch
+            if (fresh.isNullOrBlank()) {
+                feed(SocketInputs.failed(generation, "terminal token refresh failed"))
+            } else {
+                sockets.connect(generation, RelayUri.withToken(uri, fresh), socketListener)
+            }
+        }
+    }
+
+    /**
+     * 供宿主注入的刷新器上报失败（如 `auth-required`）。
+     *
+     * 与核心产出的 `relay_failure` 走同一条路径，UI 的收集器不需要区分来源。
+     */
+    internal fun reportRelayFailure(reason: String, message: String?) {
+        engineScope.launch { dispatchEvent(EngineEvent.RelayFailure(reason, message)) }
+    }
+
     /** `completed` → 唤醒发起它的挂起调用（契约 §8 的 `operation` ↔ `token` 配对）。 */
     private fun resolvePending(event: EngineEvent.Completed) {
         val deferred = pending.remove(event.token) ?: return
@@ -718,7 +870,10 @@ class ZemoteEngine private constructor(
     }
 
     private fun logLine(line: String) {
-        Log.d(TAG, line)
+        // `Log.d` 在多数 OEM 上被全局日志级别吞掉，复现连接问题时 logcat 里一条都拿不到。
+        // 用 `I` 记录**非帧内容**（状态迁移 / 连接失败 / 关闭码 / error frame）；
+        // `>>` / `<<` 是完整协议帧（可能含工作区/对话内容），只留在内存环形缓冲，不写系统日志。
+        if (!line.startsWith(">>") && !line.startsWith("<<")) Log.i(TAG, line)
         logRing.addLast(line)
         while (logRing.size > MAX_LOG_LINES) logRing.removeFirst()
         _logs.value = logRing.toList()

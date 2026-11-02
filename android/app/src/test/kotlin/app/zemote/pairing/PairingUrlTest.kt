@@ -28,6 +28,9 @@ class PairingUrlTest {
         "https://zcode.z.ai/remote/v4?sid= SID &hash= HASH &t=1",
         "https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&mid=&name=",
         "https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&theme=dark",
+        // ---- 3.16.1 新格式：无 hash / t，认证改为 OAuth token ----
+        "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s&mid=m&name=Mac",
+        "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=s",
         // ---- `wss` 也是 parse 明确接受的 scheme（拒它就是假阴性） ----
         "wss://zcode.z.ai/remote/v4?sid=s&hash=h&t=1",
         // ---- 下面这些 Rust 会拒，但那是"交给 Rust 判"的取值合法性，preflight 不许多嘴 ----
@@ -90,8 +93,6 @@ class PairingUrlTest {
         "https://zcode.z.ai/remote/v4?sid=%20&hash=h&t=1" to RejectReason.MISSING_SID,
         "https://zcode.z.ai/remote/v4?sid=x&sid=&hash=h&t=1" to RejectReason.MISSING_SID,
         "https://zcode.z.ai/remote/v4?=sid&hash=h&t=1" to RejectReason.MISSING_SID,
-        "https://zcode.z.ai/remote/v4?sid=s&t=1" to RejectReason.MISSING_HASH,
-        "https://zcode.z.ai/remote/v4?sid=s&hash=&t=1" to RejectReason.MISSING_HASH,
         "https://zcode.z.ai/remote/v4#sid=s&hash=h" to RejectReason.MISSING_SID, // query 在 fragment 里
     )
 

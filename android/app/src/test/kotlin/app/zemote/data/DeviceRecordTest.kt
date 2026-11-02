@@ -44,13 +44,16 @@ class DeviceRecordTest {
             addedAt = 10L,
             lastConnectedAt = 20L,
             lastRelayStatus = RelayStatus.PAIRED,
+            lastRelayError = "invalid-mobile-connection",
+            lastRelayErrorMessage = "desktop did not match",
             sortKey = 1L,
         )
         val encoded = json.encodeToString(DeviceRecord.serializer(), record)
 
         for (field in listOf(
             "id", "name", "remoteUrl", "host", "sid",
-            "addedAt", "lastConnectedAt", "lastRelayStatus", "sortKey",
+            "addedAt", "lastConnectedAt", "lastRelayStatus",
+            "lastRelayError", "lastRelayErrorMessage", "sortKey",
         )) {
             assertTrue("序列化字段 $field 应存在：$encoded", encoded.contains("\"$field\""))
         }

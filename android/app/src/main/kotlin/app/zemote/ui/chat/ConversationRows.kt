@@ -13,7 +13,7 @@ import kotlinx.serialization.json.put
 /**
  * 对话行窗口的归约器。
  *
- * 对齐网页端 `parts-DcYGwy2q.js` 的 5 种 `row.*` op（`docs/remote-v4/18` §1.2）：
+ * 对齐网页端 `parts-DcYGwy2q.js` 的 5 种 `row.*` op（`archive/pre-3.16.1-auth/docs/remote-v4/18` §1.2）：
  * - `row.appended`：追加（不去重）；
  * - `row.upserted`：按 `rowId` 替换，**窗口里找不到就丢弃**；
  * - `row.removed`：保留 `rowId < fromRowId` 的行（按 id 截断，不是删一条）；
@@ -133,6 +133,11 @@ internal fun JsonElement?.asString(): String? = when (this) {
 
 internal fun JsonElement?.asLong(): Long? = when (this) {
     is JsonPrimitive -> longOrNull
+    else -> null
+}
+
+internal fun JsonElement?.asDouble(): Double? = when (this) {
+    is JsonPrimitive -> contentOrNull?.toDoubleOrNull()
     else -> null
 }
 

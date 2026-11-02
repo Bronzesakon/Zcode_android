@@ -1,5 +1,6 @@
 package app.zemote.ui
 
+import app.zemote.auth.RemoteTokenException
 import app.zemote.core.JniNativeBridge
 import app.zemote.engine.EngineConfig
 import app.zemote.engine.EngineEvent
@@ -8,6 +9,8 @@ import app.zemote.engine.EngineState
 import app.zemote.engine.NativeError
 import app.zemote.engine.RelayState
 import app.zemote.engine.ZemoteEngine
+import app.zemote.pairing.PairingUrl
+import java.net.URI
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -65,6 +68,13 @@ interface EnginePort {
     /** 当前会话使用的远控 URL；`null` = 没有会话。 */
     val connectedUrl: StateFlow<String?>
 
+    /**
+     * 会话序号：每次**真正重建**引擎（换 URL / 换 JWT / 手动重连）时 +1。
+     *
+     * 宿主用它判断本地的桥/对话缓存是否已经失效——只比较 URL/JWT 看不出引擎已经换了。
+     */
+    val sessionSerial: Long get() = 0L
+
     /** 最近一次 [openBridge] 返回的桥会话号；`null` = 还没开过桥。 */
     val bridgeSession: StateFlow<Long?>
 
@@ -79,12 +89,19 @@ interface EnginePort {
     val bridgeWorkspaceKey: StateFlow<String?>
 
     /**
-     * 确保会话与 [url] 一致：不一致（含没有会话）就拆掉旧的、建新的并 `start`。
+     * 确保会话与 [url] + [token] 一致：不一致（含没有会话）就拆掉旧的、建新的并 `start`。
      *
-     * **幂等**：同一个 URL 重复调用什么都不做（不会重连、不会清掉已有状态）。
-     * 空白 URL 被忽略。
+     * **幂等**：同一个 URL + 同一个 OAuth JWT 重复调用什么都不做（不会重连、不会清掉已有状态）。
+     * JWT 变化（重新登录）必须重建会话。
+     *
+     * ## token 是 OAuth JWT，不是 ws2 的 token
+     *
+     * 3.16.1 的 ws2 需要 `POST /api/v1/remote/token`（`{"role":"terminal"}`）换来的短 token；
+     * 实现负责在**真正建会话时**完成这次交换。旧链接（带 `hash`）不需要交换，直接传 `null`。
+     *
+     * @throws RemoteTokenException OAuth JWT 失效（`auth-required`）或中继不可用。
      */
-    fun ensureSession(url: String)
+    suspend fun ensureSession(url: String, token: String? = null)
 
     /** 拆掉会话（`dispose` 旧引擎并把状态复位）。没有会话时无副作用。 */
     fun disconnect()
@@ -99,7 +116,12 @@ interface EnginePort {
     suspend fun listWorkspaces(): JsonElement
 
     /** `open_bridge`：为工作区开桥，返回桥会话号。 */
-    suspend fun openBridge(workspaceKey: String, taskId: String? = null): Long
+    suspend fun openBridge(
+        workspaceKey: String,
+        taskId: String? = null,
+        taskHostId: String? = null,
+        project: JsonObject? = null,
+    ): Long
 
     /** `bridge_wait_healthy`：等桥恢复健康。 */
     suspend fun waitHealthy(session: Long, timeoutMs: Long = 45_000)
@@ -130,6 +152,20 @@ interface EnginePort {
     ): JsonElement
 
     /**
+     * 发送一个**订阅类**对话 op（`subscribe` / `subscribeSessionsIndex`），不等 `completed`。
+     *
+     * wire 上没有顶层 `completed`，Rust 在 ack 后合成 host-level `Completed`；订阅是长期
+     * 事件流，用 [conversationCall] 会把 ack 延迟变成界面阻塞。后续帧通过
+     * `conversation_event` 到达。
+     */
+    suspend fun conversationCallNoWait(
+        session: Long,
+        key: String,
+        op: String,
+        args: JsonObject,
+    )
+
+    /**
      * §13.2 `conversation_close`：释放一个对话。不产生挂起操作。
      *
      * **在飞调用不会被失败**，只能等宿主兜底超时（见 [ZemoteEngine.conversationClose] 的 KDoc）。
@@ -157,12 +193,20 @@ interface EnginePort {
     ): JsonElement
 
     /**
-     * §9 `nativeQuery {"query":"snapshot"}`：读核心快照。
+     * §9 `nativeQuery {"query":"snapshot"}`：读核心快照（relay / 桥 / 设备信息）。
      *
-     * 对话层与 sessions-index 的完整状态都在这里（`docs/FFI.md` §9）。
-     * 返回值**绝不含 `passHash`**。
+     * 返回值**绝不含 `passHash`**。`conversations` / `sessionsIndex` 不在核心快照里，
+     * 用 [conversationSnapshot] 取。
      */
     suspend fun snapshot(): JsonElement
+
+    /**
+     * §9.1 `nativeQuery {"query":"conversation"}`：读某个对话的传输层快照。
+     *
+     * 含 `conversations`（按 sessionId）与 `sessionsIndex`（`lastAssistantPreview` 的来源）。
+     * 该 conversation 未 open 或已 close 时抛 `invalidState`。
+     */
+    suspend fun conversationSnapshot(session: Long, key: String): JsonElement
 
     /**
      * 通用命令逃生舱（`docs/FFI.md` §8 的 `nativeCall`）。
@@ -179,6 +223,8 @@ interface EnginePort {
  * @param appVersion 传给核心的 `appVersion`（生产是 `BuildConfig.VERSION_NAME`）。
  * @param deviceName 传给核心的 `deviceName`（生产是 `Build.MODEL`）。
  * @param theme 建会话时取一次当前主题（`"dark"` / `"light"`；`null` = 不指定）。
+ * @param terminalTokenProvider OAuth JWT → terminal token。生产由 `AppContainer` 注入
+ *   [app.zemote.auth.RemoteTokenClient]；单测可注入假实现。
  * @param newEngine 引擎工厂。**仅供单测注入**（用假 bridge + 测试 dispatcher）；
  *   生产不要传，默认就是 `JniNativeBridge` + 引擎自建的单线程 dispatcher。
  */
@@ -187,6 +233,9 @@ class ZemoteEnginePort(
     private val appVersion: String?,
     private val deviceName: String?,
     private val theme: () -> String?,
+    private val terminalTokenProvider: suspend (host: String, jwt: String) -> String = { _, _ ->
+        throw RemoteTokenException("relay-unavailable", "terminal token 交换器未配置")
+    },
     private val newEngine: (CoroutineScope) -> ZemoteEngine = { ZemoteEngine(JniNativeBridge(), it) },
 ) : EnginePort {
 
@@ -201,6 +250,14 @@ class ZemoteEnginePort(
     private val _relayState = MutableStateFlow(RelayState.Idle)
     private val _relayFailure = MutableStateFlow<EngineEvent.RelayFailure?>(null)
     private val _connectedUrl = MutableStateFlow<String?>(null)
+
+    /** 当前会话实际用于 ws2 的 terminal token；只用于幂等判断，不对外暴露。 */
+    @Volatile
+    private var connectedToken: String? = null
+
+    /** 建会话时传入的 OAuth JWT；重新登录（JWT 变化）必须重建会话。 */
+    @Volatile
+    private var connectedAuthToken: String? = null
     private val _bridgeSession = MutableStateFlow<Long?>(null)
 
     private val _bridgeWorkspaceKey = MutableStateFlow<String?>(null)
@@ -221,19 +278,46 @@ class ZemoteEnginePort(
 
     override val connectedUrl: StateFlow<String?> = _connectedUrl.asStateFlow()
 
+    @Volatile
+    override var sessionSerial: Long = 0L
+        private set
+
     override val bridgeSession: StateFlow<Long?> = _bridgeSession.asStateFlow()
 
     override val bridgeWorkspaceKey: StateFlow<String?> = _bridgeWorkspaceKey.asStateFlow()
 
-    override fun ensureSession(url: String) {
+    override suspend fun ensureSession(url: String, token: String?) {
         val target = url.trim()
         if (target.isEmpty()) return
+
+        // 快路径：已经连着同一个 URL + 同一个 OAuth JWT，直接返回（不重复换 token）。
         synchronized(lock) {
-            if (engine != null && _connectedUrl.value == target) return
+            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) return
+        }
+
+        // 3.16.1：OAuth JWT 不能直接连 ws2，必须先换 terminal token。
+        // 旧链接（带 hash）不需要，`resolveTerminalToken` 会返回 null，继续走 HMAC proof。
+        // 网络交换放在锁外，避免阻塞其他会话操作。
+        val terminalToken = resolveTerminalToken(target, token)
+        val refreshHost = if (token != null && !PairingUrl.hasPassHash(target)) {
+            hostOf(target) ?: throw RemoteTokenException("bad-input", "远控链接缺少 host")
+        } else {
+            null
+        }
+
+        synchronized(lock) {
+            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) return
             disposeLocked()
             val created = newEngine(scope)
             engine = created
             _connectedUrl.value = target
+            connectedAuthToken = token
+            connectedToken = terminalToken
+            // 3.16.1：每次 ws 重连都要重新换 terminal token（网页 `connect()` 第一步就是
+            // `await getToken()`）。首连用上面已换好的；旧链接（hash）不需要。
+            if (token != null && refreshHost != null) {
+                created.terminalTokenRefresher = refresherFor(created, refreshHost, token)
+            }
             relayJobs = attach(created)
             // 顺序：先挂转接再 start，避免构造事件（relay TimerStart / 日志）在转接之前发生。
             // 转接任务本身是异步的，所以最早的一两条**旁路事件**仍可能错过（StateFlow 会自动补最新值，
@@ -244,8 +328,51 @@ class ZemoteEnginePort(
                     appVersion = appVersion,
                     deviceName = deviceName,
                     theme = theme(),
+                    token = terminalToken,
                 ),
             )
+            // 新引擎 = 新桥/新对话；宿主缓存的 bridge/conversation key 全部失效。
+            sessionSerial += 1
+        }
+    }
+
+    /**
+     * OAuth JWT → ws2 的 terminal token。
+     *
+     * 旧链接（URL 里有 `hash`）走 HMAC，不需要 token；新链接必须先换。host 直接取 URL 的
+     * host（`zcode.z.ai`），与网页端 `new URL(Er.token.path, origin)` 一致。
+     */
+    private suspend fun resolveTerminalToken(url: String, jwt: String?): String? {
+        if (jwt == null) return null
+        if (PairingUrl.hasPassHash(url)) return null
+        val host = hostOf(url) ?: throw RemoteTokenException("bad-input", "远控链接缺少 host")
+        return terminalTokenProvider(host, jwt)
+    }
+
+    private fun hostOf(url: String): String? = try {
+        URI(url).host
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * 重连时的 token 刷新器。
+     *
+     * 401（`auth-required`）先上报 `relay_failure` 再返回 `null`：UI 收到后清登录态并断开，
+     * 不会继续拿同一个失效 JWT 打服务端。其余失败只让核心退避重试，保留登录态。
+     *
+     * 定义在 `synchronized` 块外：Kotlin 2.x 拒绝在临界区内出现挂起点。
+     */
+    private fun refresherFor(
+        engine: ZemoteEngine,
+        host: String,
+        jwt: String,
+    ): suspend () -> String? = {
+        try {
+            terminalTokenProvider(host, jwt)
+        } catch (e: RemoteTokenException) {
+            engine.reportRelayFailure(e.reason, e.message)
+            null
         }
     }
 
@@ -259,8 +386,18 @@ class ZemoteEnginePort(
 
     override suspend fun listWorkspaces(): JsonElement = requireEngine().listWorkspaces()
 
-    override suspend fun openBridge(workspaceKey: String, taskId: String?): Long {
-        val session = requireEngine().openBridge(workspaceKey = workspaceKey, taskId = taskId)
+    override suspend fun openBridge(
+        workspaceKey: String,
+        taskId: String?,
+        taskHostId: String?,
+        project: JsonObject?,
+    ): Long {
+        val session = requireEngine().openBridge(
+            workspaceKey = workspaceKey,
+            taskId = taskId,
+            taskHostId = taskHostId,
+            project = project,
+        )
         _bridgeSession.value = session
         _bridgeWorkspaceKey.value = workspaceKey
         return session
@@ -284,6 +421,13 @@ class ZemoteEnginePort(
         args: JsonObject,
     ): JsonElement = requireEngine().conversationCall(session, key, op, args)
 
+    override suspend fun conversationCallNoWait(
+        session: Long,
+        key: String,
+        op: String,
+        args: JsonObject,
+    ) = requireEngine().conversationCallNoWait(session, key, op, args)
+
     override suspend fun conversationClose(session: Long, key: String) =
         requireEngine().conversationClose(session = session, key = key)
 
@@ -306,6 +450,9 @@ class ZemoteEnginePort(
 
     override suspend fun snapshot(): JsonElement = requireEngine().snapshot()
 
+    override suspend fun conversationSnapshot(session: Long, key: String): JsonElement =
+        requireEngine().conversationSnapshot(session, key)
+
     override suspend fun call(command: JsonObject): JsonElement = requireEngine().call(command)
 
     // ------------------------------------------------------------------
@@ -321,6 +468,8 @@ class ZemoteEnginePort(
         engine?.dispose()
         engine = null
         _connectedUrl.value = null
+        connectedToken = null
+        connectedAuthToken = null
         _bridgeSession.value = null
         _bridgeWorkspaceKey.value = null
         _relayFailure.value = null

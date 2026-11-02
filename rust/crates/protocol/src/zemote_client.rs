@@ -1363,6 +1363,25 @@ impl ZemoteClient {
         timeout_ms: i64,
         now_ms: i64,
     ) -> ZemoteResult<Operation> {
+        self.open_bridge_with_intent(workspace_key, task_id, None, None, timeout_ms, now_ms)
+    }
+
+    /// 带项目导航意图的 `openBridge`。
+    ///
+    /// - `task_host_id`：项目树任务所属 host。桌面端看到它与 `taskId` 同时存在时，会先
+    ///   `prepareProjectWorkspace({hostId, task:{taskId, workspaceKey}})`，所以**不在当前
+    ///   桌面窗口 tab 里的项目任务**也能开桥。
+    /// - `project`：`{projectId, hostId?, draftId?, reuseDraft?}`，用于在项目里新建草稿
+    ///   （不能与 `taskId` 同时给，桌面端会直接拒绝 `Project navigation is unavailable.`）。
+    pub fn open_bridge_with_intent(
+        &mut self,
+        workspace_key: &str,
+        task_id: Option<&str>,
+        task_host_id: Option<&str>,
+        project: Option<&Payload>,
+        timeout_ms: i64,
+        now_ms: i64,
+    ) -> ZemoteResult<Operation> {
         let bridge_session_id = self.req_id("bridge");
         self.bridge_generation += 1;
         let generation = self.bridge_generation;
@@ -1380,6 +1399,8 @@ impl ZemoteClient {
                 generation,
                 workspace_key,
                 task_id,
+                task_host_id,
+                project,
             ),
             matcher,
             timeout_ms,
@@ -2440,6 +2461,8 @@ pub fn open_bridge_request(
     bridge_generation: i64,
     workspace_key: &str,
     task_id: Option<&str>,
+    task_host_id: Option<&str>,
+    project: Option<&Payload>,
 ) -> Payload {
     let mut payload = Payload::new();
     payload.insert("zcode_type".into(), zcode_type::WORKSPACE_BRIDGE_OPEN.into());
@@ -2449,6 +2472,12 @@ pub fn open_bridge_request(
     payload.insert("workspaceKey".into(), json!(workspace_key));
     if let Some(task_id) = task_id {
         payload.insert("taskId".into(), json!(task_id));
+    }
+    if let Some(task_host_id) = task_host_id {
+        payload.insert("taskHostId".into(), json!(task_host_id));
+    }
+    if let Some(project) = project {
+        payload.insert("project".into(), Value::Object(project.clone()));
     }
     payload
 }
@@ -2695,8 +2724,10 @@ mod tests {
             let generation = self.generation;
             self.step(ZemoteInput::Relay(RelayInput::SocketReady { generation }));
             self.text_frame(json!({"type": "auth_challenge", "nonce": "nonce-1"}).to_string());
+            // 3.16.1：auth_ack 通过后 pair 状态才生效。
             self.text_frame(
-                json!({"type": "pair_status_ack", "pair_status": "matched"}).to_string(),
+                json!({"type": "auth_ack", "device_sid": "sid-1", "pair_status": "matched"})
+                    .to_string(),
             );
             assert_eq!(self.client.relay().state(), RelayState::Paired);
             self.sent
@@ -2875,7 +2906,7 @@ mod tests {
     /// 期望值照抄 `zemote_client.dart:273-281`（含 `if (taskId != null)` 的两种展开）。
     #[test]
     fn open_bridge_request_payload_shape() {
-        let without_task = open_bridge_request("req-1", "bridge-1", 3, "wk-1", None);
+        let without_task = open_bridge_request("req-1", "bridge-1", 3, "wk-1", None, None, None);
         assert_eq!(without_task.len(), 5);
         assert_eq!(
             without_task.get("zcode_type").and_then(Value::as_str),
@@ -2887,9 +2918,39 @@ mod tests {
         assert_eq!(without_task.get("workspaceKey"), Some(&json!("wk-1")));
         assert!(!without_task.contains_key("taskId"));
 
-        let with_task = open_bridge_request("req-1", "bridge-1", 3, "wk-1", Some("task-9"));
+        let with_task =
+            open_bridge_request("req-1", "bridge-1", 3, "wk-1", Some("task-9"), None, None);
         assert_eq!(with_task.len(), 6);
         assert_eq!(with_task.get("taskId"), Some(&json!("task-9")));
+
+        // 项目树任务：`taskHostId` 让桌面端先 prepareProjectWorkspace，再开桥。
+        let with_host = open_bridge_request(
+            "req-1",
+            "bridge-1",
+            3,
+            "wk-1",
+            Some("task-9"),
+            Some("host-2"),
+            None,
+        );
+        assert_eq!(with_host.get("taskHostId"), Some(&json!("host-2")));
+        assert_eq!(with_host.get("taskId"), Some(&json!("task-9")));
+
+        // 项目草稿：`project` 原样透传，且不带 taskId。
+        let mut project = Payload::new();
+        project.insert("projectId".into(), json!("proj-1"));
+        project.insert("hostId".into(), json!("local"));
+        let draft = open_bridge_request(
+            "req-1",
+            "bridge-1",
+            3,
+            "wk-1",
+            None,
+            None,
+            Some(&project),
+        );
+        assert_eq!(draft.get("project"), Some(&Value::Object(project)));
+        assert!(!draft.contains_key("taskId"));
     }
 
     /// 期望值照抄 `zemote_client.dart:361-370`：`recoveryId` 插在 `workspaceKey` **之前**，
@@ -3488,7 +3549,8 @@ mod tests {
         harness.step(ZemoteInput::Relay(RelayInput::SocketReady { generation }));
         harness.text_frame(json!({"type": "auth_challenge", "nonce": "n2"}).to_string());
         harness.text_frame(
-            json!({"type": "pair_status_ack", "pair_status": "matched"}).to_string(),
+            json!({"type": "auth_ack", "device_sid": "sid-1", "pair_status": "matched"})
+                .to_string(),
         );
 
         // 回到 paired → 恢复循环开跑（阶段 1 又发了一次 reconnect 请求）。
@@ -3810,7 +3872,8 @@ mod tests {
         harness.step(ZemoteInput::Relay(RelayInput::SocketReady { generation }));
         harness.text_frame(json!({"type": "auth_challenge", "nonce": "n"}).to_string());
         let events = harness.text_frame(
-            json!({"type": "pair_status_ack", "pair_status": "matched"}).to_string(),
+            json!({"type": "auth_ack", "device_sid": "sid-1", "pair_status": "matched"})
+                .to_string(),
         );
 
         assert!(events.iter().any(|event| matches!(

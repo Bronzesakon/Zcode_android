@@ -32,13 +32,14 @@ private val Context.zemoteDeviceDataStore: DataStore<Preferences> by
  *
  * ## 内存明文 / 落盘密文
  *
- * 对外暴露的 [DeviceRecord.remoteUrl] 永远是**明文**（引擎要拿 `hash` 做 HMAC 证明）。
+ * 对外暴露的 [DeviceRecord.remoteUrl] 永远是**明文**（legacy 链接里的 `hash` 要做 HMAC 证明；
+ * 3.16.1 新链接的 JWT 不在这里，见 [AuthStore]）。
  * 写盘时由 [cipher] 加密成 `enc:v1:<base64(iv||ciphertext)>`，磁盘上只有密文；
  * 读盘时解密回明文。加解密只发生在存储边界这一处，别的地方不要自己动。
  *
  * ## 去重
  *
- * 同 `host` + 同 `sid` 视为同一台设备（`hash`/`t` 每次配对都会变，不能拿整条 URL 比）。
+ * 同 `host` + 同 `sid` 视为同一台设备（legacy 的 `hash`/`t` 每次配对都会变，不能拿整条 URL 比）。
  * 重复添加**不新增记录**，而是就地更新已有记录：换上新凭据（URL 里的 `t` 也跟着新）、
  * 更新显示名（只有显式传了非空 [DeviceRecord.name] 才改）、把最后已知 relay 状态复位成
  * [RelayStatus.IDLE]（旧连接已作废）。**保留**：`id`、`addedAt`（添加时间指首次添加）、
@@ -134,7 +135,7 @@ class DeviceStore(
         val plainUrl = url.trim()
         val parts = RemoteUrlParser.parse(plainUrl)
             ?: throw IllegalArgumentException(
-                "远控 URL 无法解析（需要 https://<host>/remote/…?sid=…&hash=…）：$url"
+                "远控 URL 无法解析（需要 https://<host>/remote/…?sid=…）：$url"
             )
         // 先加密再进事务：加密失败就整体失败，绝不留下「已写一半」的列表。
         val encryptedUrl = cipher.encrypt(plainUrl)
@@ -212,9 +213,27 @@ class DeviceStore(
     suspend fun markConnected(id: String, at: Long = clock()): Boolean =
         mutateDevice(id) { it.copy(lastConnectedAt = at) }
 
-    /** 记录最后一次已知的 relay 状态。 */
+    /**
+     * 记录最后一次已知的 relay 状态。
+     *
+     * 进入 `paired` 时顺带清掉上一次的失败原因——那已经是历史，继续显示会让用户
+     * 在连接正常时仍看到一条红色错误。
+     */
     suspend fun setRelayStatus(id: String, status: RelayStatus): Boolean =
-        mutateDevice(id) { it.copy(lastRelayStatus = status) }
+        mutateDevice(id) {
+            it.copy(
+                lastRelayStatus = status,
+                lastRelayError = if (status == RelayStatus.PAIRED) null else it.lastRelayError,
+                lastRelayErrorMessage =
+                    if (status == RelayStatus.PAIRED) null else it.lastRelayErrorMessage,
+            )
+        }
+
+    /** 记录最后一次 relay 失败的原因与详情；传 `null` 表示清空。 */
+    suspend fun setRelayFailure(id: String, reason: String?, message: String?): Boolean =
+        mutateDevice(id) {
+            it.copy(lastRelayError = reason, lastRelayErrorMessage = message)
+        }
 
     /** 直接设置排序键（拖拽排序用）。 */
     suspend fun setSortKey(id: String, sortKey: Long): Boolean =
@@ -288,6 +307,8 @@ class DeviceStore(
         addedAt = addedAt,
         lastConnectedAt = lastConnectedAt,
         lastRelayStatus = lastRelayStatus,
+        lastRelayError = lastRelayError,
+        lastRelayErrorMessage = lastRelayErrorMessage,
         sortKey = sortKey,
     )
 
@@ -391,5 +412,7 @@ private data class StoredDevice(
     val addedAt: Long,
     val lastConnectedAt: Long? = null,
     val lastRelayStatus: RelayStatus = RelayStatus.DEFAULT,
+    val lastRelayError: String? = null,
+    val lastRelayErrorMessage: String? = null,
     val sortKey: Long,
 )

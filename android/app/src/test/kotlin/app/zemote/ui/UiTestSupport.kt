@@ -1,6 +1,8 @@
 package app.zemote.ui
 
 import app.zemote.data.AppSettings
+import app.zemote.data.AuthAccount
+import app.zemote.data.AuthStore
 import app.zemote.data.DeviceRecord
 import app.zemote.data.RelayStatus
 import app.zemote.engine.EngineEvent
@@ -186,6 +188,9 @@ class FakeDeviceRepository(
     /** 收到的 `recordRelayStatus` 调用（按顺序）。 */
     val relayStatusWrites = mutableListOf<RelayStatusWrite>()
 
+    /** 收到的 `recordRelayFailure` 调用（按顺序）。 */
+    val relayFailureWrites = mutableListOf<RelayFailureWrite>()
+
     override suspend fun recordRelayStatus(
         id: String,
         status: RelayStatus,
@@ -197,9 +202,26 @@ class FakeDeviceRepository(
         val next = existing.copy(
             lastRelayStatus = status,
             lastConnectedAt = connectedAt ?: existing.lastConnectedAt,
+            lastRelayError = if (status == RelayStatus.PAIRED) null else existing.lastRelayError,
+            lastRelayErrorMessage =
+                if (status == RelayStatus.PAIRED) null else existing.lastRelayErrorMessage,
         )
         devicesFlow.value = devicesFlow.value.map { if (it.id == id) next else it }
         // 与真 DeviceStore 一致：当前设备是从列表里派生出来的，写盘后它也会跟着变。
+        if (currentFlow.value?.id == id) currentFlow.value = next
+        return next != existing
+    }
+
+    override suspend fun recordRelayFailure(
+        id: String,
+        reason: String?,
+        message: String?,
+    ): Boolean {
+        writeFailure?.let { throw it }
+        relayFailureWrites += RelayFailureWrite(id, reason, message)
+        val existing = devicesFlow.value.firstOrNull { it.id == id } ?: return false
+        val next = existing.copy(lastRelayError = reason, lastRelayErrorMessage = message)
+        devicesFlow.value = devicesFlow.value.map { if (it.id == id) next else it }
         if (currentFlow.value?.id == id) currentFlow.value = next
         return next != existing
     }
@@ -207,6 +229,9 @@ class FakeDeviceRepository(
 
 /** [FakeDeviceRepository.recordRelayStatus] 的一次调用。 */
 data class RelayStatusWrite(val id: String, val status: RelayStatus, val connectedAt: Long?)
+
+/** [FakeDeviceRepository.recordRelayFailure] 的一次调用。 */
+data class RelayFailureWrite(val id: String, val reason: String?, val message: String?)
 
 /**
  * [EnginePort] 的替身。
@@ -255,6 +280,9 @@ class FakeEnginePort(
 
     val ensuredUrls = mutableListOf<String>()
 
+    /** 每次 `ensureSession` 传入的 token（与 [ensuredUrls] 一一对应）。 */
+    val ensuredTokens = mutableListOf<String?>()
+
     var disconnected: Boolean = false
         private set
 
@@ -277,6 +305,7 @@ class FakeEnginePort(
     var callFailure: Throwable? = null
 
     val openedBridges = mutableListOf<Pair<String, String?>>()
+    val openedBridgeIntents = mutableListOf<Triple<String, String?, JsonObject?>>()
 
     val pushedViewStates = mutableListOf<Pair<String, String?>>()
 
@@ -285,8 +314,9 @@ class FakeEnginePort(
     var pokeCount: Int = 0
         private set
 
-    override fun ensureSession(url: String) {
+    override suspend fun ensureSession(url: String, token: String?) {
         ensuredUrls += url
+        ensuredTokens += token
         ensureSessionHook(url)
     }
 
@@ -307,8 +337,14 @@ class FakeEnginePort(
 
     override suspend fun listWorkspaces(): JsonElement = bootstrapResult
 
-    override suspend fun openBridge(workspaceKey: String, taskId: String?): Long {
+    override suspend fun openBridge(
+        workspaceKey: String,
+        taskId: String?,
+        taskHostId: String?,
+        project: JsonObject?,
+    ): Long {
         openedBridges += workspaceKey to taskId
+        openedBridgeIntents += Triple(workspaceKey, taskHostId, project)
         openBridgeFailure?.let { throw it }
         bridgeSessionFlow.value = openBridgeSession
         bridgeWorkspaceKeyFlow.value = workspaceKey
@@ -379,6 +415,17 @@ class FakeEnginePort(
         return conversationCallResult
     }
 
+    override suspend fun conversationCallNoWait(
+        session: Long,
+        key: String,
+        op: String,
+        args: JsonObject,
+    ) {
+        // 订阅类 op 与普通 op 记在同一个列表：对测试而言都是「发出去的对话命令」。
+        conversationCalls += ConversationCallRecord(session, key, op, args)
+        conversationCallFailure?.let { throw it }
+    }
+
     override suspend fun conversationClose(session: Long, key: String) {
         conversationCloses += session to key
     }
@@ -417,6 +464,20 @@ class FakeEnginePort(
     }
 
     override suspend fun snapshot(): JsonElement = snapshotResult
+
+    /** `conversationSnapshot()` 的返回；`conversationSnapshotFailure` 非空时抛它。 */
+    var conversationSnapshotResult: JsonElement = JsonNull
+
+    var conversationSnapshotFailure: Throwable? = null
+
+    /** `(session, key)` 的 `conversationSnapshot` 调用记录。 */
+    val conversationSnapshotCalls = mutableListOf<Pair<Long, String>>()
+
+    override suspend fun conversationSnapshot(session: Long, key: String): JsonElement {
+        conversationSnapshotCalls += session to key
+        conversationSnapshotFailure?.let { throw it }
+        return conversationSnapshotResult
+    }
 }
 
 /** [FakeEnginePort.channelCall] 的一次调用。 */
@@ -479,3 +540,40 @@ class FakeApkInstaller : ApkInstaller {
 /** 造一个引擎错误（`EngineException` 的构造需要 `NativeError`）。 */
 fun engineError(kind: String = "timeout", message: String? = "boom"): EngineException =
     EngineException(NativeError(kind = kind, message = message))
+
+/** 内存版 [AuthStore]：JVM 单测用，不碰 DataStore / Keystore。 */
+class FakeAuthStore(
+    initialToken: String? = null,
+    initialAccount: AuthAccount? = null,
+) : AuthStore {
+
+    var tokenValue: String? = initialToken
+        private set
+
+    private val _account = MutableStateFlow(initialAccount)
+
+    override val account: StateFlow<AuthAccount?> = _account.asStateFlow()
+
+    override suspend fun token(): String? = tokenValue
+
+    override suspend fun save(
+        provider: String,
+        jwt: String,
+        displayName: String,
+        avatarUrl: String?,
+        expiresAt: Long?,
+    ) {
+        tokenValue = jwt
+        _account.value = AuthAccount(
+            provider = provider,
+            displayName = displayName,
+            avatarUrl = avatarUrl,
+            expiresAt = expiresAt,
+        )
+    }
+
+    override suspend fun clear() {
+        tokenValue = null
+        _account.value = null
+    }
+}

@@ -134,14 +134,14 @@ pub fn relay_close_reason(code: i32) -> Option<&'static str> {
     }
 }
 
-/// 对应 `static const heartbeatInterval = Duration(seconds: 10)`。
-pub const HEARTBEAT_INTERVAL_MS: i64 = 10_000;
-/// 对应 `static const heartbeatAckTimeout = Duration(seconds: 30)`。
-pub const HEARTBEAT_ACK_TIMEOUT_MS: i64 = 30_000;
+/// 3.16.1 网页/桌面的心跳间隔：5s ±1s（`src@55069` 的 `G=5e3`）。
+pub const HEARTBEAT_INTERVAL_MS: i64 = 5_000;
+/// 3.16.1 网页/桌面的心跳 ack 超时：15s（`src@55069` 的 `ho=15e3`）。
+pub const HEARTBEAT_ACK_TIMEOUT_MS: i64 = 15_000;
 /// 对应 `static const waitingTimeout = Duration(seconds: 30)`。
 pub const WAITING_TIMEOUT_MS: i64 = 30_000;
-/// 对应 `static const reconnectWaitTimeout = Duration(seconds: 20)`。
-pub const RECONNECT_WAIT_TIMEOUT_MS: i64 = 20_000;
+/// 外层 WebSocket 文本帧的 UTF-8 字节上限（`validation@148178`：1 MiB）。
+pub const MAX_PHYSICAL_FRAME_BYTES: usize = 1024 * 1024;
 /// 对应 `static const _deadLinkThreshold = Duration(seconds: 25)`。
 ///
 /// PORT-NOTE: Dart 里它是私有常量（`_deadLinkThreshold`），只有 `poke()` 用；这里公开
@@ -296,6 +296,8 @@ pub struct RelayClient {
     state: RelayState,
     /// 对应 `_wasPaired`。
     was_paired: bool,
+    /// 对应网页/桌面的 `authenticated`：收到合法 `auth_ack` 后置真。
+    authenticated: bool,
     /// 对应 `_intentionallyClosed`。
     intentionally_closed: bool,
     /// 对应 `_disposed`。
@@ -304,8 +306,6 @@ pub struct RelayClient {
     reconnect_attempt: i32,
     /// 对应 `_heartbeatTick`。
     heartbeat_tick: u64,
-    /// 对应 `_staleProbeSent`。
-    stale_probe_sent: bool,
     /// 对应 `_kickRecoveryAttempted`。
     kick_recovery_attempted: bool,
     /// 对应 `_lastInboundAt`（Unix 毫秒）。
@@ -357,11 +357,11 @@ impl RelayClient {
             device_info,
             state: RelayState::Idle,
             was_paired: false,
+            authenticated: false,
             intentionally_closed: false,
             disposed: false,
             reconnect_attempt: 0,
             heartbeat_tick: 0,
-            stale_probe_sent: false,
             kick_recovery_attempted: false,
             last_inbound_at: now_ms,
             last_pair_status_ack_at: now_ms,
@@ -399,6 +399,24 @@ impl RelayClient {
     /// 对应 `static bool verboseFrames`。
     pub fn verbose_frames(&self) -> bool {
         self.verbose_frames
+    }
+
+    /// 是否走 3.16.1+ 的 OAuth token 鉴权路径。
+    ///
+    /// token 模式：WS URL 带 `?token=`，握手只发 `auth_init`（无 `role`），
+    /// `client_ts` 用秒；legacy 模式仍走 `auth_challenge` + HMAC proof，`client_ts` 用毫秒。
+    fn token_mode(&self) -> bool {
+        self.params.auth_token.is_some()
+    }
+
+    /// 线上 `client_ts`：token 模式为 Unix 秒（网页 3.16.1 的 `Math.floor(Date.now()/1e3)`），
+    /// legacy 模式为 Unix 毫秒（旧客户端行为）。
+    fn wire_client_ts(&self, now_ms: i64) -> i64 {
+        if self.token_mode() {
+            now_ms / 1000
+        } else {
+            now_ms
+        }
     }
 
     /// 对应 `RelayClient.verboseFrames = value`（`main.dart` / 设置页）。
@@ -455,6 +473,11 @@ impl RelayClient {
 
     /// 对应 `_setState(RelayState s)`：先改值（通知监听者），再记日志。
     fn set_state(&mut self, s: RelayState, out: &mut Vec<RelayEvent>) {
+        // Dart 的 `ValueNotifier` 只在值变化时 notify；同值重复 set 不能发事件，
+        // 否则心跳每次 ack 都会把 `paired` 重放给宿主，触发无意义的重拉/重订阅。
+        if self.state == s {
+            return;
+        }
         self.state = s;
         out.push(RelayEvent::StateChanged(s));
         out.push(RelayEvent::Log(format!("[relay] state -> {s}")));
@@ -519,6 +542,7 @@ impl RelayClient {
         }
         self.last_pair_status_ack_at = now_ms;
         self.last_inbound_at = now_ms;
+        self.authenticated = false;
         let uri = self.params.relay_ws_uri();
         out.push(RelayEvent::Log(format!(
             "[relay] connecting {}",
@@ -548,13 +572,24 @@ impl RelayClient {
         self.socket = Some(generation);
         self.connect_in_flight = false;
         self.set_state(RelayState::Authenticating, out);
-        let init = json!({
-            "type": "auth_init",
-            "role": "terminal",
-            "device_sid": self.params.device_sid.clone(),
-            "meta": self.device_info.clone(),
-            "client_ts": now_ms,
-        });
+        // 3.16.1 的 token 模式：没有 `role`，`client_ts` 为秒。
+        // legacy 模式保持旧形状（`role: "terminal"`，毫秒），服务端仍可走 HMAC 挑战。
+        let init = if self.token_mode() {
+            json!({
+                "type": "auth_init",
+                "device_sid": self.params.device_sid.clone(),
+                "meta": self.device_info.clone(),
+                "client_ts": self.wire_client_ts(now_ms),
+            })
+        } else {
+            json!({
+                "type": "auth_init",
+                "role": "terminal",
+                "device_sid": self.params.device_sid.clone(),
+                "meta": self.device_info.clone(),
+                "client_ts": self.wire_client_ts(now_ms),
+            })
+        };
         self.send(init, transport, out);
     }
 
@@ -584,6 +619,17 @@ impl RelayClient {
             return;
         }
         self.last_inbound_at = now_ms;
+        // 3.16.1 网页/桌面都先量 UTF-8 字节数再解析（1 MiB）；超限直接丢弃。
+        let frame_len = match &data {
+            FrameData::Text(text) => text.len(),
+            FrameData::Binary(bytes) => bytes.len(),
+        };
+        if frame_len > MAX_PHYSICAL_FRAME_BYTES {
+            out.push(RelayEvent::Log(format!(
+                "[relay] frame too large: {frame_len} bytes (max {MAX_PHYSICAL_FRAME_BYTES})"
+            )));
+            return;
+        }
         // Dart：`data is String ? data : utf8.decode(data as List<int>)`，解码失败被
         // 同一个 try/catch 吞掉并记 `bad frame`。
         let text = match data {
@@ -617,6 +663,15 @@ impl RelayClient {
         // `switch (frame['type'])`：非字符串的 type 不命中任何 case。
         match frame.get("type").and_then(|value| value.as_str()) {
             Some("auth_challenge") => {
+                // token 模式（3.16.1+）不需要 HMAC proof；服务端不应再发挑战。
+                // 若仍收到，且本地没有旧凭据，只能忽略——继续重试同样的 token 也不会成功。
+                let Some(pass_hash) = self.params.pass_hash.as_deref() else {
+                    out.push(RelayEvent::Log(
+                        "[relay] auth_challenge without passHash (token mode), ignored"
+                            .to_string(),
+                    ));
+                    return;
+                };
                 // PORT-NOTE: `frame['nonce'] as String? ?? ''` 这个**回退写在调用点**
                 // （`relay_client.dart:247`，不在 `proof.dart`），此处必须原样带上：
                 // 缺 `nonce` 键 / `nonce: null` → 空串。
@@ -629,7 +684,7 @@ impl RelayClient {
                     .and_then(|value| value.as_str())
                     .unwrap_or("");
                 let proof = calculate_proof(
-                    &self.params.pass_hash,
+                    pass_hash,
                     nonce,
                     "terminal",
                     &self.params.device_sid,
@@ -638,13 +693,32 @@ impl RelayClient {
                     "type": "auth_response",
                     "device_sid": self.params.device_sid.clone(),
                     "proof": proof,
-                    "client_ts": now_ms,
+                    "client_ts": self.wire_client_ts(now_ms),
                 });
                 self.send(response, transport, out);
             }
-            Some("auth_ack") | Some("pair_status_ack") => {
-                // 同上的 `as String?` 语义收紧：非字符串 `pair_status` 视为缺失（None），
-                // 于是两个分支都不命中，只更新 `_lastPairStatusAckAt` / `_staleProbeSent`。
+            Some("auth_ack") => {
+                // 3.16.1：只有 authenticating 态、且 ack.device_sid 等于本地 sid 才接受。
+                if self.state != RelayState::Authenticating {
+                    return;
+                }
+                let ack_sid = frame.get("device_sid").and_then(|value| value.as_str());
+                if ack_sid != Some(self.params.device_sid.as_str()) {
+                    return;
+                }
+                self.authenticated = true;
+                self.reconnect_attempt = 0;
+                let status = frame
+                    .get("pair_status")
+                    .and_then(|value| value.as_str())
+                    .map(|s| s.to_string());
+                self.apply_pair_status(status.as_deref(), transport, now_ms, out);
+            }
+            Some("pair_status_ack") => {
+                // 必须先通过 auth_ack，否则整帧丢弃。
+                if !self.authenticated {
+                    return;
+                }
                 let status = frame
                     .get("pair_status")
                     .and_then(|value| value.as_str())
@@ -652,6 +726,10 @@ impl RelayClient {
                 self.apply_pair_status(status.as_deref(), transport, now_ms, out);
             }
             Some("data") => {
+                // 3.16.1：仅 authenticated && paired 才把 payload 上抛。
+                if !self.authenticated || self.state != RelayState::Paired {
+                    return;
+                }
                 // Dart：`payload is Map<String, dynamic>` → 对象才转发，数组/标量丢弃。
                 if let Some(Value::Object(payload)) = frame.get("payload") {
                     out.push(RelayEvent::Payload(payload.clone()));
@@ -685,20 +763,11 @@ impl RelayClient {
         out: &mut Vec<RelayEvent>,
     ) {
         self.last_pair_status_ack_at = now_ms;
-        self.stale_probe_sent = false;
         if status == Some("waiting") {
             if self.was_paired {
                 self.clear_waiting_timer(out);
                 self.set_state(RelayState::Waiting, out);
                 self.start_heartbeat(out);
-                // 已配对过的移动端重连本应立刻被匹配；服务端一直说 waiting 时，与其永久
-                // 挂着，不如再强制重连一次。
-                out.push(RelayEvent::TimerCancel(RelayTimer::Rewait));
-                out.push(RelayEvent::TimerStart {
-                    timer: RelayTimer::Rewait,
-                    delay_ms: RECONNECT_WAIT_TIMEOUT_MS,
-                    repeat: false,
-                });
             } else {
                 self.set_state(RelayState::Waiting, out);
                 self.start_waiting_timer(out);
@@ -732,24 +801,34 @@ impl RelayClient {
             dart_opt_str(message.as_deref())
         )));
 
-        // `error.code` 的终态判定（参照网页端 + 对端 `enterError`）：
-        // `AUTH_FAILED` / `WRONG_PARAM` / `INTERNAL` 重试同样的凭据/参数不可能成功，
-        // 必须停下来并让界面看见。旧实现只处理 `KICKED`，其余只打一行日志 ⇒
-        // 用户看到的是「连上 → 无反应 → 超时 → 重连」的静默循环。
-        if matches!(
-            code,
-            Some("AUTH_FAILED") | Some("WRONG_PARAM") | Some("INTERNAL")
-        ) {
+        // 3.16.1：只有 AUTH_FAILED / WRONG_PARAM 是终态；INTERNAL 可恢复。
+        if matches!(code, Some("AUTH_FAILED") | Some("WRONG_PARAM")) {
             let reason = match code {
-                Some("AUTH_FAILED") => "auth-failed",
-                Some("WRONG_PARAM") => "wrong-param",
-                _ => "relay-internal",
+                Some("AUTH_FAILED") => "device-not-owned",
+                Some("WRONG_PARAM") => "invalid-mobile-connection",
+                _ => unreachable!(),
             };
             self.set_state(RelayState::Error, out);
             self.intentionally_closed = true;
             out.push(RelayEvent::Failure(RelayFailure::new(reason, message)));
             if let Some(generation) = self.socket {
                 transport.close(generation, None, None);
+            }
+            return;
+        }
+
+        if code == Some("INTERNAL") {
+            out.push(RelayEvent::Failure(RelayFailure::new(
+                "relay-internal",
+                message,
+            )));
+            if self.state == RelayState::Paired
+                || (self.was_paired && self.state == RelayState::Waiting)
+            {
+                self.set_state(RelayState::Waiting, out);
+                self.start_heartbeat(out);
+            } else {
+                self.reconnect(transport, now_ms, out);
             }
             return;
         }
@@ -780,11 +859,12 @@ impl RelayClient {
             return;
         }
 
-        // 其余（`DEVICE_OFFLINE` / 未知码）：上报给界面，但保留重连。
-        // `DEVICE_OFFLINE` 在网页端有 15 s 宽限、对端没有这个分支；我们用重连退避
-        // 近似这个宽限，比直接终态更宽容，且不会静默。
+        // 其余（`DEVICE_OFFLINE` / 未知码）：上报给界面，并保留重连。
         let reason = code.unwrap_or("relay-error").to_lowercase();
         out.push(RelayEvent::Failure(RelayFailure::new(&reason, message)));
+        if code == Some("DEVICE_OFFLINE") {
+            self.reconnect(transport, now_ms, out);
+        }
     }
 
     /// 对应 `_handleSocketClosed(int code, String? reason, {int? generation})`。
@@ -811,22 +891,13 @@ impl RelayClient {
             dart_opt_str(reason.as_deref()),
             dart_opt_str(mapped)
         )));
+        self.authenticated = false;
         if self.intentionally_closed {
             return;
         }
-        // PORT-NOTE: Dart 这里**不**把 `_socket` 置 null，于是「已关连接」的句柄会一直
-        // 留着，直到下一次 `_connect()` 才被 `_socket?.sink.close()` 清掉。本实现照抄：
-        // `self.socket` 保持 `Some(旧代次)`，但此时状态已不是 paired，`sendPayload` 只会
-        // 入队，不会往死 socket 上写。
-        if self.was_paired || mapped == Some("desktop-disconnected") {
-            self.schedule_reconnect(out);
-            return;
-        }
-        self.set_state(RelayState::Error, out);
-        out.push(RelayEvent::Failure(RelayFailure::new(
-            mapped.unwrap_or("relay-unavailable"),
-            Some(reason.unwrap_or_else(|| format!("connection closed ({code})"))),
-        )));
+        // 3.16.1 网页/桌面完全不解析关闭码：只写诊断，然后无条件重连。
+        // `mapped` 仅用于日志，不再决定终态。
+        self.schedule_reconnect(out);
     }
 
     // ------------------------------------------------------------------
@@ -879,7 +950,7 @@ impl RelayClient {
                 if self.state == RelayState::Waiting && !self.was_paired {
                     self.set_state(RelayState::Error, out);
                     out.push(RelayEvent::Failure(RelayFailure::new(
-                        "invalid-mobile-connection",
+                        "desktop-disconnected",
                         Some(
                             "Desktop did not match this mobile connection before the waiting timeout."
                                 .to_string(),
@@ -916,31 +987,16 @@ impl RelayClient {
             return;
         }
         self.heartbeat_tick += 1;
-        // 对应 `_heartbeatTick.isOdd`：waiting 态下隔一拍发一次（即每 20s）。
-        if self.state == RelayState::Waiting && self.heartbeat_tick % 2 == 1 {
-            return;
-        }
         if now_ms - self.last_pair_status_ack_at > HEARTBEAT_ACK_TIMEOUT_MS {
-            if !self.stale_probe_sent {
-                self.stale_probe_sent = true;
-                out.push(RelayEvent::Log(
-                    "[relay] heartbeat stale, probing before reconnect".to_string(),
-                ));
-            } else {
-                self.stale_probe_sent = false;
-                out.push(RelayEvent::Log(
-                    "[relay] heartbeat ack timeout, reconnecting".to_string(),
-                ));
-                self.reconnect(transport, now_ms, out);
-                return;
-            }
-        } else {
-            self.stale_probe_sent = false;
+            out.push(RelayEvent::Log(
+                "[relay] heartbeat ack timeout, reconnecting".to_string(),
+            ));
+            self.reconnect(transport, now_ms, out);
+            return;
         }
         let frame = json!({
             "type": "pair_status_query",
-            "device_sid": self.params.device_sid.clone(),
-            "client_ts": now_ms,
+            "client_ts": self.wire_client_ts(now_ms),
         });
         self.send(frame, transport, out);
     }
@@ -974,7 +1030,7 @@ impl RelayClient {
         let frame = json!({
             "type": "data",
             "payload": payload,
-            "client_ts": now_ms,
+            "client_ts": self.wire_client_ts(now_ms),
         });
         self.send(frame, transport, out);
     }
@@ -1000,7 +1056,7 @@ impl RelayClient {
             let frame = json!({
                 "type": "data",
                 "payload": payload,
-                "client_ts": now_ms,
+                "client_ts": self.wire_client_ts(now_ms),
             });
             self.send(frame, transport, out);
         }
@@ -1030,8 +1086,7 @@ impl RelayClient {
             }
             let frame = json!({
                 "type": "pair_status_query",
-                "device_sid": self.params.device_sid.clone(),
-                "client_ts": now_ms,
+                "client_ts": self.wire_client_ts(now_ms),
             });
             self.send(frame, transport, out);
         } else if self.state != RelayState::Idle
@@ -1140,17 +1195,16 @@ enum FrameData<'a> {
 /// `Uri.encodeQueryComponent` 转义，所以 `<redacted>` 在日志里是 `%3Credacted%3E`。
 /// 这里复用 [`crate::connection_params::Uri`] 的 `with_query_parameters`（同一套转义规则）。
 ///
-/// PORT-NOTE: `relayWsUri` 最多只有一个 query 参数（`mid`），故
-/// `query_parameters()` 是 `HashMap`（无序）不会造成日志差异；若将来中继地址带上多个参数，
-/// 参数顺序会与 Dart 的插入序不一致（仅影响日志文本）。
+/// PORT-NOTE: token 模式下中继地址有多个 query 参数（`token` / `mid`），必须按**原始顺序**
+/// 重写，否则日志里的参数顺序会随机（3.17.1 的 Dart `Map` 是插入序）。
 /// PORT-NOTE: query 为空时 `with_query_parameters(&[])` 产出 `?`（Dart
 /// `_makeQueryFromParametersDefault` 对空 map 返回 `''`，同样是 `?`）——该细节未能在
 /// 本机验证（无 Dart 运行时），但它只影响日志字符串，不影响线上格式。
 fn safe_uri_for_log(uri: &Uri) -> String {
-    let parameters: Vec<(&str, &str)> = uri
-        .query_parameters()
-        .keys()
-        .map(|key| (key.as_str(), "<redacted>"))
+    let pairs = uri.query_parameter_pairs();
+    let parameters: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(key, _)| (key.as_str(), "<redacted>"))
         .collect();
     uri.with_query_parameters(&parameters).to_string()
 }
@@ -1195,6 +1249,16 @@ mod tests {
         .expect("test url should parse")
     }
 
+    /// 3.16.1 新链接：无 `hash` / `t`，JWT 由宿主注入。
+    fn token_params() -> ZemoteConnectionParams {
+        let mut params = ZemoteConnectionParams::parse(
+            "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=SID123&mid=MID-1&name=DESKTOP",
+        )
+        .expect("test url should parse");
+        params.auth_token = Some("JWT".to_string());
+        params
+    }
+
     fn obj(value: Value) -> Map<String, Value> {
         value.as_object().expect("must be a JSON object").clone()
     }
@@ -1226,9 +1290,13 @@ mod tests {
 
     impl Harness {
         fn new(now_ms: i64) -> Self {
+            Self::with_params(test_params(), now_ms)
+        }
+
+        fn with_params(params: ZemoteConnectionParams, now_ms: i64) -> Self {
             let platform = zemote_platform_name(false, TargetPlatform::Android);
             Harness {
-                client: RelayClient::new(test_params(), platform.to_string(), now_ms),
+                client: RelayClient::new(params, platform.to_string(), now_ms),
                 transport: MockTransport::default(),
             }
         }
@@ -1254,7 +1322,7 @@ mod tests {
         fn pair(&mut self, now_ms: i64) -> Vec<RelayEvent> {
             self.start(now_ms);
             self.frame(
-                r#"{"type":"pair_status_ack","pair_status":"matched"}"#,
+                r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"matched"}"#,
                 now_ms,
             )
         }
@@ -1460,6 +1528,45 @@ mod tests {
     }
 
     #[test]
+    fn token_mode_connects_to_ws2_and_sends_roleless_auth_init_in_seconds() {
+        let now = 1_785_734_607_338_i64;
+        let mut h = Harness::with_params(token_params(), now);
+        let events = h.step(RelayInput::Start, now);
+        assert_eq!(
+            h.transport.connects[0].1,
+            "wss://zcode.z.ai/api/v1/remote/ws2?token=JWT&mid=MID-1"
+        );
+        assert!(has_log(
+            &events,
+            "[relay] connecting wss://zcode.z.ai/api/v1/remote/ws2?token=%3Credacted%3E&mid=%3Credacted%3E"
+        ));
+        h.step(RelayInput::SocketReady { generation: 1 }, now);
+        assert_eq!(
+            h.last_sent(),
+            json!({
+                "type": "auth_init",
+                "device_sid": "SID123",
+                "meta": {
+                    "platform": "android",
+                    "version": "3.16.1",
+                    "name": "zemote",
+                },
+                "client_ts": now / 1000,
+            })
+        );
+    }
+
+    #[test]
+    fn token_mode_ignores_auth_challenge_without_pass_hash() {
+        let now = 1_785_734_607_338_i64;
+        let mut h = Harness::with_params(token_params(), now);
+        h.start(now);
+        let sent_before = h.transport.sends.len();
+        h.frame(r#"{"type":"auth_challenge","nonce":"nonce"}"#, now);
+        assert_eq!(h.transport.sends.len(), sent_before);
+    }
+
+    #[test]
     fn auth_init_version_falls_back_to_web_when_app_version_missing() {
         let params =
             ZemoteConnectionParams::parse("https://zcode.z.ai/remote/v4?sid=S&hash=H&t=1")
@@ -1475,7 +1582,9 @@ mod tests {
     }
 
     #[test]
-    fn socket_failed_while_unpaired_reports_error() {
+    fn socket_failed_while_unpaired_schedules_reconnect() {
+        // 3.17.1 网页/桌面：socket close / connect 失败**无条件**重连；
+        // 只有非可重试的 relay 错误帧（AUTH_FAILED / WRONG_PARAM 等）才进终态。
         let mut h = Harness::new(0);
         h.step(RelayInput::Start, 0);
         let generation = h.generation();
@@ -1487,13 +1596,11 @@ mod tests {
             0,
         );
         assert!(has_log(&events, "[relay] connect failed: boom"));
-        assert_eq!(states(&events), vec![RelayState::Error]);
+        assert_eq!(states(&events), vec![RelayState::Reconnecting]);
+        assert!(failures(&events).is_empty());
         assert_eq!(
-            failures(&events),
-            vec![RelayFailure::new(
-                "relay-unavailable",
-                Some("boom".to_string())
-            )]
+            timers_started(&events),
+            vec![(RelayTimer::Reconnect, 1000, false)]
         );
     }
 
@@ -1508,6 +1615,8 @@ mod tests {
         );
         let generation = h.generation();
         assert_eq!(generation, 2);
+        // 新 socket 先就绪（进入 authenticating），再让它连接失败。
+        h.step(RelayInput::SocketReady { generation }, 0);
         let events = h.step(
             RelayInput::SocketFailed {
                 generation,
@@ -1625,7 +1734,10 @@ mod tests {
     fn pair_status_waiting_when_never_paired_arms_waiting_timer() {
         let mut h = Harness::new(0);
         h.start(0);
-        let events = h.frame(r#"{"type":"pair_status_ack","pair_status":"waiting"}"#, 0);
+        let events = h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"waiting"}"#,
+            0,
+        );
         assert_eq!(states(&events), vec![RelayState::Waiting]);
         assert_eq!(
             timers_started(&events),
@@ -1638,16 +1750,19 @@ mod tests {
     }
 
     #[test]
-    fn pair_status_waiting_timeout_reports_invalid_mobile_connection() {
+    fn pair_status_waiting_timeout_reports_desktop_disconnected() {
         let mut h = Harness::new(0);
         h.start(0);
-        h.frame(r#"{"type":"auth_ack","pair_status":"waiting"}"#, 0);
+        h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"waiting"}"#,
+            0,
+        );
         let events = h.step(RelayInput::TimerFired(RelayTimer::Waiting), 30_000);
         assert_eq!(states(&events), vec![RelayState::Error]);
         assert_eq!(
             failures(&events),
             vec![RelayFailure::new(
-                "invalid-mobile-connection",
+                "desktop-disconnected",
                 Some(
                     "Desktop did not match this mobile connection before the waiting timeout."
                         .to_string()
@@ -1680,13 +1795,16 @@ mod tests {
         ));
         assert_eq!(h.transport.sends.len(), 1, "未配对时不能真发出去");
 
-        let events = h.frame(r#"{"type":"auth_ack","pair_status":"matched"}"#, 5);
+        let events = h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"matched"}"#,
+            5,
+        );
         assert!(has_state(&events, RelayState::Paired));
         assert!(has_log(&events, "[relay] flushing 1 queued payload(s)"));
         assert_eq!(h.client.state(), RelayState::Paired);
         assert_eq!(
             timers_started(&events),
-            vec![(RelayTimer::Heartbeat, 10_000, true)]
+            vec![(RelayTimer::Heartbeat, 5_000, true)]
         );
         assert_eq!(h.transport.sends.len(), 2);
         assert_eq!(
@@ -1700,60 +1818,57 @@ mod tests {
     }
 
     #[test]
-    fn pair_status_matched_when_was_paired_arms_rewait_on_waiting() {
+    fn paired_waiting_restarts_heartbeat_without_rewait() {
         let mut h = Harness::new(0);
         h.pair(0);
         let events = h.frame(r#"{"type":"pair_status_ack","pair_status":"waiting"}"#, 1000);
         assert_eq!(states(&events), vec![RelayState::Waiting]);
         assert_eq!(
             timers_started(&events),
-            vec![
-                (RelayTimer::Heartbeat, 10_000, true),
-                (RelayTimer::Rewait, 20_000, false),
-            ]
+            vec![(RelayTimer::Heartbeat, 5_000, true)]
         );
-    }
-
-    #[test]
-    fn rewait_timer_reconnects_when_stuck_in_waiting() {
-        let mut h = Harness::new(0);
-        h.pair(0);
-        h.frame(r#"{"type":"pair_status_ack","pair_status":"waiting"}"#, 1000);
-        let events = h.step(RelayInput::TimerFired(RelayTimer::Rewait), 21_000);
-        assert!(has_log(&events, "[relay] re-pair stuck in waiting, reconnecting"));
-        assert_eq!(states(&events), vec![RelayState::Reconnecting]);
-        assert_eq!(h.transport.connects.len(), 2);
+        assert!(timers_started(&events)
+            .iter()
+            .all(|(timer, _, _)| *timer != RelayTimer::Rewait));
     }
 
     #[test]
     fn unknown_pair_status_only_refreshes_ack_timestamp() {
         let mut h = Harness::new(0);
         h.start(0);
-        let events = h.frame(r#"{"type":"auth_ack","pair_status":"weird"}"#, 0);
+        let events = h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"weird"}"#,
+            0,
+        );
         assert!(states(&events).is_empty());
         assert!(events.is_empty());
         // 缺 pair_status（null）同样只是刷新时间戳。
-        let events = h.frame(r#"{"type":"auth_ack"}"#, 0);
+        let events = h.frame(r#"{"type":"auth_ack","device_sid":"SID123"}"#, 0);
         assert!(events.is_empty());
     }
 
     // ---- 心跳 ----
 
     #[test]
-    fn heartbeat_skips_odd_ticks_while_waiting() {
+    fn heartbeat_sends_every_tick_while_waiting() {
         let mut h = Harness::new(0);
         h.start(0);
-        h.frame(r#"{"type":"pair_status_ack","pair_status":"waiting"}"#, 0);
+        h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"waiting"}"#,
+            0,
+        );
         let before = h.transport.sends.len();
-        // tick=1（奇数）→ 直接返回。
-        assert!(h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 10_000).is_empty());
-        assert_eq!(h.transport.sends.len(), before);
-        // tick=2（偶数）→ 发 query。
-        h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 20_000);
+        h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 5_000);
         assert_eq!(h.transport.sends.len(), before + 1);
         assert_eq!(
             h.last_sent(),
-            json!({"type": "pair_status_query", "device_sid": "SID123", "client_ts": 20_000})
+            json!({"type": "pair_status_query", "client_ts": 5_000})
+        );
+        h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 10_000);
+        assert_eq!(h.transport.sends.len(), before + 2);
+        assert_eq!(
+            h.last_sent(),
+            json!({"type": "pair_status_query", "client_ts": 10_000})
         );
     }
 
@@ -1766,36 +1881,25 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_probes_once_then_reconnects_when_ack_is_stale() {
+    fn heartbeat_ack_timeout_reconnects_immediately() {
         let mut h = Harness::new(0);
         h.pair(0);
         let before = h.transport.sends.len();
-
-        // 第一次超时：只标记并发探测 query（仍照发）。
-        let events = h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 31_000);
-        assert!(has_log(&events, "[relay] heartbeat stale, probing before reconnect"));
-        assert_eq!(h.transport.sends.len(), before + 1);
-        assert_eq!(
-            h.last_sent(),
-            json!({"type": "pair_status_query", "device_sid": "SID123", "client_ts": 31_000})
-        );
-        assert!(states(&events).is_empty());
-
-        // 第二次仍超时：重连（不发 query）。
-        let events = h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 41_000);
+        let events = h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 16_000);
         assert!(has_log(&events, "[relay] heartbeat ack timeout, reconnecting"));
         assert_eq!(states(&events), vec![RelayState::Reconnecting]);
         assert_eq!(h.transport.connects.len(), 2);
-        assert_eq!(h.transport.sends.len(), before + 1);
+        assert_eq!(h.transport.sends.len(), before);
     }
 
     #[test]
-    fn heartbeat_within_ack_timeout_does_not_probe() {
+    fn heartbeat_within_ack_timeout_sends_query() {
         let mut h = Harness::new(0);
         h.pair(0);
-        let events = h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 30_000);
-        assert!(!has_log(&events, "heartbeat stale"));
+        let events = h.step(RelayInput::TimerFired(RelayTimer::Heartbeat), 10_000);
+        assert!(!has_log(&events, "heartbeat ack timeout"));
         assert_eq!(h.last_sent()["type"], json!("pair_status_query"));
+        assert_eq!(h.last_sent()["client_ts"], json!(10_000));
     }
 
     // ---- KICKED ----
@@ -1868,7 +1972,6 @@ mod tests {
         assert!(has_log(&events, "[relay] error frame: KICKED null"));
     }
 
-    #[test]
     /// 未知/非终态错误码：不迁移状态（仍可重连），但**必须上报 Failure**——
     /// 否则界面只能看到「永远转圈」。`BUSY` 不在终态集合里。
     #[test]
@@ -1884,14 +1987,13 @@ mod tests {
         assert!(has_log(&events, "[relay] error frame: BUSY later"));
     }
 
-    /// 终态错误码：停下并让界面看见（`AUTH_FAILED` / `WRONG_PARAM` / `INTERNAL`）。
-    /// 重试同样的凭据/参数不可能成功，旧实现只打日志 ⇒ 静默重连循环。
+    /// 终态错误码：停下并让界面看见（`AUTH_FAILED` / `WRONG_PARAM`）。
+    /// 重试同样的凭据/参数不可能成功。
     #[test]
     fn terminal_error_codes_enter_error_state() {
         for (code, reason) in [
-            ("AUTH_FAILED", "auth-failed"),
-            ("WRONG_PARAM", "wrong-param"),
-            ("INTERNAL", "relay-internal"),
+            ("AUTH_FAILED", "device-not-owned"),
+            ("WRONG_PARAM", "invalid-mobile-connection"),
         ] {
             let mut h = Harness::new(0);
             h.pair(0);
@@ -1905,6 +2007,24 @@ mod tests {
             assert_eq!(reported[0].reason, reason, "code={code}");
             assert_eq!(reported[0].message.as_deref(), Some("m"), "code={code}");
         }
+    }
+
+    #[test]
+    fn internal_error_recovers_without_terminal_state() {
+        let mut h = Harness::new(0);
+        h.pair(0);
+        let events = h.frame(r#"{"type":"error","code":"INTERNAL","message":"m"}"#, 0);
+        assert_eq!(states(&events), vec![RelayState::Waiting]);
+        assert_eq!(
+            failures(&events),
+            vec![RelayFailure::new("relay-internal", Some("m".to_string()))]
+        );
+        assert!(timers_started(&events)
+            .iter()
+            .any(|(timer, delay, repeat)| *timer == RelayTimer::Heartbeat
+                && *delay == 5_000
+                && *repeat));
+        assert_eq!(h.client.state(), RelayState::Waiting);
     }
 
     // ---- 连接关闭 ----
@@ -1947,7 +2067,7 @@ mod tests {
     }
 
     #[test]
-    fn close_session_not_found_while_unpaired_reports_error() {
+    fn close_session_not_found_while_unpaired_reconnects() {
         let mut h = Harness::new(0);
         h.start(0);
         let events = h.step(
@@ -1958,18 +2078,13 @@ mod tests {
             },
             0,
         );
-        assert_eq!(states(&events), vec![RelayState::Error]);
-        assert_eq!(
-            failures(&events),
-            vec![RelayFailure::new(
-                "session-not-found",
-                Some("not found".to_string())
-            )]
-        );
+        assert_eq!(states(&events), vec![RelayState::Reconnecting]);
+        assert!(failures(&events).is_empty());
+        assert!(has_log(&events, "[relay] closed code=4004 reason=not found mapped=session-not-found"));
     }
 
     #[test]
-    fn close_without_reason_uses_generic_message() {
+    fn close_without_reason_reconnects_and_logs() {
         let mut h = Harness::new(0);
         h.start(0);
         let events = h.step(
@@ -1980,17 +2095,13 @@ mod tests {
             },
             0,
         );
-        assert_eq!(
-            failures(&events),
-            vec![RelayFailure::new(
-                "session-expired",
-                Some("connection closed (4011)".to_string())
-            )]
-        );
+        assert_eq!(states(&events), vec![RelayState::Reconnecting]);
+        assert!(failures(&events).is_empty());
+        assert!(has_log(&events, "[relay] closed code=4011 reason=null mapped=session-expired"));
     }
 
     #[test]
-    fn close_with_unmapped_code_reports_relay_unavailable() {
+    fn close_with_unmapped_code_reconnects() {
         let mut h = Harness::new(0);
         h.start(0);
         let events = h.step(
@@ -2001,13 +2112,9 @@ mod tests {
             },
             0,
         );
-        assert_eq!(
-            failures(&events),
-            vec![RelayFailure::new(
-                "relay-unavailable",
-                Some("connection closed (1006)".to_string())
-            )]
-        );
+        assert_eq!(states(&events), vec![RelayState::Reconnecting]);
+        assert!(failures(&events).is_empty());
+        assert!(has_log(&events, "[relay] closed code=1006 reason=null mapped=null"));
     }
 
     #[test]
@@ -2095,8 +2202,11 @@ mod tests {
             let generation = h.generation();
             h.step(RelayInput::SocketReady { generation }, 0);
         }
-        // 重新配对 → attempt 归零。
-        h.frame(r#"{"type":"pair_status_ack","pair_status":"matched"}"#, 0);
+        // 重新配对 → attempt 归零（3.16.1+ 只有 auth_ack 才生效，pair_status_ack 被门禁丢弃）。
+        h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"matched"}"#,
+            0,
+        );
         let generation = h.generation();
         let events = h.step(
             RelayInput::SocketClosed {
@@ -2188,7 +2298,10 @@ mod tests {
                 0,
             );
         }
-        let events = h.frame(r#"{"type":"pair_status_ack","pair_status":"matched"}"#, 0);
+        let events = h.frame(
+            r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"matched"}"#,
+            0,
+        );
         assert!(has_log(&events, "[relay] flushing 100 queued payload(s)"));
         let sent = h.sent();
         // auth_init + 100 条 data。
@@ -2227,7 +2340,7 @@ mod tests {
         assert_eq!(h.transport.sends.len(), before + 1);
         assert_eq!(
             h.last_sent(),
-            json!({"type": "pair_status_query", "device_sid": "SID123", "client_ts": 1000})
+            json!({"type": "pair_status_query", "client_ts": 1000})
         );
     }
 
@@ -2312,7 +2425,8 @@ mod tests {
         // Dart 的 dispose 不置 null `_socket`，所以再调一次仍会 close 一次。
         let events = h.step(RelayInput::Dispose, 0);
         assert_eq!(h.transport.closes, vec![(1, None, None), (1, None, None)]);
-        assert_eq!(states(&events), vec![RelayState::Closed]);
+        // 状态已经是 Closed，ValueNotifier 语义下同值不重复通知。
+        assert!(states(&events).is_empty());
     }
 
     // ---- 收帧的边界 ----

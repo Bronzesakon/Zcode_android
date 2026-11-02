@@ -20,7 +20,7 @@ use serde_json::{json, Map, Value};
 
 use zemote_protocol::device_info::TargetPlatform;
 use zemote_protocol::zemote_client::{
-    PayloadMatcher, ZemoteClient, ZemoteClientConfig, ZemoteEvent, ZemoteInput,
+    BridgeSessionId, PayloadMatcher, ZemoteClient, ZemoteClientConfig, ZemoteEvent, ZemoteInput,
 };
 
 use crate::codec::{self, BadInput, CallCommand, OwnedInput};
@@ -124,6 +124,23 @@ impl Session {
         };
         match name {
             "snapshot" => codec::ok_snapshot(self.snapshot()),
+            // §9 扩展：对话层快照。`{"query":"conversation","session":<桥句柄>,"key":"<conversation key>"}`。
+            "conversation" => {
+                let Some(session) = value.get("session").and_then(Value::as_u64) else {
+                    return codec::bad_input("conversation 查询需要整数 session");
+                };
+                let Some(key) = value.get("key").and_then(Value::as_str) else {
+                    return codec::bad_input("conversation 查询需要字符串 key");
+                };
+                match self.layer.snapshot(BridgeSessionId(session), key) {
+                    Some(snapshot) => codec::ok_snapshot(snapshot),
+                    None => codec::err(
+                        "invalidState",
+                        format!("conversation 不存在或已关闭：session={session}"),
+                        Vec::new(),
+                    ),
+                }
+            }
             other => codec::bad_input(format!("未知 query: {other}")),
         }
     }
@@ -243,10 +260,14 @@ impl Session {
             CallCommand::OpenBridge {
                 workspace_key,
                 task_id,
+                task_host_id,
+                project,
                 timeout_ms,
-            } => match self.client.open_bridge(
+            } => match self.client.open_bridge_with_intent(
                 &workspace_key,
                 task_id.as_deref(),
+                task_host_id.as_deref(),
+                project.as_ref(),
                 timeout_ms,
                 now_ms,
             ) {
@@ -448,7 +469,12 @@ pub fn parse_config(config_json: &str) -> Result<ParsedConfig, BadInput> {
     let dry_run = optional_bool(map, "dryRun")?.unwrap_or(false);
 
     let mut params = zemote_protocol::connection_params::ZemoteConnectionParams::parse(url)
-        .ok_or_else(|| BadInput::new(format!("url 解析失败（需要 https/wss 且含 sid/hash/t）: {url}")))?;
+        .ok_or_else(|| BadInput::new(format!("url 解析失败（需要 https/wss 且含 sid）: {url}")))?;
+    // 3.16.1：OAuth JWT 由宿主登录后通过 config.token 注入，不来自 URL。
+    // 只允许存在于内存里的连接参数；`parsed_view` / `snapshot` 都不会把它带出去。
+    if let Some(token) = optional_string(map, "token")? {
+        params.auth_token = Some(token);
+    }
     // §5：显式给了就**覆盖** URL 里解析出来的对应字段。
     if let Some(app_version) = optional_string(map, "appVersion")? {
         params.app_version = Some(app_version);
@@ -461,6 +487,13 @@ pub fn parse_config(config_json: &str) -> Result<ParsedConfig, BadInput> {
     }
     if let Some(mid) = optional_string(map, "mid")? {
         params.device_mid = Some(mid);
+    }
+    // 真正建会话时必须有可用的认证材料：旧链接的 hash，或新流程的 OAuth token。
+    // dryRun 只做链接合法性检查（配对页在登录前就会调它），因此放行。
+    if !dry_run && params.pass_hash.is_none() && params.auth_token.is_none() {
+        return Err(BadInput::new(
+            "缺少认证材料：旧链接需要 hash，新链接需要先登录取得 token",
+        ));
     }
 
     Ok(ParsedConfig {
@@ -505,7 +538,7 @@ pub fn build(config: ParsedConfig) -> (Session, Vec<Value>) {
 /// 前 6 个字段与 §9 `snapshot.params` **逐字段一致**（同一份 `ZemoteConnectionParams`，
 /// 同样的覆盖规则），另加 `host` / `scheme` / `relayUri` 供 Kotlin 配对层做去重键与展示。
 ///
-/// **`passHash` 同样绝不出现在这里**（与 §9 的安全约定一致）。
+/// **`passHash` 与 OAuth token 同样绝不出现在这里**（与 §9 的安全约定一致）。
 pub fn parsed_view(config: &ParsedConfig) -> Value {
     let params = &config.params;
     json!({
@@ -517,7 +550,8 @@ pub fn parsed_view(config: &ParsedConfig) -> Value {
         "timestamp": params.timestamp,
         "host": params.source.host(),
         "scheme": params.source.scheme(),
-        "relayUri": params.relay_ws_uri().to_string(),
+        // 只给展示/去重用的 URI：token 模式会指向 ws2，但不带 token。
+        "relayUri": params.relay_ws_uri_for_display().to_string(),
     })
 }
 
@@ -677,9 +711,36 @@ mod tests {
     }
 
     #[test]
-    fn create_with_unparsable_url_is_bad_input() {
+    fn create_without_hash_or_token_is_bad_input() {
         let error = create_error(r#"{"url":"https://zcode.z.ai/remote/v4?sid=S"}"#);
-        assert!(error.message.contains("url 解析失败"), "{}", error.message);
+        assert!(
+            error.message.contains("缺少认证材料"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// 3.16.1：新链接（无 hash/t）+ 宿主注入的 OAuth token。
+    #[test]
+    fn create_accepts_3161_link_with_token_and_connects_to_ws2() {
+        let config = r#"{
+            "url":"https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=SID123&mid=MID-1&name=DESKTOP",
+            "token":"JWT",
+            "nowMs":0
+        }"#;
+        let (mut session, _) = Session::create(config).expect("应解析成功");
+        assert_eq!(session.snapshot()["params"]["timestamp"], json!(null));
+        let envelope = session.step(r#"{"type":"start"}"#, 0);
+        let connect = envelope["events"]
+            .as_array()
+            .expect("events 必须是数组")
+            .iter()
+            .find(|event| event["type"] == json!("ws_connect"))
+            .expect("start 必须产生 ws_connect");
+        assert_eq!(
+            connect["uri"],
+            json!("wss://zcode.z.ai/api/v1/remote/ws2?token=JWT&mid=MID-1")
+        );
     }
 
     #[test]
@@ -802,6 +863,11 @@ mod tests {
         let mut session = session();
         session.step(r#"{"type":"start"}"#, 0);
         session.step(r#"{"type":"socket_ready","generation":1}"#, 0);
+        // 3.16.1：pair_status_ack 只在 auth_ack 通过之后才被接受。
+        session.step(
+            r#"{"type":"text_frame","generation":1,"text":"{\"type\":\"auth_ack\",\"device_sid\":\"SID123\"}"}"#,
+            0,
+        );
         let paired = session.step(
             r#"{"type":"text_frame","generation":1,"text":"{\"type\":\"pair_status_ack\",\"pair_status\":\"matched\"}"}"#,
             0,
@@ -820,6 +886,11 @@ mod tests {
         let mut session = session();
         session.step(r#"{"type":"start"}"#, 0);
         session.step(r#"{"type":"socket_ready","generation":1}"#, 0);
+        // 先完成 auth（不带 pair_status），再看旧代次的 pair_status_ack 是否被忽略。
+        session.step(
+            r#"{"type":"text_frame","generation":1,"text":"{\"type\":\"auth_ack\",\"device_sid\":\"SID123\"}"}"#,
+            0,
+        );
         let stale = session.step(
             r#"{"type":"text_frame","generation":99,"text":"{\"type\":\"pair_status_ack\",\"pair_status\":\"matched\"}"}"#,
             0,
@@ -953,6 +1024,10 @@ mod tests {
         session.step(r#"{"type":"start"}"#, 0);
         session.step(r#"{"type":"socket_ready","generation":1}"#, 0);
         session.step(
+            r#"{"type":"text_frame","generation":1,"text":"{\"type\":\"auth_ack\",\"device_sid\":\"SID123\"}"}"#,
+            0,
+        );
+        session.step(
             r#"{"type":"text_frame","generation":1,"text":"{\"type\":\"pair_status_ack\",\"pair_status\":\"matched\"}"}"#,
             0,
         );
@@ -1033,8 +1108,9 @@ mod tests {
         session.step(r#"{"type":"start"}"#, NOW);
         session.step(r#"{"type":"socket_ready","generation":1}"#, NOW);
         session.step(&text_frame(r#"{"type":"auth_challenge","nonce":"nonce-1"}"#), NOW);
+        // 3.16.1：认证应答之后才接受 pair 状态。
         session.step(
-            &text_frame(r#"{"type":"pair_status_ack","pair_status":"matched"}"#),
+            &text_frame(r#"{"type":"auth_ack","device_sid":"SID123","pair_status":"matched"}"#),
             NOW,
         );
     }
@@ -1803,6 +1879,32 @@ mod tests {
 
         assert_eq!(session.query("{}")["error"]["kind"], json!("badInput"));
         assert_eq!(session.query("oops")["error"]["kind"], json!("badInput"));
+    }
+
+    /// §9 扩展：`conversation` 查询的入参校验与未登记会话的失败形态。
+    #[test]
+    fn query_conversation_rejects_bad_input_and_unknown_conversation() {
+        let session = session();
+
+        for query in [
+            r#"{"query":"conversation"}"#,
+            r#"{"query":"conversation","session":"1","key":"k"}"#,
+            r#"{"query":"conversation","session":1}"#,
+            r#"{"query":"conversation","session":1,"key":2}"#,
+        ] {
+            let envelope = session.query(query);
+            assert_eq!(envelope["ok"], json!(false), "应当拒绝: {query}");
+            assert_eq!(envelope["error"]["kind"], json!("badInput"), "{query}");
+        }
+
+        // 没 open 过这个 key：不是协议错误，是状态不满足。
+        let envelope = session.query(r#"{"query":"conversation","session":7,"key":"nope"}"#);
+        assert_eq!(envelope["ok"], json!(false));
+        assert_eq!(envelope["error"]["kind"], json!("invalidState"));
+        assert!(envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("session=7"));
     }
 
     // ---- §10 销毁 ----

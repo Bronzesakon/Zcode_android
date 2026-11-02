@@ -26,9 +26,9 @@ class FakeNativeBridge : NativeBridge {
 
     val invocations = CopyOnWriteArrayList<Invocation>()
 
-    /** `nativeAbiVersion` 的返回。默认是 ABI 1（与 [EXPECTED_ABI] 一致）。 */
+    /** `nativeAbiVersion` 的返回。默认是 ABI 2（与 [EXPECTED_ABI] 一致）。 */
     var abiVersionResponse: String =
-        """{"ok":true,"abi":1,"protocolVersion":"0.1.0","features":[]}"""
+        """{"ok":true,"abi":2,"protocolVersion":"0.1.0","features":[]}"""
 
     /** `nativeCreate` 的返回。 */
     var createResponse: String = """{"ok":true,"handle":1,"events":[]}"""

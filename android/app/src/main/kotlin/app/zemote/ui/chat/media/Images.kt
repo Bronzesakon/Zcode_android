@@ -3,6 +3,7 @@ package app.zemote.ui.chat.media
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -107,15 +112,11 @@ fun RemoteImage(
 
     Box(
         modifier = modifier
-            .then(
-                if (onClick != null) {
-                    Modifier.pointerInput(key) {
-                        detectTapGestures(onTap = { onClick() })
-                    }
-                } else {
-                    Modifier
-                },
-            ),
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .semantics(mergeDescendants = true) {
+                contentDescription = if (onClick != null) "图片，点击查看大图" else "图片"
+                role = Role.Image
+            },
         contentAlignment = Alignment.Center,
     ) {
         val image = bitmap
@@ -171,7 +172,11 @@ fun ImageViewerDialog(
                         }
                     }
                 }
-                .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
+                .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
+                .semantics(mergeDescendants = true) {
+                    contentDescription = "图片预览，点击关闭"
+                    role = Role.Button
+                },
             contentAlignment = Alignment.Center,
         ) {
             if (image != null) {

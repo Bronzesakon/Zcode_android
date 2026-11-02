@@ -1,5 +1,6 @@
 package app.zemote.ui
 
+import app.zemote.auth.RemoteTokenException
 import app.zemote.engine.EngineException
 import app.zemote.ui.chat.ChatOpsUnavailable
 
@@ -23,6 +24,8 @@ internal fun Throwable.toUserMessage(): String = when (this) {
         "badInput" -> "参数被引擎拒绝：${error.message.orEmpty()}"
         else -> "引擎错误（${error.kind}）：${error.message.orEmpty()}"
     }
+
+    is RemoteTokenException -> message ?: "远控登录失败"
 
     is ChatOpsUnavailable -> message ?: "对话层尚未接线"
 

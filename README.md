@@ -49,11 +49,11 @@ org.gradle.java.home=E:/AndroidSdk/jdk-17
 | `android/` | **Kotlin 外壳**：引擎 / 持久化 / 配对 / 更新 / 表现层（界面样式未实现） | 单测全绿，debug / release 均可构建 |
 | `design/` | 从网页快照抽取的设计基线：设计令牌、图标清单、界面清单、协议地图 | 已完成 |
 | `docs/` | 架构图与各层契约：`ARCHITECTURE.md`、`FFI.md`、`ENGINE-API.md` | 已完成 |
-| `docs/remote-v4/` | 网页端 remote-v4 协议文档（按 **3.15.3** 重写；源在 `Zcode_harmony/Docs/`） | 只读镜像 |
-| `docs/desktop/` | **桌面端（对端）协议逆向 12 篇**（`app.asar` 3.15.3） | 权威对端规格 |
+| `archive/pre-3.16.1-auth/` | **3.16.1 之前的登录/远控协议基线归档**：3.15.3 网页快照、`docs/remote-v4`、`docs/desktop`、`docs/_audit` | 只读历史证据，**不作当前规格** |
+| `docs/auth-3.16.1/` | **3.16.1 登录与信息流全新审计**（4 路深挖 + 交叉验证 + 最终合成） | 当前权威规格 |
 | `tools/` | `asar.mjs`：只读读取 Electron `app.asar`（`ls`/`cat`/`dump`/`grep`/`stat`） | 审计工具 |
 | `Reference_code/` | 上游 Flutter 客户端全部源码（Dart 约 21k 行 + 平台胶水 + 原有测试） | 冻结，只读参照 |
-| `Reference_web/` | 官方网页版快照（remote v4 / 3.15.3，2026-10-15 抓取） | 只读参照；按该快照自带约定**仅本机保留、不入 Git** |
+| `Reference_web/` | 官方网页版快照：**3.16.1 当前基线**；3.15.3 已归档到 `archive/pre-3.16.1-auth/` | 只读参照；按该快照自带约定**仅本机保留、不入 Git** |
 | `scratch/` | 本地签名材料（`zemote-release.p12`、密码、base64） | **不入库** |
 | `VERSION` | 版本号基准（单行），CI 据此生成 `versionName` | — |
 | `CHANGELOG.md` | 正式 Release 的正文来源（见「CI」） | — |

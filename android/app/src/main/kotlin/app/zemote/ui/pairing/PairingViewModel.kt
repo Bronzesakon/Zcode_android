@@ -2,6 +2,8 @@ package app.zemote.ui.pairing
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.zemote.auth.RemoteTokenException
+import app.zemote.data.AuthStore
 import app.zemote.data.DeviceRecord
 import app.zemote.engine.EngineState
 import app.zemote.pairing.PairingUrl
@@ -29,6 +31,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * @property error 引擎或持久化失败的收敛文案。
  * @property paired 成功入库的设备；非空时界面返回设备列表。
  * @property notice 一次性提示（例如「连接仍在进行中」）。
+ * @property needsLogin 3.16.1 新链接需要先 OAuth 登录；界面据此打开登录页。
+ * @property pendingUrl 等待登录完成后继续配对的链接。
  */
 data class PairingUiState(
     val input: String = "",
@@ -37,6 +41,8 @@ data class PairingUiState(
     val error: String? = null,
     val paired: DeviceRecord? = null,
     val notice: String? = null,
+    val needsLogin: Boolean = false,
+    val pendingUrl: String? = null,
 )
 
 /**
@@ -64,6 +70,7 @@ class PairingViewModel(
     private val repository: DeviceRepository,
     private val scanner: QrScanner,
     private val engine: EnginePort,
+    private val authStore: AuthStore,
     private val connectTimeoutMs: Long = CONNECT_TIMEOUT_MS,
 ) : ViewModel() {
 
@@ -125,17 +132,85 @@ class PairingViewModel(
                 is PreflightResult.Rejected ->
                     _state.update { it.copy(busy = false, rejection = preflight.reason) }
 
-                is PreflightResult.Ok -> connectAndSave(preflight.normalized)
+                is PreflightResult.Ok -> {
+                    val url = preflight.normalized
+                    val token = authStore.token()
+                    // 3.16.1 新链接没有 hash：没有 JWT 就先去登录，登录成功后再继续。
+                    if (token == null && !PairingUrl.hasPassHash(url)) {
+                        _state.update {
+                            it.copy(
+                                busy = false,
+                                needsLogin = true,
+                                pendingUrl = url,
+                                error = null,
+                            )
+                        }
+                        return
+                    }
+                    // 先记下 URL：换 token / 建会话失败时还能用同一条链接重试。
+                    _state.update { it.copy(pendingUrl = url) }
+                    connectAndSave(url, token)
+                }
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: RemoteTokenException) {
+            if (e.authRequired) authStore.clear()
+            _state.update {
+                it.copy(
+                    busy = false,
+                    needsLogin = e.authRequired,
+                    error = e.toUserMessage(),
+                )
+            }
         } catch (e: Exception) {
             _state.update { it.copy(busy = false, error = e.toUserMessage()) }
         }
     }
 
-    private suspend fun connectAndSave(url: String) {
-        engine.ensureSession(url)
+    /**
+     * 从登录页返回：拿到 JWT 就继续配对；用户取消则收起登录引导（保留输入，方便重试）。
+     */
+    fun onLoginReturn() {
+        val pending = _state.value.pendingUrl
+        viewModelScope.launch {
+            val token = authStore.token()
+            _state.update {
+                it.copy(
+                    needsLogin = false,
+                    busy = token != null && pending != null,
+                    // 成功配对后由 connectAndSave 清空；失败时保留，方便用户重试同一条链接。
+                    pendingUrl = it.pendingUrl,
+                )
+            }
+            if (token != null && pending != null) {
+                try {
+                    connectAndSave(pending, token)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: RemoteTokenException) {
+                    if (e.authRequired) authStore.clear()
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            needsLogin = e.authRequired,
+                            error = e.toUserMessage(),
+                        )
+                    }
+                } catch (e: Exception) {
+                    _state.update { it.copy(busy = false, error = e.toUserMessage()) }
+                }
+            }
+        }
+    }
+
+    /** 用户关掉了登录页。 */
+    fun cancelLogin() {
+        _state.update { it.copy(needsLogin = false, busy = false) }
+    }
+
+    private suspend fun connectAndSave(url: String, token: String?) {
+        engine.ensureSession(url, token)
         val settled = withTimeoutOrNull(connectTimeoutMs) {
             engine.engineState.first {
                 it is EngineState.Running || it is EngineState.Fatal
@@ -171,6 +246,7 @@ class PairingViewModel(
             it.copy(
                 busy = false,
                 paired = record,
+                pendingUrl = null,
                 notice = it.notice ?: if (settled == null) "设备已保存，连接仍在进行中" else null,
             )
         }

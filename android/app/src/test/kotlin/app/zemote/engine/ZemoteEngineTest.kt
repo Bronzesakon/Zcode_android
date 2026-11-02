@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -16,6 +17,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -43,6 +48,48 @@ class ZemoteEngineTest {
         clock = { fixedNow },
         dispatcher = UnconfinedTestDispatcher(testScheduler),
     )
+
+    private fun TestScope.newEngine(
+        bridge: FakeNativeBridge,
+        sockets: RelayWebSocket,
+    ): ZemoteEngine = ZemoteEngine(
+        bridge = bridge,
+        scope = backgroundScope,
+        clock = { fixedNow },
+        dispatcher = UnconfinedTestDispatcher(testScheduler),
+        sockets = sockets,
+    )
+
+    /** OkHttp 的 [WebSocket] 是 Java 接口；只要能让 [RelayWebSocket] 建连成功即可。 */
+    private class FakeSocket(private val request: Request) : WebSocket {
+        var cancelled = false
+
+        override fun request(): Request = request
+
+        override fun queueSize(): Long = 0L
+
+        override fun send(text: String): Boolean = true
+
+        override fun send(bytes: ByteString): Boolean = true
+
+        override fun close(code: Int, reason: String?): Boolean = true
+
+        override fun cancel() {
+            cancelled = true
+        }
+    }
+
+    private class SocketHarness {
+        val opened = mutableListOf<String>()
+        val listeners = mutableListOf<WebSocketListener>()
+        val sockets = mutableListOf<FakeSocket>()
+
+        val relay = RelayWebSocket { request, listener ->
+            opened += request.url.toString()
+            listeners += listener
+            FakeSocket(request).also { sockets += it }
+        }
+    }
 
     private fun config() = EngineConfig(url = wsUrl)
 
@@ -91,6 +138,29 @@ class ZemoteEngineTest {
     }
 
     @Test
+    fun conversationCallNoWaitReturnsWithoutACompletion() = runTest {
+        val bridge = FakeNativeBridge()
+        bridge.callHandler = {
+            // 订阅类 op 的真实形状：有 operation，但没有顶层 completed。
+            envelopeOf(operation = "conv:subscribeSessionsIndex:1")
+        }
+        val engine = newEngine(bridge)
+        engine.start(config())
+
+        // 如果内部等 completed，这里会挂到 35s 兜底超时；能返回即证明不等。
+        engine.conversationCallNoWait(
+            session = 1,
+            key = "k",
+            op = "subscribeSessionsIndex",
+            args = JsonObject(emptyMap()),
+        )
+
+        val command = bridge.callCommands().last()
+        assertEquals("conversation_call", command["method"]!!.jsonPrimitive.content)
+        assertEquals("subscribeSessionsIndex", command["op"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun createEventsAreNotLost() = runTest {
         val bridge = FakeNativeBridge()
         bridge.createResponse = envelopeOf(
@@ -136,7 +206,7 @@ class ZemoteEngineTest {
     fun abiMismatchEntersFatalWithoutCreatingASession() = runTest {
         val bridge = FakeNativeBridge()
         bridge.abiVersionResponse =
-            """{"ok":true,"abi":2,"protocolVersion":"0.2.0","features":[]}"""
+            """{"ok":true,"abi":3,"protocolVersion":"0.3.0","features":[]}"""
         val engine = newEngine(bridge)
 
         engine.start(config())
@@ -419,6 +489,23 @@ class ZemoteEngineTest {
         )
     }
 
+    /** §9.1：对话层快照按 (桥句柄, key) 查，而不是走核心 `snapshot`。 */
+    @Test
+    fun conversationSnapshotQueriesBridgeAndKey() = runTest {
+        val bridge = FakeNativeBridge()
+        bridge.queryResponse = """{"ok":true,"snapshot":{"sessionsIndex":[]}}"""
+        val engine = newEngine(bridge)
+        engine.start(config())
+
+        val snapshot = engine.conversationSnapshot(3, "wk|task") as JsonObject
+
+        assertEquals(0, (snapshot["sessionsIndex"] as JsonArray).size)
+        assertEquals(
+            """{"query":"conversation","session":3,"key":"wk|task"}""",
+            bridge.invocations.first { it.method == "query" }.payload,
+        )
+    }
+
     // ----------------------------------------------------------------------
     // 定时器接线
     // ----------------------------------------------------------------------
@@ -636,6 +723,82 @@ class ZemoteEngineTest {
 
         assertTrue(seen.any { it is EngineEvent.RelayStateChanged })
         assertTrue(seen.any { it is EngineEvent.Log })
+    }
+
+    // ----------------------------------------------------------------------
+    // terminal token：首连用配置值，重连必换
+    // ----------------------------------------------------------------------
+
+    private fun wsConnect(generation: Long, uri: String): String =
+        """{"type":"ws_connect","generation":$generation,"uri":"$uri"}"""
+
+    @Test
+    fun reconnectRefreshesTerminalToken() = runTest {
+        val bridge = FakeNativeBridge()
+        var token = "OLD"
+        val ws = "wss://zcode.z.ai/api/v1/remote/ws2?token=$token&mid=m"
+        bridge.stepHandler = { input ->
+            when {
+                input.contains("\"type\":\"start\"") -> envelopeOf(events = listOf(wsConnect(1, ws)))
+                input.contains("\"type\":\"socket_closed\"") ->
+                    envelopeOf(events = listOf(wsConnect(2, ws)))
+                else -> envelopeOf()
+            }
+        }
+        val h = SocketHarness()
+        val engine = newEngine(bridge, h.relay)
+        var refreshes = 0
+        engine.terminalTokenRefresher = {
+            refreshes += 1
+            token = "FRESH"
+            token
+        }
+
+        engine.start(EngineConfig(url = "https://zcode.z.ai/remote/v4?sid=s", token = "OLD"))
+        // 首连沿用 ensureSession 已经换好的 token，不重复交换。
+        assertEquals(
+            listOf("https://zcode.z.ai/api/v1/remote/ws2?token=OLD&mid=m"),
+            h.opened,
+        )
+        assertEquals(0, refreshes)
+
+        // 连接断开 → 核心发 ws_connect(generation=2) → 宿主先换 token 再开 socket。
+        h.listeners.single().onClosed(h.sockets.single(), 1006, "")
+        advanceUntilIdle()
+
+        assertEquals(1, refreshes)
+        assertEquals(2, h.opened.size)
+        assertEquals(
+            "https://zcode.z.ai/api/v1/remote/ws2?token=FRESH&mid=m",
+            h.opened[1],
+        )
+    }
+
+    @Test
+    fun failedTokenRefreshFeedsSocketFailedWithoutOpening() = runTest {
+        val bridge = FakeNativeBridge()
+        val ws = "wss://zcode.z.ai/api/v1/remote/ws2?token=OLD&mid=m"
+        bridge.stepHandler = { input ->
+            when {
+                input.contains("\"type\":\"start\"") -> envelopeOf(events = listOf(wsConnect(1, ws)))
+                input.contains("\"type\":\"socket_closed\"") ->
+                    envelopeOf(events = listOf(wsConnect(2, ws)))
+                else -> envelopeOf()
+            }
+        }
+        val h = SocketHarness()
+        val engine = newEngine(bridge, h.relay)
+        engine.terminalTokenRefresher = { null }
+
+        engine.start(EngineConfig(url = "https://zcode.z.ai/remote/v4?sid=s", token = "OLD"))
+        h.listeners.single().onClosed(h.sockets.single(), 1006, "")
+        advanceUntilIdle()
+
+        // 没有新 socket；核心收到一次 socket_failed，按自己的退避继续。
+        assertEquals(1, h.opened.size)
+        val failed = bridge.stepInputs().filter { it.contains("\"type\":\"socket_failed\"") }
+        assertEquals(1, failed.size)
+        assertTrue(failed.single().contains("\"generation\":2"))
     }
 
     @Test

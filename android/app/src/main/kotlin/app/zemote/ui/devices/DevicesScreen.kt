@@ -137,6 +137,16 @@ private fun DeviceRow(
         // TODO(UI): 六态连接文案（status.* 的 6 个值）与状态徽标；这里先透出协议原值。
         Text(text = "最后已知状态：${device.lastRelayStatus.wireName}")
 
+        // 诊断用：最近一次 relay 失败的原因码与详情（成功配对后由 RelayStatusWriter 清空）。
+        val lastError = device.lastRelayError
+        if (!lastError.isNullOrBlank()) {
+            Text(
+                text = "最后错误：$lastError" +
+                    (device.lastRelayErrorMessage?.takeIf { it.isNotBlank() }
+                        ?.let { "（$it）" } ?: ""),
+            )
+        }
+
         // TODO(UI): 时间格式化（相对时间 / 本地时间）；这里先透出原始毫秒。
         Text(
             text = device.lastConnectedAt

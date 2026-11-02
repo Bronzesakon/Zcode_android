@@ -82,7 +82,7 @@ Kotlin 的 `Long` 是 JNI 的 `jlong`（描述符 `J`），不是对象类型 �
 ## 4. `nativeAbiVersion()`
 
 ```json
-{"ok": true, "events": [], "abi": 1, "protocolVersion": "0.1.0", "features": ["conversation", "automation"]}
+{"ok": true, "events": [], "abi": 2, "protocolVersion": "0.1.0", "features": ["conversation", "automation"]}
 ```
 
 （`events` 键按 §3 的约定**始终存在**，这里是空数组 —— 该方法只读版本，不驱动核心。）
@@ -96,23 +96,35 @@ Kotlin 的 `Long` 是 JNI 的 `jlong`（描述符 `J`），不是对象类型 �
 
 ```json
 {
-  "url": "https://zcode.z.ai/remote/v4?sid=...&hash=...&t=...&mid=...&name=...",
+  "url": "https://zcode.z.ai/remote/v4?app_version=3.16.1&sid=...&mid=...&name=...",
   "nowMs": 1760000000000,
   "isWeb": false,
   "targetPlatform": "android",
   "appVersion": "1.0.0",
   "deviceName": "Pixel 8",
   "theme": "dark",
-  "mid": "可选，覆盖 URL 里的 mid"
+  "mid": "可选，覆盖 URL 里的 mid",
+  "token": "ws2 terminal token（宿主用 OAuth JWT 换得；旧链接带 hash 时可省略）"
 }
 ```
 
 - `url` 必填，其余可选。用 `ZemoteConnectionParams::parse(url)` 解析；若给了
   `appVersion` / `deviceName` / `theme` / `mid`，则**覆盖**解析出来的对应字段
   （`app_version` / `device_name` / `theme` / `device_mid`）。
+- `url` 只强制要求 `sid`。3.15.x 的 `hash` / `t` 变为可选；3.16.1 的新链接不带它们。
+- `token` 是 **ws2 terminal token**，由宿主登录后注入，**不来自 URL**。宿主先：
+  `POST /api/v1/remote/token`（`Authorization: Bearer <OAuth JWT>`，body `{"role":"terminal"}`）
+  拿到 22 字符短 token。给了 `token` 时：
+  - relay 地址为 `wss://<host>/api/v1/remote/ws2?token=<terminal token>&mid=…`；
+  - `auth_init` 不带 `role`，`client_ts` 为 Unix **秒**；
+  - 不再走 `auth_challenge` / HMAC proof。
+  没给 `token` 且 URL 里也没有 `hash` 时，`nativeCreate` 返回 `badInput`（`dryRun` 除外）。
 - `targetPlatform` 取值：`android` | `ios` | `windows` | `macos` | `linux` | `fuchsia`，默认 `android`。
 - `dryRun` 见下。
 - 解析失败 → `{"ok":false,"error":{"kind":"badInput",...}}`。
+
+**安全**：`token` 只存在于本次 `nativeCreate` 的配置里；`snapshot` / `dryRun.parsed`
+都不会回传它，relay 日志里的 query 值一律脱敏为 `<redacted>`。
 
 返回：
 
@@ -133,8 +145,9 @@ Kotlin 的 `Long` 是 JNI 的 `jlong`（描述符 `J`），不是对象类型 �
 {"ok": true, "dryRun": true, "handle": null, "events": [],
  "parsed": {
    "deviceSid": "...", "deviceMid": null, "deviceName": null,
-   "appVersion": null, "theme": null, "timestamp": 0,
-   "host": "zcode.z.ai", "scheme": "https", "relayUri": "wss://..."
+   "appVersion": null, "theme": null, "timestamp": null,
+   "host": "zcode.z.ai", "scheme": "https",
+   "relayUri": "wss://zcode.z.ai/api/v1/remote/ws2?mid=..."
  }}
 ```
 
@@ -145,8 +158,9 @@ Kotlin 的 `Long` 是 JNI 的 `jlong`（描述符 `J`），不是对象类型 �
 约定：
 
 - `dryRun=true` 时**不建会话、不占 handle**（`handle` 为 `null`），也不产生任何事件。
+- `dryRun` 只要求 `sid`：3.16.1 新链接在登录前就能验证（认证材料由后续 `token` 提供）。
 - `parsed` 的字段与 §9 `snapshot.params` **完全一致**，额外给出 `host` / `scheme` / `relayUri`
-  （配对层要用前两者做去重键与展示）。
+  （配对层要用前两者做去重键与展示）。`relayUri` 在 token 模式下指向 ws2，但**不含 token**。
 - `dryRun` 为 `false` 或缺省时行为**完全不变**。
 - 解析失败仍是 `badInput`。
 - 注意 `dryRun` **不等于**"这个链接一定可用"：它只说明 URL 结构可解析。真正的可用性由
@@ -329,6 +343,23 @@ Kotlin 的 `Long` 是 JNI 的 `jlong`（描述符 `J`），不是对象类型 �
 **安全约定：`passHash` 绝不出现在任何返回值里。** Kotlin 侧不需要它，导出它只会扩大泄漏面。
 
 未知 `query` → `{"ok":false,"error":{"kind":"badInput",...}}`。
+
+### 9.1 对话层快照（abi 2）
+
+核心的 `snapshot` 只有 relay/桥状态；`conversations` 与 `sessionsIndex`（含
+`lastAssistantPreview`）属于对话层的 `ConversationTransport`，用这条查询取：
+
+```json
+{"query":"conversation","session":1,"key":"<conversation key>"}
+```
+
+`session` 是 `open_bridge` 返回的桥句柄，`key` 是 `conversation_open` 返回的 key。
+返回 `{"ok":true,"snapshot":{...}}`，结构见 `ConversationTransport::snapshot`（顶层键
+`key` / `clientId` / `appVersion` / `handshaken` / `connectionId` / `bridgeDegraded` /
+`ackedRevisions` / `conversations` / `sessionsIndex` / `workspacePrep`）。
+
+- 缺 `session` / `key` 或类型不符 → `badInput`；
+- 该 conversation 没 open 过或已 close → `invalidState`（不是协议错误）。
 
 ---
 

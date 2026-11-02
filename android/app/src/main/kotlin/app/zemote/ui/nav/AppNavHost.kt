@@ -39,6 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.zemote.BuildConfig
 import app.zemote.ui.AppContainer
 import app.zemote.ui.MainScreen
+import app.zemote.ui.auth.LoginOverlay
 import app.zemote.ui.chat.ChatScreen
 import app.zemote.ui.chat.ChatViewModel
 import app.zemote.ui.home.HomeViewModel
@@ -144,32 +145,72 @@ private fun MainRoute(container: AppContainer, nav: NavViewModel, route: Route.M
     val updateState by update.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { update.check() }
 
-    MainScreen(
-        tab = route.tab,
-        homeState = state,
-        version = BuildConfig.VERSION_NAME,
-        updateAvailable = updateState.phase == UpdatePhase.UpdateAvailable,
-        onTabChange = { tab -> nav.replaceRoot(Route.Main(tab)) },
-        onRefresh = home::refresh,
-        onToggleWorkspace = home::toggleWorkspace,
-        onOpenTask = { workspace, task ->
-            state.deviceId?.let { id ->
-                nav.push(Route.Chat(deviceId = id, workspaceKey = workspace.key, taskId = task.id))
-            }
-        },
-        onNewConversation = { workspace ->
-            state.deviceId?.let { id ->
-                nav.push(Route.Chat(deviceId = id, workspaceKey = workspace.key, taskId = null))
-            }
-        },
-        onDismissError = home::dismissError,
-        onPin = { workspace, task, pinned -> home.setPinned(task, workspace, pinned) },
-        onArchive = { workspace, task -> home.setArchived(task, workspace, true) },
-        onDelete = { workspace, task -> home.delete(task, workspace) },
-        onOpenPairing = { nav.push(Route.Pairing) },
-        onOpenAbout = { nav.push(Route.AboutUpdate) },
-        onOpenCategory = { category -> nav.push(Route.SettingsSection(category.id)) },
-    )
+    Box(Modifier.fillMaxSize()) {
+        MainScreen(
+            tab = route.tab,
+            homeState = state,
+            version = BuildConfig.VERSION_NAME,
+            updateAvailable = updateState.phase == UpdatePhase.UpdateAvailable,
+            onTabChange = { tab -> nav.replaceRoot(Route.Main(tab)) },
+            onRefresh = home::refresh,
+            onToggleWorkspace = home::toggleWorkspace,
+            onOpenTask = { workspace, task ->
+                // 打开任务即视为已读（带 expectedUnreadAt，避免把打开期间的新消息误清）。
+                home.markRead(task, workspace)
+                state.deviceId?.let { id ->
+                    val taskKey = task.workspaceKey ?: workspace.key
+                    // 非当前 tab、或任务在项目的非主根上：必须让桌面先
+                    // prepareProjectWorkspace（taskHostId），否则找不到目标工作区。
+                    val needsPrepare = !workspace.bridgeable || taskKey != workspace.key
+                    nav.push(
+                        Route.Chat(
+                            deviceId = id,
+                            // 多根项目的任务必须用任务自己的 workspaceKey/Path/Identity，
+                            // 不能用所属工作区的主根（桌面端会 task-directory-mismatch）。
+                            workspaceKey = taskKey,
+                            taskId = task.id,
+                            workspacePath = task.workspacePath ?: workspace.path,
+                            workspaceIdentity = task.workspaceIdentity ?: workspace.identity,
+                            hostId = if (needsPrepare) (task.hostId ?: workspace.hostId) else null,
+                            // 任务用 taskHostId 开桥；`project` 意图只给「新建对话」。
+                            projectId = null,
+                        ),
+                    )
+                }
+            },
+            onNewConversation = { workspace ->
+                state.deviceId?.let { id ->
+                    nav.push(
+                        Route.Chat(
+                            deviceId = id,
+                            workspaceKey = workspace.key,
+                            taskId = null,
+                            workspacePath = workspace.path,
+                            workspaceIdentity = workspace.identity,
+                            hostId = if (workspace.bridgeable) null else workspace.hostId,
+                            projectId = if (workspace.bridgeable) null else workspace.projectId,
+                        ),
+                    )
+                }
+            },
+            onDismissError = home::dismissError,
+            onPin = { workspace, task, pinned -> home.setPinned(task, workspace, pinned) },
+            onArchive = { workspace, task -> home.setArchived(task, workspace, true) },
+            onDelete = { workspace, task -> home.delete(task, workspace) },
+            onOpenPairing = { nav.push(Route.Pairing) },
+            onOpenAbout = { nav.push(Route.AboutUpdate) },
+            onOpenCategory = { category -> nav.push(Route.SettingsSection(category.id)) },
+        )
+
+        // 3.16.1：当前设备需要 OAuth 登录时，全屏登录覆盖层压在主界面上。
+        if (state.needsLogin) {
+            LoginOverlay(
+                container = container,
+                onSuccess = home::onLoginReturn,
+                onClose = home::cancelLogin,
+            )
+        }
+    }
 }
 
 @Composable
@@ -183,10 +224,13 @@ private fun PairingRoute(container: AppContainer, nav: NavViewModel) {
     }
 
     PairingRouteContent(
+        container = container,
         state = state,
         onSubmit = viewModel::submit,
         onBack = nav::pop,
         onDismissNotice = viewModel::dismissNotice,
+        onLoginSuccess = viewModel::onLoginReturn,
+        onLoginCancel = viewModel::cancelLogin,
     )
 }
 
@@ -198,13 +242,25 @@ private fun PairingRoute(container: AppContainer, nav: NavViewModel) {
  */
 @Composable
 private fun PairingRouteContent(
+    container: AppContainer,
     state: PairingUiState,
     onSubmit: (String) -> Unit,
     onBack: () -> Unit,
     onDismissNotice: () -> Unit,
+    onLoginSuccess: () -> Unit,
+    onLoginCancel: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize()) {
         QrScanScreen(onClose = onBack, onResult = onSubmit)
+
+        // 3.16.1 新链接：先登录拿 JWT，再继续建会话。
+        if (state.needsLogin) {
+            LoginOverlay(
+                container = container,
+                onSuccess = onLoginSuccess,
+                onClose = onLoginCancel,
+            )
+        }
 
         val message = state.error
             ?: state.rejection?.toPairingMessage()
@@ -252,7 +308,6 @@ private fun app.zemote.pairing.RejectReason.toPairingMessage(): String = when (t
     app.zemote.pairing.RejectReason.SCHEME_NOT_HTTP -> "只支持 http / https / wss 的链接。"
     app.zemote.pairing.RejectReason.MISSING_HOST -> "链接里没有主机名（host）。"
     app.zemote.pairing.RejectReason.MISSING_SID -> "链接里没有 sid 参数。"
-    app.zemote.pairing.RejectReason.MISSING_HASH -> "链接里没有 hash 参数。"
     app.zemote.pairing.RejectReason.NOT_ZEMOTE_LINK -> "这看起来不是 Zemote 的远控链接。"
 }
 
@@ -263,6 +318,10 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
             deviceId = route.deviceId,
             workspaceKey = route.workspaceKey,
             taskId = route.taskId,
+            workspacePath = route.workspacePath,
+            workspaceIdentity = route.workspaceIdentity,
+            hostId = route.hostId,
+            projectId = route.projectId,
         ),
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -278,25 +337,39 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    ChatScreen(
-        state = state,
-        onBack = nav::pop,
-        onRefresh = viewModel::refresh,
-        onSend = viewModel::sendText,
-        onStop = viewModel::stop,
-        onLoadOlder = viewModel::loadOlder,
-        onPin = viewModel::setPinned,
-        onArchive = viewModel::archiveTask,
-        onDelete = viewModel::deleteTask,
-        onRename = viewModel::renameTask,
-        onSwitchMode = viewModel::switchMode,
-        onSwitchThought = viewModel::switchThought,
-        onResolveInteraction = viewModel::resolveInteraction,
-        onDismissError = viewModel::dismissError,
-        onAttach = viewModel::attach,
-        onRemoveAttachment = viewModel::removeAttachment,
-        onLoadAttachment = viewModel::readAttachmentBytes,
-    )
+    Box(Modifier.fillMaxSize()) {
+        ChatScreen(
+            state = state,
+            onBack = nav::pop,
+            onRefresh = viewModel::refresh,
+            onSend = viewModel::sendText,
+            onStop = viewModel::stop,
+            onLoadOlder = viewModel::loadOlder,
+            onPin = viewModel::setPinned,
+            onArchive = viewModel::archiveTask,
+            onDelete = viewModel::deleteTask,
+            onRename = viewModel::renameTask,
+            onSwitchMode = viewModel::switchMode,
+            onSwitchThought = viewModel::switchThought,
+            onSwitchModel = { provider, model -> viewModel.switchModel(provider, model) },
+            onLoadModelView = viewModel::loadModelView,
+            onResolveInteraction = viewModel::resolveInteraction,
+            onResumeQueue = viewModel::resumeQueue,
+            onDismissError = viewModel::dismissError,
+            onAttach = viewModel::attach,
+            onRemoveAttachment = viewModel::removeAttachment,
+            onLoadAttachment = viewModel::readAttachmentBytes,
+            onDraftRestored = viewModel::consumeDraftRestore,
+        )
+
+        if (state.needsLogin) {
+            LoginOverlay(
+                container = container,
+                onSuccess = viewModel::onLoginReturn,
+                onClose = viewModel::cancelLogin,
+            )
+        }
+    }
 }
 
 @Composable
