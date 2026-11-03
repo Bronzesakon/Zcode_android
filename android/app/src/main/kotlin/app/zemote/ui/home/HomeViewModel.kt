@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,6 +87,11 @@ data class HomeUiState(
     val visibleWorkspaces: List<WorkspaceItem>
         get() = workspaces
             .filter { it.purpose != "conversation" }
+            // 桌面自动创建的草稿/临时项目（draft-<uuid>、<epoch>-<uuid>）在没有**未归档**
+            // 任务时只是噪音；有活跃任务时保留并显示为「草稿」。
+            .filterNot { workspace ->
+                isGeneratedProjectName(workspace.label) && workspace.tasks.none { !it.archived }
+            }
             .sortedByDescending { workspace -> workspace.tasks.maxOfOrNull { it.updatedAt ?: 0L } ?: 0L }
 
     /** 项目树（分组视图）：每个项目一行，展开时带任务。 */
@@ -230,6 +236,28 @@ data class TimelineDay(val label: String, val entries: List<TaskEntry>)
 /** `connectionState` 里表示不可用的取值（枚举未冻结，按小写匹配）。 */
 private val OFFLINE_CONNECTION_STATES = setOf("offline", "disconnected", "error", "closed", "kicked")
 
+/**
+ * 桌面自动生成的草稿/临时项目名：
+ * - `draft-<uuid>`（新建任务草稿）
+ * - `<epochMillis>-<uuid>`（临时 scratch 工作区）
+ *
+ * 这些名字直接显示就是「乱码」；桌面侧栏不把它们当普通项目展示。
+ */
+internal val GENERATED_PROJECT_NAME = Regex(
+    "^(?:draft-)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" +
+        "|^\\d{10,14}-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+)
+
+internal fun isGeneratedProjectName(name: String): Boolean = GENERATED_PROJECT_NAME.matches(name)
+
+/** 项目行显示名：自动生成的草稿统一叫「草稿」，不再把 UUID 糊到界面上。 */
+internal fun workspaceDisplayLabel(workspace: WorkspaceItem): String =
+    if (isGeneratedProjectName(workspace.label)) {
+        "草稿"
+    } else {
+        workspace.label.ifBlank { workspace.path.ifBlank { workspace.key } }
+    }
+
 /** 项目行是否该显示「离线」：有连接错误，或连接态落在不可用集合。 */
 internal fun WorkspaceItem.isOffline(): Boolean {
     if (!lastError.isNullOrBlank()) return true
@@ -365,16 +393,52 @@ class HomeViewModel(
 
     /** 进入对话页后调用：把未读清掉（UI-SPEC：停留约 2 秒后）。 */
     fun markRead(task: TaskItem, workspace: WorkspaceItem) {
-        if (task.unreadAt == null) return
+        val unreadAt = task.unreadAt ?: return
+        // 本地先清，界面立即消失；RPC 失败不弹错误横幅（已读不是关键写操作），
+        // 后台静默重试 3 次。readTree 正在跑时同一桥会被占住，重试能躲开这个窗口。
+        _state.update { current ->
+            current.copy(
+                workspaces = current.workspaces.map { ws ->
+                    if (ws.key == workspace.key) {
+                        ws.copy(
+                            tasks = ws.tasks.map {
+                                if (it.id == task.id) it.copy(unreadAt = null) else it
+                            },
+                        )
+                    } else {
+                        ws
+                    }
+                },
+            )
+        }
         viewModelScope.launch {
-            mutate(task, workspace, method = "setTaskUnread", extra = {
+            val arg = buildJsonObject {
+                put("taskId", task.id)
+                put("workspacePath", task.workspacePath ?: workspace.path)
+                (task.workspaceIdentity ?: workspace.identity)?.let {
+                    put("workspaceIdentity", it)
+                }
+                task.remoteSessionId?.let { put("remoteSessionId", it) }
                 put("unread", false)
                 // 网页用 expectedUnreadAt 做并发保护：期间来了新消息就不清未读。
-                put("expectedUnreadAt", task.unreadAt)
-            }, updateTasks = { tasks ->
-                // 本地必须允许清空：旧值优先会让未读点永远不消失。
-                tasks.map { if (it.id == task.id) it.copy(unreadAt = null) else it }
-            })
+                put("expectedUnreadAt", unreadAt)
+            }
+            repeat(3) { attempt ->
+                val bridge = mutationBridge ?: return@launch
+                try {
+                    engine.channelCall(
+                        session = bridge,
+                        channel = "zcode-task",
+                        method = "setTaskUnread",
+                        args = JsonArray(listOf(arg)),
+                    )
+                    return@launch
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (attempt < 2) delay(1_500L * (attempt + 1))
+                }
+            }
         }
     }
 
@@ -740,6 +804,10 @@ class HomeViewModel(
         for (project in projects) {
             val obj = project.asObject() ?: continue
             if ((obj["deleted"] as? JsonPrimitive)?.booleanOrNull == true) continue
+            // 桌面端 `readProjects()` 找项目时明确排除 `legacySingleRoot`：这类是旧目录
+            // 自动生成的项目，名字常是 UUID/draft-*，桌面侧栏不把它当项目展示。
+            // 不排除的话首页会出现一串「乱码工作区」。
+            if ((obj["legacySingleRoot"] as? JsonPrimitive)?.booleanOrNull == true) continue
             val roots = obj["roots"].asArray().orEmpty()
             val rootObject = roots.firstOrNull {
                 (it.asObject()?.get("isPrimary") as? JsonPrimitive)?.booleanOrNull == true

@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,8 +28,8 @@ import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -44,6 +45,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -324,7 +326,10 @@ private fun HomeTree(
     onArchive: (WorkspaceItem, TaskItem) -> Unit,
     onDelete: (WorkspaceItem, TaskItem) -> Unit,
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
+    val listState = rememberLazyListState()
+    // 分组/列表切换时回到顶部，避免沿用上一视图的滚动位置（首行被工具栏裁掉）。
+    LaunchedEffect(view) { listState.scrollToItem(0) }
+    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         if (state.pinnedEntries.isNotEmpty()) {
             item(key = "pinned-label") { SectionLabel("已置顶") }
             items(
@@ -373,7 +378,7 @@ private fun HomeTree(
                         TaskRow(
                             task = entry.task,
                             busy = entry.task.id in state.busyTasks,
-                            projectLabel = entry.workspace.label.ifBlank { entry.workspace.path },
+                            projectLabel = workspaceDisplayLabel(entry.workspace),
                             onClick = { onOpenTask(entry.workspace, entry.task) },
                             onPin = { pinned -> onPin(entry.workspace, entry.task, pinned) },
                             onArchive = { onArchive(entry.workspace, entry.task) },
@@ -477,7 +482,7 @@ private fun ProjectRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            imageVector = if (section.expanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+            imageVector = if (section.expanded) Icons.Outlined.FolderOpen else Icons.Outlined.Folder,
             contentDescription = if (section.expanded) "收起项目" else "展开项目",
             tint = colors.foregroundSubtle,
             modifier = Modifier.size(16.dp),
@@ -490,7 +495,7 @@ private fun ProjectRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = workspace.label.ifBlank { workspace.key },
+                text = workspaceDisplayLabel(workspace),
                 modifier = Modifier.weight(1f, fill = false),
                 style = ZemoteType.uiBase,
                 color = colors.foregroundSubtle,
@@ -525,7 +530,7 @@ private fun ProjectRow(
         Text(
             text = section.totalTasks.toString(),
             style = ZemoteType.uiSm,
-            color = colors.foregroundSubtlest,
+            color = colors.foregroundSubtle,
             maxLines = 1,
         )
         Spacer(Modifier.width(ZemoteSpacing.space0_5))
@@ -955,7 +960,7 @@ private fun EmptyState(
             }
 
             else -> {
-                EmptyGlyph(icon = Icons.Default.Folder, tint = colors.foregroundSubtle)
+                EmptyGlyph(icon = Icons.Outlined.Folder, tint = colors.foregroundSubtle)
                 EmptyTitle("这台电脑还没有项目")
                 EmptySubtitle("在电脑端打开一个项目后再刷新。")
                 Spacer(Modifier.height(ZemoteSpacing.space5))

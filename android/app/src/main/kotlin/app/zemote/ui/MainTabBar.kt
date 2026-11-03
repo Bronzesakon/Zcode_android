@@ -2,10 +2,12 @@ package app.zemote.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -15,8 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -24,14 +26,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.zemote.ui.nav.MainTab
 import app.zemote.ui.theme.LocalZemoteColors
-import app.zemote.ui.theme.ZemoteRadius
 import app.zemote.ui.theme.ZemoteType
 
 /**
@@ -67,35 +67,49 @@ fun MainTabBar(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             mainTabSpecs(selected).forEach { spec ->
-                val shape = RoundedCornerShape(ZemoteRadius.lg)
-                Row(
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .clip(shape)
-                        .background(if (spec.selected) colors.selected else Color.Transparent)
                         .selectable(
                             selected = spec.selected,
                             role = Role.Tab,
                             onClick = { onSelect(spec.tab) },
-                        )
-                        .padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
+                        ),
                 ) {
-                    Icon(
-                        imageVector = spec.tab.icon(),
-                        contentDescription = null,
-                        tint = if (spec.selected) colors.foreground else colors.foregroundSubtle,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = spec.label,
-                        style = ZemoteType.uiSm,
-                        fontWeight = if (spec.selected) FontWeight.Medium else FontWeight.Normal,
-                        color = if (spec.selected) colors.foreground else colors.foregroundSubtle,
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = spec.tab.icon(),
+                            contentDescription = null,
+                            tint = if (spec.selected) colors.foreground else colors.foregroundSubtle,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = spec.label,
+                            style = ZemoteType.uiSm,
+                            fontWeight = if (spec.selected) FontWeight.Medium else FontWeight.Normal,
+                            color = if (spec.selected) colors.foreground else colors.foregroundSubtle,
+                        )
+                    }
+                    // 选中的唯一视觉标记：底部 18×2dp 短线。去掉整块胶囊底，避免 Material 导航栏观感。
+                    if (spec.selected) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 2.dp)
+                                .width(18.dp)
+                                .height(2.dp)
+                                .clip(RoundedCornerShape(1.dp))
+                                .background(colors.foreground),
+                        )
+                    }
                 }
             }
         }
@@ -103,6 +117,6 @@ fun MainTabBar(
 }
 
 private fun MainTab.icon(): ImageVector = when (this) {
-    MainTab.HOME -> Icons.Default.Chat
-    MainTab.SETTINGS -> Icons.Default.Settings
+    MainTab.HOME -> Icons.Outlined.ChatBubbleOutline
+    MainTab.SETTINGS -> Icons.Outlined.Settings
 }
