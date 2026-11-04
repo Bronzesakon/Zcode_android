@@ -20,7 +20,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -46,21 +47,27 @@ import kotlinx.serialization.json.JsonObject
 internal fun MarkerRow(row: JsonObject, modifier: Modifier = Modifier) {
     val colors = LocalZemoteColors.current
     val marker = row["marker"].asObj() ?: return
-    val type = marker["type"].asString().orEmpty()
+    val type = remember(row) { marker["type"].asString().orEmpty() }
 
-    val running = when (type) {
-        "compact" -> marker["status"].asString() == "running"
-        "goalVerify" -> marker["outcome"].asString() == "running"
-        else -> false
+    val running = remember(row) {
+        when (type) {
+            "compact" -> marker["status"].asString() == "running"
+            "goalVerify" -> marker["outcome"].asString() == "running"
+            else -> false
+        }
     }
-    val icon: ImageVector? = when (type) {
-        "compact" -> Icons.Default.Archive
-        "forkNotice" -> Icons.Default.CallSplit
-        "modelChange" -> if (marker["fromModel"].asString() != null) Icons.Default.SwapHoriz else null
-        "goalVerify" -> Icons.Default.Flag
-        else -> null
+    val icon: ImageVector? = remember(row) {
+        when (type) {
+            "compact" -> Icons.Default.Archive
+            "forkNotice" -> Icons.Default.CallSplit
+            "modelChange" -> if (marker["fromModel"].asString() != null) Icons.Default.SwapHoriz else null
+            "goalVerify" -> Icons.Default.Flag
+            else -> null
+        }
     }
-    val label = markerLabel(type, marker) ?: return
+    val label = remember(row) { markerLabel(type, marker) } ?: return
+    val dividerColor = remember(colors) { colors.border.copy(alpha = 0.5f) }
+    val runningAlpha = if (running) rememberMarkerRunningAlpha() else null
 
     Row(
         modifier = modifier
@@ -71,7 +78,7 @@ internal fun MarkerRow(row: JsonObject, modifier: Modifier = Modifier) {
     ) {
         HorizontalDivider(
             Modifier.weight(1f).widthIn(min = ZemoteSpacing.space8),
-            color = colors.border.copy(alpha = 0.5f),
+            color = dividerColor,
         )
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -86,21 +93,24 @@ internal fun MarkerRow(row: JsonObject, modifier: Modifier = Modifier) {
                     modifier = Modifier.size(ZemoteSpacing.space3_5),
                 )
             }
-            val alpha = if (running) markerRunningAlpha() else 1f
             Text(
                 text = label,
-                style = ZemoteType.uiBase.copy(lineHeight = 20.sp),
+                style = MarkerLabelStyle,
                 color = colors.foregroundSubtle,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.graphicsLayer(alpha = alpha),
+                // 呼吸透明度在 layer block 里读取，动画帧不再重组本行。
+                modifier = Modifier.graphicsLayer { this.alpha = runningAlpha?.value ?: 1f },
             )
         }
         HorizontalDivider(
             Modifier.weight(1f).widthIn(min = ZemoteSpacing.space8),
-            color = colors.border.copy(alpha = 0.5f),
+            color = dividerColor,
         )
     }
 }
+
+/** 标记文案行高 20sp（网页 `text-ui-base` + leading-[20px]）。 */
+private val MarkerLabelStyle = ZemoteType.uiBase.copy(lineHeight = 20.sp)
 
 /** 标记文案；返回 `null` 表示该 type 不渲染。 */
 private fun markerLabel(type: String, marker: JsonObject): String? = when (type) {
@@ -137,11 +147,11 @@ private fun markerLabel(type: String, marker: JsonObject): String? = when (type)
     else -> null
 }
 
-/** 运行态文字 2s 呼吸（网页是 4s 渐变扫光）。 */
+/** 运行态文字 2s 呼吸（网页是 4s 渐变扫光）；在 layer block 里读取，不触发重组。 */
 @Composable
-private fun markerRunningAlpha(): Float {
+private fun rememberMarkerRunningAlpha(): State<Float> {
     val transition = rememberInfiniteTransition(label = "marker-running")
-    val alpha by transition.animateFloat(
+    return transition.animateFloat(
         initialValue = 0.5f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -150,5 +160,4 @@ private fun markerRunningAlpha(): Float {
         ),
         label = "marker-running-alpha",
     )
-    return alpha
 }

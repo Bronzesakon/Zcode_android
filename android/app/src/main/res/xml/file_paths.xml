@@ -5,6 +5,7 @@
 
   - files-path  ：更新包下完先落在 getFilesDir()/updates
   - cache-path  ：断点续传的 .part 临时文件
+  - files-path(logs)：设置页「运行日志」生成的分享用日志包
   两者必须与 UpdateInstaller 里实际使用的目录一一对应，否则 install 会抛
   IllegalArgumentException（"Failed to find configured root"）。
 -->
@@ -15,4 +16,7 @@
     <cache-path
         name="update-cache"
         path="updates/" />
+    <files-path
+        name="logs"
+        path="logs/" />
 </paths>

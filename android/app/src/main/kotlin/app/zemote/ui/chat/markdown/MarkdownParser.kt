@@ -40,6 +40,8 @@ internal object MarkdownParser {
     private val tableSepRe =
         Regex("""^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$""")
     private val taskRe = Regex("""^\[([ xX])\][ \t]+(.*)$""")
+    /** 标题行尾的 `###` 闭合标记；预先编译，避免每行标题都构造一次正则。 */
+    private val trailingHashesRe = Regex("""[ \t]+#+[ \t]*$""")
 
     private fun parseBlocks(lines: List<String>, depth: Int): List<MdBlock> {
         if (depth > MAX_BLOCK_DEPTH) {
@@ -84,7 +86,7 @@ internal object MarkdownParser {
             if (heading != null) {
                 val level = heading.groupValues[1].length
                 val raw = heading.groupValues.getOrNull(2).orEmpty()
-                    .replace(Regex("""[ \t]+#+[ \t]*$"""), "")
+                    .replace(trailingHashesRe, "")
                     .trim()
                 out += MdBlock.Heading(level, parseInlines(raw, depth + 1))
                 i++

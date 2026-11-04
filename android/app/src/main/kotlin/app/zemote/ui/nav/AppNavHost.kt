@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.zemote.BuildConfig
+import app.zemote.log.ZLog
 import app.zemote.ui.AppContainer
 import app.zemote.ui.MainScreen
 import app.zemote.ui.auth.LoginOverlay
@@ -70,14 +71,17 @@ class NavViewModel(initial: NavState = NavState.of()) : ViewModel() {
 
     fun push(route: Route) {
         _state.value = _state.value.push(route)
+        ZLog.ui("nav", "push ${route.describe()} depth=${_state.value.depth}")
     }
 
     fun pop() {
         _state.value = _state.value.pop()
+        ZLog.ui("nav", "pop → ${_state.value.current.describe()} depth=${_state.value.depth}")
     }
 
     fun replaceRoot(route: Route) {
         _state.value = _state.value.replaceRoot(route)
+        ZLog.ui("nav", "replaceRoot ${route.describe()}")
     }
 }
 
@@ -93,7 +97,10 @@ fun AppNavHost(container: AppContainer) {
     val navState by nav.state.collectAsStateWithLifecycle()
 
     val entries = remember { NavEntryStores() }
-    LaunchedEffect(navState.stack) { entries.retain(navState.stack) }
+    LaunchedEffect(navState.stack) {
+        entries.retain(navState.stack)
+        ZLog.ui("nav", "stack depth=${navState.depth} current=${navState.current.describe()}")
+    }
 
     BackHandler(enabled = navState.canGoBack) { nav.pop() }
 
@@ -168,6 +175,7 @@ private fun MainRoute(container: AppContainer, nav: NavViewModel, route: Route.M
                             // 不能用所属工作区的主根（桌面端会 task-directory-mismatch）。
                             workspaceKey = taskKey,
                             taskId = task.id,
+                            taskTitle = task.title,
                             workspacePath = task.workspacePath ?: workspace.path,
                             workspaceIdentity = task.workspaceIdentity ?: workspace.identity,
                             hostId = if (needsPrepare) (task.hostId ?: workspace.hostId) else null,
@@ -359,6 +367,7 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
             deviceId = route.deviceId,
             workspaceKey = route.workspaceKey,
             taskId = route.taskId,
+            taskTitle = route.taskTitle,
             workspacePath = route.workspacePath,
             workspaceIdentity = route.workspaceIdentity,
             hostId = route.hostId,
@@ -367,12 +376,30 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
     )
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { viewModel.onEnter() }
+    DisposableEffect(route) {
+        ZLog.ui("nav", "chat route enter ${route.describe()}")
+        onDispose { ZLog.ui("nav", "chat route exit ${route.describe()}") }
+    }
+
+    LaunchedEffect(Unit) {
+        ZLog.ui("nav", "chat onEnter ${route.describe()}")
+        viewModel.onEnter()
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.onForeground()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    ZLog.ui("nav", "chat onForeground ${route.describe()}")
+                    viewModel.onForeground()
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    ZLog.ui("nav", "chat onBackground ${route.describe()}")
+                    viewModel.onBackground()
+                }
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -383,6 +410,7 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
             state = state,
             onBack = nav::pop,
             onRefresh = viewModel::refresh,
+            onRetry = viewModel::retryLastAction,
             onSend = viewModel::sendText,
             onStop = viewModel::stop,
             onLoadOlder = viewModel::loadOlder,
@@ -401,6 +429,7 @@ private fun ChatRoute(container: AppContainer, nav: NavViewModel, route: Route.C
             onRemoveAttachment = viewModel::removeAttachment,
             onLoadAttachment = viewModel::readAttachmentBytes,
             onDraftRestored = viewModel::consumeDraftRestore,
+            onWindowTrimSafe = viewModel::setWindowTrimSafe,
         )
 
         if (state.needsLogin) {
@@ -493,6 +522,22 @@ private class NavEntryStores {
 }
 
 private fun Route.storageKey(): String = if (this is Route.Main) "main" else toString()
+
+/** 日志用路由摘要：长路径截断，避免一行日志吃掉半个屏幕。 */
+private fun Route.describe(): String = when (this) {
+    is Route.Main -> "Main(${tab.name})"
+    Route.Pairing -> "Pairing"
+    is Route.Chat -> "Chat(device=${clipNav(deviceId)} ws=${clipNav(workspaceKey ?: "-")} " +
+        "task=${clipNav(taskId ?: "-")} path=${clipNav(workspacePath ?: "-")} " +
+        "identity=${clipNav(workspaceIdentity ?: "-")} host=${clipNav(hostId ?: "-")} " +
+        "project=${clipNav(projectId ?: "-")})"
+
+    is Route.SettingsSection -> "Settings(${id})"
+    Route.AboutUpdate -> "AboutUpdate"
+}
+
+private fun clipNav(text: String, max: Int = 80): String =
+    if (text.length <= max) text else text.take(max) + "…"
 
 /** 最小的 [ViewModelStoreOwner]：只提供一个 store。 */
 private class EntryOwner(override val viewModelStore: ViewModelStore) : ViewModelStoreOwner

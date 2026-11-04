@@ -11,6 +11,9 @@ package app.zemote.ui.chat.markdown
 //  3. 输出 token 按原顺序拼接后与输入逐字符相等（着色不改内容），所以复制按钮
 //     复制的始终是原始代码。
 //  4. 未识别的语言直接整段普通文本，宁可不染色也不乱染。
+//  5. 结果按 (code, language, colors) 进有界 LRU：滚动回看/同内容多次组合时直接复用。
+//  6. 超长代码（[MAX_HIGHLIGHT_CHARS]）直接去色成纯文本——只去掉着色，不改字号/行高/
+//     折叠等结构；避免主线程对超大输入做整段分词与 AnnotatedString 构造。
 // ---------------------------------------------------------------------------
 
 import androidx.compose.ui.graphics.Color
@@ -21,6 +24,24 @@ import androidx.compose.ui.text.withStyle
 import app.zemote.ui.theme.ZemoteColors
 
 internal object MarkdownHighlighter {
+
+    /**
+     * 着色预算：超过就退回纯文本。
+     *
+     * 代码块折叠只保留 30 行，但单行可能是几百 KB 的压缩 JSON；这种输入在做
+     * AnnotatedString 拼装时会产生大量 SpanStyle + substring，主线程扛不住。
+     */
+    internal const val MAX_HIGHLIGHT_CHARS = 32_000
+
+    private const val CACHE_ENTRIES = 48
+
+    private data class HighlightKey(
+        val code: String,
+        val language: String?,
+        val colors: ZemoteColors,
+    )
+
+    private val cache = LruCache<HighlightKey, AnnotatedString>(CACHE_ENTRIES)
 
     private enum class Kind { Plain, Keyword, String, Comment, Number }
 
@@ -38,8 +59,25 @@ internal object MarkdownHighlighter {
         val yamlKeys: Boolean = false,
     )
 
-    /** 把代码转成带颜色的 AnnotatedString。调用方负责用 remember 缓存。 */
-    fun highlight(code: String, language: String?, colors: ZemoteColors): AnnotatedString {
+    /** 把代码转成带颜色的 AnnotatedString。调用方无需额外缓存，这里自带 LRU。 */
+    fun highlight(code: String, language: String?, colors: ZemoteColors): AnnotatedString =
+        cache.getOrPut(HighlightKey(code, language, colors)) {
+            if (exceedsHighlightBudget(code)) {
+                // 超长：只去色（Text 的 style 已带前景色），结构/换行/缩进原样保留。
+                AnnotatedString(code)
+            } else {
+                renderHighlighted(code, language, colors)
+            }
+        }
+
+    /** 单测用：判断这段代码是否已超出着色预算（超出即纯文本渲染）。 */
+    internal fun exceedsHighlightBudget(code: String): Boolean = code.length > MAX_HIGHLIGHT_CHARS
+
+    private fun renderHighlighted(
+        code: String,
+        language: String?,
+        colors: ZemoteColors,
+    ): AnnotatedString {
         val lang = normalize(language)
         if (lang == "diff" || lang == "patch") return highlightDiff(code, colors)
 

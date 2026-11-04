@@ -1,6 +1,7 @@
 package app.zemote.ui.chat.timeline
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -197,6 +198,36 @@ class TimelineRowLogicTest {
             put("inputText", "\n  echo   hi\nsecond line")
         }
         assertEquals("echo hi", toolSummary(plain))
+    }
+
+    @Test
+    fun `shell 命令展开判定等价于 lines 数量超过上限`() {
+        // 口径与原来的 `command.lines().size > 3` 完全一致。
+        assertTrue(lineCountExceeds("a\nb\nc\nd", 3))
+        assertTrue(lineCountExceeds("a\nb\nc\n", 3)) // 末尾换行多出一个空行
+        assertFalse(lineCountExceeds("a\nb\nc", 3))
+        assertFalse(lineCountExceeds("", 3))
+        assertTrue(lineCountExceeds("a\r\nb\r\nc\r\nd", 3))
+        assertFalse(lineCountExceeds("a", 1))
+        assertTrue(lineCountExceeds("a\nb", 1))
+    }
+
+    @Test
+    fun `用户附件按图片与文件拆分`() {
+        val attachments = buildJsonArray {
+            add(buildJsonObject { put("mime", "image/png"); put("ref", "blob:1") })
+            add(buildJsonObject { put("mime", "image/png") }) // 没有 ref：按普通文件
+            add(buildJsonObject { put("mime", "text/plain"); put("ref", "blob:2") })
+            add(buildJsonObject { put("mime", "text/plain"); put("name", "a.txt") })
+        }
+        val split = splitUserAttachments(attachments)
+        assertEquals(listOf("blob:1"), split.images)
+        assertEquals(3, split.files.size)
+        assertEquals(4, split.images.size + split.files.size)
+
+        val empty = splitUserAttachments(null)
+        assertTrue(empty.images.isEmpty())
+        assertTrue(empty.files.isEmpty())
     }
 
     @Test

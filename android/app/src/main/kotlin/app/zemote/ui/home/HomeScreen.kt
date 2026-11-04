@@ -145,7 +145,9 @@ fun HomeScreen(
             modifier = Modifier.fillMaxSize(),
         ) {
             when {
-                state.visibleWorkspaces.isNotEmpty() -> HomeTree(
+                // 首屏等全量项目树：不让 bootstrap 的少数已挂载工作区先冒出来再补全。
+                // 重进/下拉刷新时 treeReady 已为 true，列表原样保留。
+                state.visibleWorkspaces.isNotEmpty() && state.treeReady -> HomeTree(
                     state = state,
                     view = view,
                     onToggleWorkspace = onToggleWorkspace,
@@ -156,7 +158,7 @@ fun HomeScreen(
                     onDelete = onDelete,
                 )
 
-                state.loading -> HomeSkeleton()
+                state.loading || !state.treeReady -> HomeSkeleton()
 
                 else -> EmptyState(
                     loading = false,

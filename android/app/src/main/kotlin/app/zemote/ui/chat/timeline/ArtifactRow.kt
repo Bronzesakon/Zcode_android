@@ -9,10 +9,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,26 +34,30 @@ import kotlinx.serialization.json.JsonObject
 @Composable
 internal fun ArtifactRow(row: JsonObject, modifier: Modifier = Modifier) {
     val colors = LocalZemoteColors.current
-    val name = row["displayName"].asString() ?: "产物"
-    val type = row["artifactType"].asString().orEmpty()
-    val meta = artifactMeta(type, row["sizeBytes"].asLong())
-    val version = artifactVersionBadge(
-        row["version"].asLong() ?: row["artifactVersion"].asLong(),
-    )
-    val shape = RoundedCornerShape(ZemoteRadius.lg)
+    val name = remember(row) { row["displayName"].asString() ?: "产物" }
+    val type = remember(row) { row["artifactType"].asString().orEmpty() }
+    val meta = remember(row) { artifactMeta(type, row["sizeBytes"].asLong()) }
+    val version = remember(row) {
+        artifactVersionBadge(
+            row["version"].asLong() ?: row["artifactVersion"].asLong(),
+        )
+    }
+    val icon = remember(row) {
+        artifactIcon(type.ifBlank { name.substringAfterLast('.', "") })
+    }
 
     Row(
         modifier = modifier
             .padding(vertical = ZemoteSpacing.space1)
-            .clip(shape)
+            .clip(ZemoteRadius.lgShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, shape)
+            .border(1.dp, colors.cardBorder, ZemoteRadius.lgShape)
             .padding(horizontal = ZemoteSpacing.space3, vertical = ZemoteSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space2),
     ) {
         Icon(
-            imageVector = artifactIcon(type.ifBlank { name.substringAfterLast('.', "") }),
+            imageVector = icon,
             contentDescription = null,
             tint = colors.foregroundSubtle,
             modifier = Modifier.size(ZemoteSpacing.space4),

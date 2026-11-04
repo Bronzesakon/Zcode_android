@@ -5,10 +5,12 @@ import androidx.lifecycle.viewModelScope
 import app.zemote.auth.RemoteTokenException
 import app.zemote.data.AuthStore
 import app.zemote.data.DeviceRecord
+import app.zemote.data.HomeCache
 import app.zemote.pairing.PairingUrl
 import app.zemote.engine.EngineEvent
 import app.zemote.engine.EngineState
 import app.zemote.engine.RelayState
+import app.zemote.log.ZLog
 import app.zemote.ui.EnginePort
 import app.zemote.ui.chat.ConversationRegistry
 import app.zemote.ui.chat.SessionsIndexProjection
@@ -18,6 +20,7 @@ import app.zemote.ui.chat.WorkspaceProjection
 import app.zemote.ui.devices.DeviceRepository
 import app.zemote.ui.toUserMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -26,11 +29,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -59,8 +65,19 @@ import kotlinx.serialization.json.put
  * 折叠规则沿用旧口径：默认折叠；有未读的项目自动展开且只显示未读；
  * 用户点一下项目行 → 显示全部任务，再点一下 → 折叠并记住「不要自动展开」。
  */
+/** 首次进页等 `readTree` 的兜底时长；超时先发布 bootstrap 列表，树回来后原地补全。 */
+private const val TREE_READY_GRACE_MS = 4_000L
+
 data class HomeUiState(
     val loading: Boolean = false,
+    /**
+     * 项目树是否已经完整拉过一轮。
+     *
+     * `bootstrap` 只返回当前已挂载的少数工作区；`project.readTree` 才是全量项目树。
+     * 首次进入在这之前保持骨架，避免「先冒几个工作区、再突然补全」的跳变。
+     * 重进/下拉刷新时保留已有列表，不清空。
+     */
+    val treeReady: Boolean = false,
     val error: String? = null,
     val engineState: EngineState = EngineState.Idle,
     val relayState: RelayState = RelayState.Idle,
@@ -283,6 +300,8 @@ class HomeViewModel(
     private val registry: ConversationRegistry? = null,
     /** 对话行缓存：任务删除时一并清掉（与对话页共用同一个实例）。 */
     private val cache: app.zemote.data.ChatCache? = null,
+    /** 首页项目树快照：进程重启/Activity 重建时先出内容，再后台刷新。 */
+    private val homeCache: HomeCache? = null,
     // 比 relay 自己的 waiting 超时（30 s）多留 5 s：让核心先把
     // `invalid-mobile-connection` / `auth-failed` 这类**具体原因**报上来，
     // 而不是被宿主兜底超时抢先盖成一句笼统的「pairing timeout」。
@@ -296,6 +315,12 @@ class HomeViewModel(
     private var refreshing = false
     private var lastEnteredDeviceId: String? = null
     private var observedSessionSerial = 0L
+
+    /** 当前 [HomeUiState.workspaces] 属于哪台设备；换设备时先清空，避免串数据。 */
+    private var workspacesDeviceId: String? = null
+
+    /** 上一轮 bootstrap/readTree 是否成功；用于「从对话页返回」时跳过无谓重载。 */
+    private var lastRefreshSucceeded = false
     private val observers = mutableListOf<Job>()
 
     /** 任务 mutation 用的桥（任意一个工作区即可；`zcode-task` 是 host 级通道）。 */
@@ -306,6 +331,9 @@ class HomeViewModel(
 
     /** `project.readTree` 每个引擎会话只尝试一次（它是全量项目树）。 */
     private var projectTreeAttempted = false
+
+    /** 首次进页等全量项目树的兜底计时：超时先展示已有 bootstrap 列表，避免骨架卡死。 */
+    private var treeGraceJob: Job? = null
 
     /** 项目树里的全部工作区；`workspace-list-updated` 只带已挂载工作区，不能把它们冲掉。 */
     private var projectTreeWorkspaces = emptyList<WorkspaceItem>()
@@ -329,13 +357,29 @@ class HomeViewModel(
      * **不是一次性**：扫码配对完成会回到同一个 ViewModel；如果这里用 `entered`
      * 锁死，首页会停在配对前的「还没有连接电脑」，只能手动重试。并发调用由
      * [entering] 去重。
+     *
+     * 从对话页返回（同一引擎会话、上一轮已成功）时直接复用内存里的项目树，
+     * **不再重拉 `/readTree`**：任务增删、运行态都由常驻的 sessions-index 订阅更新，
+     * 没有理由每次返回都把整个首页重载一遍。用户下拉刷新或登录/配对返回才强制重拉。
      */
-    fun onEnter() {
-        if (entering) return
+    fun onEnter(force: Boolean = false) {
+        if (entering) {
+            ZLog.vm("home", "onEnter 忽略（上一次仍在进行）")
+            return
+        }
+        if (!force &&
+            lastRefreshSucceeded &&
+            observedSessionSerial == engine.sessionSerial &&
+            _state.value.deviceId != null
+        ) {
+            ZLog.vm("home", "onEnter 复用内存项目树 serial=${engine.sessionSerial}")
+            return
+        }
         entering = true
+        ZLog.vm("home", "onEnter begin force=$force")
         viewModelScope.launch {
             try {
-                enter()
+                enter(force)
             } finally {
                 entering = false
             }
@@ -351,7 +395,7 @@ class HomeViewModel(
         viewModelScope.launch {
             val token = authStore.token()
             _state.update { it.copy(needsLogin = false) }
-            if (token != null) onEnter()
+            if (token != null) onEnter(force = true)
         }
     }
 
@@ -492,14 +536,17 @@ class HomeViewModel(
     // 内部
     // ------------------------------------------------------------------
 
-    private suspend fun enter() {
+    private suspend fun enter(force: Boolean = false) {
+        val startedAt = System.nanoTime()
         val device = resolveDevice()
         if (device == null) {
+            ZLog.vm("home", "enter: 还没有连接电脑")
             _state.update { it.copy(error = "还没有连接电脑") }
             return
         }
         val url = device.remoteUrl
         if (url == null) {
+            ZLog.vm("home", "enter: device=${device.id} 凭据不可用")
             _state.update {
                 it.copy(
                     credentialsMissing = true,
@@ -509,6 +556,11 @@ class HomeViewModel(
             return
         }
         val token = authStore.token()
+        ZLog.vm(
+            "home",
+            "enter device=${device.id} host=${hostOfLog(url)} hash=${PairingUrl.hasPassHash(url)} " +
+                "jwt=${if (token == null) "no" else "yes"}",
+        )
         // 3.16.1 新链接没有 hash：必须先登录拿 JWT，否则 relay 一定会拒绝。
         if (token == null && !PairingUrl.hasPassHash(url)) {
             _state.update {
@@ -521,9 +573,23 @@ class HomeViewModel(
             }
             return
         }
+        // 先把上一轮落盘的项目树铺出来（进程重启 / Activity 重建时首页不再从骨架开始）；
+        // 网络连接/刷新随后覆盖，列表保持可见。
+        if (workspacesDeviceId != null && workspacesDeviceId != device.id) {
+            // 换了一台电脑：旧项目树不能留在界面上。
+            _state.update {
+                it.copy(workspaces = emptyList(), previews = emptyMap(), treeReady = false)
+            }
+            projectTreeWorkspaces = emptyList()
+        }
+        workspacesDeviceId = device.id
+        loadCachedHome(device.id)
         try {
+            val sessionStarted = System.nanoTime()
             engine.ensureSession(url, token)
+            ZLog.vm("home", "enter ensure_session ms=${elapsedMsLog(sessionStarted)}")
         } catch (e: RemoteTokenException) {
+            ZLog.vm("home", "enter ensure_session failed reason=${e.reason}", e)
             // 换 terminal token 失败：401 说明 OAuth 登录态也失效了，清掉并引导重登；
             // 其余（网络/5xx）只显示错误，保留登录态让用户重试。
             if (e.authRequired) {
@@ -544,39 +610,87 @@ class HomeViewModel(
         _state.update {
             it.copy(deviceId = device.id, deviceName = device.name, needsLogin = false)
         }
-        // 从对话页返回会重新触发 onEnter：此时强制重拉 readTree，让新会话/置顶
-        // 立即出现在首页（注册表复用已有桥，代价只有一次 readTree）。
-        val reenter = lastEnteredDeviceId == device.id
         lastEnteredDeviceId = device.id
-        refreshInternal(force = reenter)
+        refreshInternal(force = force)
+        ZLog.vm("home", "enter done ms=${elapsedMsLog(startedAt)} force=$force")
+    }
+
+    /** 读首页缓存；只在当前列表为空时使用，避免覆盖正在显示的新数据。 */
+    private suspend fun loadCachedHome(deviceId: String) {
+        val cache = homeCache ?: return
+        if (_state.value.workspaces.isNotEmpty()) return
+        val cached = withContext(Dispatchers.IO) { cache.load(deviceId) } ?: return
+        projectTreeWorkspaces = cached.workspaces
+        _state.update {
+            it.copy(
+                deviceId = deviceId,
+                workspaces = cached.workspaces,
+                previews = cached.previews,
+                // 有缓存就直接显示项目树；后台刷新只更新内容，不闪骨架。
+                treeReady = true,
+            )
+        }
+        ZLog.vm(
+            "home",
+            "cache loaded workspaces=${cached.workspaces.size} " +
+                "tasks=${cached.workspaces.sumOf { it.tasks.size }} ageMs=${System.currentTimeMillis() - cached.savedAt}",
+        )
     }
 
     private suspend fun refreshInternal(force: Boolean = false) {
-        if (refreshing) return
+        if (refreshing) {
+            ZLog.vm("home", "refresh 忽略（上一轮仍在进行）force=$force")
+            return
+        }
         refreshing = true
+        lastRefreshSucceeded = false
+        val startedAt = System.nanoTime()
+        treeGraceJob?.cancel()
+        treeGraceJob = null
         // 只有引擎真的重建（换 URL/JWT/手动重连）才丢弃桥/对话缓存；同一个引擎重拉
         // bootstrap 时任务仍由已有订阅维护，不能被空 tasks 覆盖。
         val serialChanged = engine.sessionSerial != observedSessionSerial
+        ZLog.vm(
+            "home",
+            "refresh begin force=$force serialChanged=$serialChanged serial=${engine.sessionSerial}",
+        )
         if (serialChanged) {
             observedSessionSerial = engine.sessionSerial
             mutationBridge = null
             previewSubscriptions.clear()
             projectTreeAttempted = false
             projectTreeWorkspaces = emptyList()
+            // 换了引擎/连接：有缓存就继续显示缓存，避免首页从骨架重来；没有缓存才等全量树。
+            _state.update { it.copy(treeReady = it.workspaces.isNotEmpty()) }
         } else if (force) {
             // 用户下拉刷新：重订阅 + 重拉 readTree。注册表会复用已有桥，代价很小。
+            // 已有列表保持可见，不闪骨架。
             mutationBridge = null
             previewSubscriptions.clear()
             projectTreeAttempted = false
         }
+        if (projectTreeAttempted) {
+            // 重进首页（非第一次）已经有完整树，直接显示现列表。
+            _state.update { it.copy(treeReady = true) }
+        }
         _state.update { it.copy(loading = true, error = null) }
         try {
+            val pairedAt = System.nanoTime()
             engine.waitPaired(pairTimeoutMs)
+            ZLog.vm("home", "refresh wait_paired ms=${elapsedMsLog(pairedAt)}")
+            val bootstrapAt = System.nanoTime()
             val snapshot = engine.bootstrap()
             val workspaces = WorkspaceProjection.from(snapshot)
+            ZLog.vm(
+                "home",
+                "refresh bootstrap ms=${elapsedMsLog(bootstrapAt)} workspaces=${workspaces.size} " +
+                    "tasks=${workspaces.sumOf { it.tasks.size }}",
+            )
             _state.update { current ->
                 current.copy(
-                    workspaces = if (serialChanged) {
+                    // 有缓存/上一轮全量树时只合并 bootstrap 的已挂载工作区，
+                    // 不能把缓存里的其他项目冲掉；只有真正空列表才整表替换。
+                    workspaces = if (serialChanged && current.workspaces.isEmpty()) {
                         workspaces
                     } else {
                         mergeWorkspaceSnapshot(current.workspaces, workspaces)
@@ -588,16 +702,51 @@ class HomeViewModel(
             workspaces
                 .filter { it.purpose != "conversation" }
                 .forEach { ensurePreviews(it) }
+            if (!_state.value.treeReady) {
+                if (workspaces.none { it.purpose != "conversation" && it.bridgeable }) {
+                    // 没有可桥接的工作区就没有 readTree 入口；bootstrap 列表就是全部。
+                    _state.update { it.copy(treeReady = true) }
+                } else {
+                    startTreeGrace()
+                }
+            }
+            lastRefreshSucceeded = true
         } catch (e: CancellationException) {
+            ZLog.vm("home", "refresh canceled ms=${elapsedMsLog(startedAt)}")
             throw e
         } catch (e: Exception) {
+            lastRefreshSucceeded = false
             // 有 relay 失败原因就优先显示它：`pairing timeout` 只是宿主兜底，
             // `invalid-mobile-connection` / `auth-failed` 才说明卡在哪一步。
             val failureText = _state.value.relayFailure?.let(::relayFailureText)
+            ZLog.vm(
+                "home",
+                "refresh failed ms=${elapsedMsLog(startedAt)} relay=${_state.value.relayState.wire} " +
+                    "error=${failureText ?: e.message ?: e.javaClass.simpleName}",
+                e,
+            )
             _state.update { it.copy(error = failureText ?: e.toUserMessage()) }
         } finally {
             refreshing = false
             _state.update { it.copy(loading = false) }
+            ZLog.vm("home", "refresh done ms=${elapsedMsLog(startedAt)}")
+        }
+    }
+
+    /**
+     * 首次进页等全量项目树的兜底：超时先展示 bootstrap 列表。
+     *
+     * `project.readTree` 正常在几百毫秒内返回；远端 host 最坏可能拖到 12s。
+     * 没有兜底的话用户会一直看骨架；4s 后先出已有列表，树回来后原地补全。
+     */
+    private fun startTreeGrace() {
+        treeGraceJob?.cancel()
+        treeGraceJob = viewModelScope.launch {
+            delay(TREE_READY_GRACE_MS)
+            if (!_state.value.treeReady) {
+                ZLog.vm("home", "tree grace timeout, publish bootstrap list first")
+                _state.update { it.copy(treeReady = true) }
+            }
         }
     }
 
@@ -637,11 +786,16 @@ class HomeViewModel(
         viewModelScope.launch {
             previewSetup.withLock {
                 if (workspace.key in previewSubscriptions) return@withLock
+                val startedAt = System.nanoTime()
                 try {
                     // 非当前 tab 的项目不在这里订阅：openBridge 必须带 project/taskHostId，
                     // 而「展开一下」就 prepare 一个项目草稿会在桌面端凭空多开工作区。
                     // 这些工作区的任务由 readTree 提供；进入对话页时再按任务精确 prepare。
-                    if (!workspace.bridgeable) return@withLock
+                    if (!workspace.bridgeable) {
+                        ZLog.vm("home", "preview skip key=${clipLog(workspace.key)}（不可桥接）")
+                        return@withLock
+                    }
+                    ZLog.vm("home", "preview begin key=${clipLog(workspace.key)} registry=${registry != null}")
                     val scope = buildJsonObject {
                         put("workspacePath", workspace.path)
                         workspace.identity?.let { put("workspaceIdentity", it) }
@@ -675,6 +829,11 @@ class HomeViewModel(
                     if (!projectTreeAttempted) {
                         // 只有真的拿到合法响应才算完成；失败留待下一轮 refresh 重试。
                         projectTreeAttempted = loadProjectTree(bridge)
+                        // 无论成功失败都结束首屏骨架：失败时退回 bootstrap 列表 + 错误条，
+                        // 总比一直停在骨架好；下一轮 refresh 会重试全量树。
+                        treeGraceJob?.cancel()
+                        treeGraceJob = null
+                        _state.update { it.copy(treeReady = true) }
                     }
                     if (handle == null) {
                         engine.conversationCall(
@@ -689,10 +848,21 @@ class HomeViewModel(
                     // pinned/archived/unreadAt 全部来自 readTree 的 tasks，不再二次计算
                     // （listPinnedTasks/listArchivedTasks 只是它的子集，失败还会把标记清零）。
                     mergeSessionsIndex()
+                    ZLog.vm(
+                        "home",
+                        "preview ready key=${clipLog(workspace.key)} bridge=$bridge conv=${clipLog(key)} " +
+                            "ms=${elapsedMsLog(startedAt)}",
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     // 预览失败不影响主列表；只记一次可读错误。
+                    ZLog.vm(
+                        "home",
+                        "preview failed key=${clipLog(workspace.key)} ms=${elapsedMsLog(startedAt)} " +
+                            "kind=${e.kindLabelLog()}",
+                        e,
+                    )
                     _state.update { it.copy(error = "预览加载失败：${e.toUserMessage()}") }
                 }
             }
@@ -742,12 +912,13 @@ class HomeViewModel(
 
     /** `project.readTree` 单次调用；`hostId=null` = 本机。参数必须是单个对象（见 `channel_call`）。 */
     private suspend fun readTree(bridge: Long, hostId: String?): JsonObject? {
+        val startedAt = System.nanoTime()
         val arg = buildJsonObject {
             put("includeDeleted", false)
             put("includeDeletedTasks", true)
             hostId?.let { put("hostId", it) }
         }
-        return runCatching {
+        val result = runCatching {
             engine.channelCall(
                 bridge,
                 "project",
@@ -756,11 +927,28 @@ class HomeViewModel(
                 timeoutMs = 12_000,
             )
         }.getOrNull().asObject()
+        if (result == null) {
+            ZLog.vm(
+                "home",
+                "readTree failed bridge=$bridge host=${hostId ?: "local"} ms=${elapsedMsLog(startedAt)}",
+            )
+        } else {
+            ZLog.vm(
+                "home",
+                "readTree ok bridge=$bridge host=${hostId ?: "local"} " +
+                    "projects=${(result["projects"] as? JsonArray)?.size ?: 0} " +
+                    "tasks=${(result["tasks"] as? JsonArray)?.size ?: 0} ms=${elapsedMsLog(startedAt)}",
+            )
+        }
+        return result
     }
 
     private suspend fun loadProjectTree(bridge: Long): Boolean {
+        val startedAt = System.nanoTime()
         // 本地 + 每个在线远端 host 各一次 readTree（网页 Mbt 的完整读法）。
-        val local = readTree(bridge, hostId = null) ?: return false
+        val local = readTree(bridge, hostId = null) ?: return false.also {
+            ZLog.vm("home", "loadProjectTree abort（本地 readTree 失败）")
+        }
         val responses = mutableListOf(local)
         val directory = runCatching {
             engine.channelCall(
@@ -784,6 +972,10 @@ class HomeViewModel(
             hostIds.map { hostId -> async { readTree(bridge, hostId = hostId) } }.awaitAll()
                 .filterNotNull()
         }
+        ZLog.vm(
+            "home",
+            "loadProjectTree hosts=[${hostIds.joinToString(",")}] responses=${responses.size}",
+        )
         val projects = responses.flatMap { it["projects"].asArray().orEmpty() }
         val treeTasks = responses.flatMap { it["tasks"].asArray().orEmpty() }
 
@@ -887,6 +1079,11 @@ class HomeViewModel(
             )
         }
         projectTreeWorkspaces = built.distinctBy { it.key }
+        ZLog.vm(
+            "home",
+            "loadProjectTree ok projects=${projects.size} tasks=${treeTasks.size} " +
+                "workspaces=${projectTreeWorkspaces.size} ms=${elapsedMsLog(startedAt)}",
+        )
 
         _state.update { current ->
             val previous = current.workspaces.associateBy { it.key }
@@ -1091,6 +1288,22 @@ class HomeViewModel(
     }
 
     private fun observe() {
+        // 项目树/任务状态一有变化就落盘（防抖 800ms）；后台任务进度因此能跨进程保留。
+        // 固定在 IO 上收集：写盘与防抖都不应该占用主线程作用域。
+        observers += viewModelScope.launch(Dispatchers.IO) {
+            state
+                .map { Triple(it.deviceId, it.workspaces, it.previews) }
+                .distinctUntilChanged()
+                .collect {
+                    delay(800)
+                    val latest = _state.value
+                    val deviceId = latest.deviceId ?: return@collect
+                    if (!latest.treeReady || latest.workspaces.isEmpty()) return@collect
+                    withContext(Dispatchers.IO) {
+                        homeCache?.save(deviceId, latest.workspaces, latest.previews)
+                    }
+                }
+        }
         observers += viewModelScope.launch {
             engine.engineState.collect { engineState ->
                 _state.update { it.copy(engineState = engineState) }
@@ -1210,6 +1423,20 @@ class HomeViewModel(
         super.onCleared()
     }
 }
+
+// ---------------------------------------------------------------------------
+// 日志小工具（本文件用）
+// ---------------------------------------------------------------------------
+
+private fun clipLog(text: String, max: Int = 120): String =
+    if (text.length <= max) text else text.take(max) + "…"
+
+private fun elapsedMsLog(startedAtNanos: Long): Long = (System.nanoTime() - startedAtNanos) / 1_000_000
+
+private fun hostOfLog(url: String): String =
+    runCatching { java.net.URI(url).host }.getOrNull() ?: "-"
+
+private fun Throwable.kindLabelLog(): String = javaClass.simpleName
 
 // ---------------------------------------------------------------------------
 // JSON 小工具（只在本文件用；与 ChatViewModel 的私有工具同语义）

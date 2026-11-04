@@ -2,6 +2,7 @@ package app.zemote.engine
 
 import android.util.Log
 import app.zemote.core.NativeBridge
+import app.zemote.log.ZLog
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -25,7 +26,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
@@ -204,6 +207,10 @@ class ZemoteEngine private constructor(
             if (started || disposed) return@launch
             started = true
             _state.value = EngineState.Starting
+            ZLog.engine(
+                "start → starting url=${ZLog.redact(config.url)} token=${if (config.token.isNullOrEmpty()) "no" else "yes"} " +
+                    "version=${config.appVersion ?: "-"} device=${config.deviceName ?: "-"}",
+            )
 
             // --- 契约 §4：ABI 核对 ---
             val abiRaw = runCatching { bridge.abiVersion() }.getOrNull()
@@ -242,6 +249,7 @@ class ZemoteEngine private constructor(
             }
             handle = newHandle
             _state.value = EngineState.Running(newHandle)
+            ZLog.engine("state → running handle=$newHandle")
 
             // 构造过程本身就会产生事件（relay TimerStart、日志等），**不能丢**（契约 §5）
             dispatchEnvelope(created, fatalOnError = true)
@@ -601,6 +609,7 @@ class ZemoteEngine private constructor(
             disposed = true
             val h = handle
             handle = null
+            ZLog.engine("dispose handle=${h ?: "-"} pending=${pending.size}")
 
             if (h != null) {
                 val raw = runCatching { bridge.dispose(h, clock()) }.getOrNull()
@@ -618,6 +627,7 @@ class ZemoteEngine private constructor(
             }
 
             if (_state.value !is EngineState.Fatal) _state.value = EngineState.Disposed
+            ZLog.engine("state → disposed")
 
             engineJob.cancel()
             if (ownsDispatcher) (dispatcher as? ExecutorCoroutineDispatcher)?.close()
@@ -674,6 +684,10 @@ class ZemoteEngine private constructor(
         val outcome = withTimeoutOrNull(timeoutMs) { deferred.await() }
         if (outcome == null) {
             pending.remove(token)
+            ZLog.engine(
+                "timeout token=${clip(token, 120)} method=${command.str("method")} afterMs=$timeoutMs " +
+                    "pending=${pending.size}",
+            )
             throw EngineException(
                 NativeError(
                     "timeout",
@@ -757,16 +771,26 @@ class ZemoteEngine private constructor(
     }
 
     private fun dispatchEvent(event: EngineEvent) {
+        logEventSummary(event)
         _events.tryEmit(event)
 
         when (event) {
             // §7.1 传输动作
             is EngineEvent.WsConnect -> connect(event.generation, event.uri)
             is EngineEvent.WsSendText -> sockets.sendText(event.generation, event.text)
-            is EngineEvent.WsClose -> sockets.close(event.generation, event.code, event.reason)
+            is EngineEvent.WsClose -> {
+                ZLog.net(
+                    "ws",
+                    "close gen=${event.generation} code=${event.code ?: "-"} reason=${event.reason?.take(200) ?: "-"}",
+                )
+                sockets.close(event.generation, event.code, event.reason)
+            }
 
             // §7.2 relay 层
-            is EngineEvent.RelayStateChanged -> _relayState.value = event.state
+            is EngineEvent.RelayStateChanged -> {
+                ZLog.net("relay", "state → ${event.state.wire}")
+                _relayState.value = event.state
+            }
             is EngineEvent.RelayLog -> logLine(event.line)
             // relay_payload 只作旁路透出：门面已按 _dispatchPayload 消费过它的语义
             is EngineEvent.RelayPayload -> Unit
@@ -814,6 +838,11 @@ class ZemoteEngine private constructor(
      */
     private fun connect(generation: Long, uri: String) {
         val refresher = terminalTokenRefresher
+        ZLog.net(
+            "ws",
+            "connect gen=$generation refresh=${if (generation > 1L && refresher != null) "token" else "none"} " +
+                "uri=${ZLog.redact(uri)}",
+        )
         if (generation <= 1L || refresher == null) {
             sockets.connect(generation, uri, socketListener)
             return
@@ -829,6 +858,7 @@ class ZemoteEngine private constructor(
             }
             if (disposed) return@launch
             if (fresh.isNullOrBlank()) {
+                ZLog.net("ws", "terminal token refresh failed gen=$generation")
                 feed(SocketInputs.failed(generation, "terminal token refresh failed"))
             } else {
                 sockets.connect(generation, RelayUri.withToken(uri, fresh), socketListener)
@@ -858,6 +888,7 @@ class ZemoteEngine private constructor(
         if (_state.value is EngineState.Fatal) return
         logLine("FATAL: $reason${detail?.let { " [$it]" }.orEmpty()}")
         _state.value = EngineState.Fatal(reason, detail)
+        ZLog.engine("state → fatal reason=${clip(reason, 300)} detail=${clip(detail ?: "-", 300)}")
 
         // 停掉一切自动动作，并唤醒所有等待者（否则它们要等宿主兜底超时）
         timers.cancelAll()
@@ -872,11 +903,114 @@ class ZemoteEngine private constructor(
     private fun logLine(line: String) {
         // `Log.d` 在多数 OEM 上被全局日志级别吞掉，复现连接问题时 logcat 里一条都拿不到。
         // 用 `I` 记录**非帧内容**（状态迁移 / 连接失败 / 关闭码 / error frame）；
-        // `>>` / `<<` 是完整协议帧（可能含工作区/对话内容），只留在内存环形缓冲，不写系统日志。
-        if (!line.startsWith(">>") && !line.startsWith("<<")) Log.i(TAG, line)
+        // `>>` / `<<` 是完整协议帧（可能含工作区/对话内容），只进本机日志文件，不写系统日志。
+        val isFrame = line.startsWith(">>") || line.startsWith("<<")
+        if (isFrame) {
+            // 大帧只落文件；主线程写 logcat 走 binder，流式/滚动时是额外卡顿源。
+            ZLog.proto("frame", line, mirrorLogcat = false)
+        } else {
+            Log.i(TAG, line)
+            ZLog.engine(line)
+        }
         logRing.addLast(line)
         while (logRing.size > MAX_LOG_LINES) logRing.removeFirst()
         _logs.value = logRing.toList()
+    }
+
+    /**
+     * 事件摘要：只记「能用来看时间线」的字段，不 dump 整包 rows。
+     *
+     * 对话页滑动时会连续收到 `conversation_event`，这里的单行摘要正是判断
+     * 「谁触发了重载 / 拉了多少行 / 从哪个 seq 开始」的依据。
+     */
+    private fun logEventSummary(event: EngineEvent) {
+        when (event) {
+            is EngineEvent.WorkspaceListUpdated -> {
+                val list = (event.value as? JsonObject)?.get("workspaces") as? JsonArray
+                ZLog.engine(
+                    "event workspace_list_updated workspaces=${list?.size ?: "?"} " +
+                        "bytes=${event.value.toString().length}",
+                )
+            }
+
+            is EngineEvent.BridgeDegraded ->
+                ZLog.engine("event bridge_degraded session=${event.session} degraded=${event.degraded ?: "-"}")
+
+            is EngineEvent.BridgeRecovered ->
+                ZLog.engine("event bridge_recovered session=${event.session} count=${event.count}")
+
+            is EngineEvent.ConversationOpened -> ZLog.engine(
+                "event conversation_opened session=${event.session} key=${clip(event.key, 160)} " +
+                    "scopeKeys=${jsonKeys(event.scope)}",
+            )
+
+            is EngineEvent.ConversationEvent -> {
+                val summary = conversationEventSummary(event.event)
+                ZLog.proto(
+                    "conv",
+                    "event session=${event.session} key=${clip(event.key, 120)} $summary",
+                )
+                // 整包 snapshot 是「重载」的明显信号：顺手记一次堆与行数，
+                // 便于区分「滑动触发重载」是协议层重放还是本机内存压力（LMK 前兆）。
+                if (summary.contains("kind=snapshot")) {
+                    val rows = (event.event as? JsonObject)?.numOrNull("rowCount")?.toInt()
+                    ZLog.memory("rowsSnapshot", rows)
+                }
+            }
+
+            is EngineEvent.AppError -> ZLog.engine(
+                "event app_error reason=${event.reason ?: "-"} error=${clip(event.error ?: "-", 300)}",
+            )
+
+            is EngineEvent.Completed -> ZLog.engine(
+                "event completed token=${clip(event.token, 120)} outcome=${outcomeSummary(event.outcome)}",
+            )
+
+            else -> Unit
+        }
+    }
+
+    private fun conversationEventSummary(event: JsonElement): String {
+        val obj = event as? JsonObject ?: return "raw"
+        val type = (obj["type"] as? JsonPrimitive)?.contentOrNull ?: "?"
+        return when (type) {
+            "rowsUpdated" -> {
+                val payload = ((obj["frame"] as? JsonObject)?.get("payload")) as? JsonObject
+                val kind = (payload?.get("kind") as? JsonPrimitive)?.contentOrNull ?: "-"
+                val ops = (payload?.get("deltas") as? JsonArray)?.size
+                "rowsUpdated kind=$kind ops=${ops ?: "-"} seq=${obj.numOrNull("seq")} " +
+                    "total=${obj.numOrNull("totalCount")} rows=${obj.numOrNull("rowCount")} " +
+                    "firstRow=${obj.numOrNull("firstRowId")} ready=${obj.boolOrNull("ready")}"
+            }
+
+            "sessionsIndexUpdated" ->
+                "sessionsIndexUpdated seq=${obj.numOrNull("seq")} ready=${obj.boolOrNull("ready")} " +
+                    "sessions=${obj.numOrNull("sessionCount")} epoch=${obj.strOrNull("logEpoch") ?: "-"}"
+
+            "log" -> "log ${clip(obj.strOrNull("line") ?: "-", 300)}"
+
+            "completed" -> "completed token=${clip(obj.strOrNull("token") ?: "-", 120)} " +
+                "outcome=${(obj["outcome"] as? JsonObject)?.strOrNull("kind") ?: "-"}"
+
+            "handshakeDone" -> "handshakeDone connection=${obj.strOrNull("connectionId") ?: "-"}"
+
+            else -> type
+        }
+    }
+
+    private fun outcomeSummary(outcome: CompletionOutcome): String = when (outcome) {
+        is CompletionOutcome.Payload -> "payload(${outcome.value.toString().length}B)"
+        is CompletionOutcome.BridgeOpened -> "bridge_opened(${outcome.session})"
+        is CompletionOutcome.Ok -> "ok"
+        is CompletionOutcome.Failed ->
+            "failed(${outcome.error.kind}: ${clip(outcome.error.message ?: "-", 200)})"
+
+        is CompletionOutcome.Unknown -> "unknown(${outcome.kind})"
+    }
+
+    private fun jsonKeys(value: JsonElement): String {
+        val obj = value as? JsonObject ?: return "-"
+        return obj.keys.sorted().take(8).joinToString(",").ifBlank { "-" }
     }
 
     // ----------------------------------------------------------------------
@@ -885,6 +1019,7 @@ class ZemoteEngine private constructor(
 
     private val socketListener = object : RelayWebSocket.Listener {
         override fun onOpen(generation: Long) {
+            ZLog.net("ws", "open gen=$generation")
             postStep(SocketInputs.ready(generation))
         }
 
@@ -897,10 +1032,12 @@ class ZemoteEngine private constructor(
         }
 
         override fun onFailure(generation: Long, error: String) {
+            ZLog.net("ws", "failure gen=$generation error=${clip(error, 300)}")
             postStep(SocketInputs.failed(generation, error))
         }
 
         override fun onClosed(generation: Long, code: Int, reason: String?) {
+            ZLog.net("ws", "closed gen=$generation code=$code reason=${clip(reason ?: "-", 200)}")
             postStep(SocketInputs.closed(generation, code, reason))
         }
     }
@@ -921,3 +1058,20 @@ private fun newEngineDispatcher(): ExecutorCoroutineDispatcher =
     Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "zemote-engine").apply { isDaemon = true }
     }.asCoroutineDispatcher()
+
+// ---------------------------------------------------------------------------
+// 日志小工具（本文件用）
+// ---------------------------------------------------------------------------
+
+/** 单字段截断：日志里不要出现整段消息或整包 rows。 */
+private fun clip(text: String, max: Int = 160): String =
+    if (text.length <= max) text else text.take(max) + "…"
+
+private fun JsonObject.numOrNull(key: String): Long? =
+    (this[key] as? JsonPrimitive)?.longOrNull
+
+private fun JsonObject.boolOrNull(key: String): Boolean? =
+    (this[key] as? JsonPrimitive)?.booleanOrNull
+
+private fun JsonObject.strOrNull(key: String): String? =
+    (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull

@@ -51,6 +51,15 @@ interface ChatOps {
 
         /** `sendText` 的 args 键名。 */
         const val ARG_TEXT: String = "text"
+
+        /**
+         * 订阅一个会话的对话帧。
+         *
+         * Rust 侧是 **flow**：收到 `ack` 后合成一次 host-level `completed`，所以用
+         * [call]（等 completion）就能确认「订阅已经被接受」；`conversationCallNoWait`
+         * 只保证命令发出，不能用来判断订阅成功。
+         */
+        const val OP_SUBSCRIBE: String = "subscribe"
     }
 }
 

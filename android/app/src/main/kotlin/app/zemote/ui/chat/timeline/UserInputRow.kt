@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
@@ -66,24 +67,10 @@ internal fun UserInputRow(
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalZemoteColors.current
-    val text = row["text"].asString().orEmpty()
-    val attachments = row["attachments"] as? JsonArray
-    // 网页 rounded-xl（12px）+ rounded-tr-xs（2px）。
-    val shape = RoundedCornerShape(
-        topStart = ZemoteRadius.xl,
-        topEnd = ZemoteRadius.xs,
-        bottomEnd = ZemoteRadius.xl,
-        bottomStart = ZemoteRadius.xl,
-    )
-    val items = attachments?.mapNotNull { it as? JsonObject }.orEmpty()
-    val mediaKeys = items.mapNotNull { item ->
-        val mime = item["mime"].asString().orEmpty()
-        item["ref"].asString()?.takeIf { mime.startsWith("image/") }
-    }
-    val files = items.filter { item ->
-        val mime = item["mime"].asString().orEmpty()
-        !(mime.startsWith("image/") && item["ref"].asString() != null)
-    }
+    val text = remember(row) { row["text"].asString().orEmpty() }
+    val attachments = remember(row) { splitUserAttachments(row["attachments"] as? JsonArray) }
+    val mediaKeys = attachments.images
+    val files = attachments.files
 
     RowActionContainer(row = row, modifier = modifier.fillMaxWidth()) { gesture ->
         Column(
@@ -93,9 +80,9 @@ internal fun UserInputRow(
             Column(
                 modifier = Modifier
                     .widthIn(max = ZemoteContainer.xl)
-                    .clip(shape)
+                    .clip(UserBubbleShape)
                     .background(colors.surface)
-                    .border(1.dp, colors.border, shape)
+                    .border(1.dp, colors.border, UserBubbleShape)
                     .padding(
                         horizontal = ZemoteSpacing.space4,
                         vertical = ZemoteSpacing.space3,
@@ -123,6 +110,37 @@ internal fun UserInputRow(
 /** 网页 `size-20` = 80px，只读用户气泡里的图片缩略图。 */
 private val READ_ONLY_THUMB_SIZE = 80.dp
 
+/** 网页 rounded-xl（12px）+ rounded-tr-xs（2px）；组合外常量。 */
+private val UserBubbleShape = RoundedCornerShape(
+    topStart = ZemoteRadius.xl,
+    topEnd = ZemoteRadius.xs,
+    bottomEnd = ZemoteRadius.xl,
+    bottomStart = ZemoteRadius.xl,
+)
+
+/**
+ * 用户消息附件的拆分结果：图片走缩略图网格，其余走文件 pill。
+ *
+ * `ref` 为空或不带图片 mime 的条目按普通文件处理，口径与只读气泡一致。
+ */
+internal data class UserAttachmentSplit(
+    val images: List<String>,
+    val files: List<JsonObject>,
+)
+
+internal fun splitUserAttachments(attachments: JsonArray?): UserAttachmentSplit {
+    val items = attachments?.mapNotNull { it as? JsonObject }.orEmpty()
+    val images = items.mapNotNull { item ->
+        val mime = item["mime"].asString().orEmpty()
+        item["ref"].asString()?.takeIf { mime.startsWith("image/") }
+    }
+    val files = items.filter { item ->
+        val mime = item["mime"].asString().orEmpty()
+        !(mime.startsWith("image/") && item["ref"].asString() != null)
+    }
+    return UserAttachmentSplit(images = images, files = files)
+}
+
 /**
  * 超长用户消息折叠到 120dp。
  *
@@ -135,6 +153,9 @@ private fun CollapsibleBubbleText(text: String, onImageClick: (String) -> Unit) 
     val colors = LocalZemoteColors.current
     var expanded by remember(text) { mutableStateOf(false) }
     val density = LocalDensity.current
+    val fadeBrush = remember(colors) {
+        Brush.verticalGradient(listOf(Color.Transparent, colors.background))
+    }
 
     SubcomposeLayout(
         modifier = Modifier
@@ -160,11 +181,7 @@ private fun CollapsibleBubbleText(text: String, onImageClick: (String) -> Unit) 
                     Modifier
                         .width(with(density) { contentWidth.toDp() })
                         .height(COLLAPSED_HEIGHT * 0.3f)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, colors.background),
-                            ),
-                        ),
+                        .background(fadeBrush),
                 )
             }.first().measure(Constraints(maxWidth = contentWidth))
         } else {
@@ -234,12 +251,12 @@ private val COLLAPSED_HEIGHT = 120.dp
 @Composable
 internal fun AttachmentPill(obj: JsonObject, modifier: Modifier = Modifier) {
     val colors = LocalZemoteColors.current
-    val name = obj["fileName"].asString() ?: obj["name"].asString() ?: "附件"
-    val bytes = obj["bytes"].asLong() ?: obj["sizeBytes"].asLong()
+    val name = remember(obj) { obj["fileName"].asString() ?: obj["name"].asString() ?: "附件" }
+    val bytes = remember(obj) { obj["bytes"].asLong() ?: obj["sizeBytes"].asLong() }
     Row(
         modifier = modifier
             .height(32.dp)
-            .clip(RoundedCornerShape(percent = 50))
+            .clip(AttachmentPillShape)
             .background(colors.surface)
             .padding(horizontal = ZemoteSpacing.space3),
         verticalAlignment = Alignment.CenterVertically,
@@ -253,14 +270,14 @@ internal fun AttachmentPill(obj: JsonObject, modifier: Modifier = Modifier) {
         )
         Text(
             text = name,
-            style = ZemoteType.uiBase.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Medium),
+            style = AttachmentNameStyle,
             color = colors.foreground,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
         if (bytes != null) {
             Text(
-                text = formatBytes(bytes),
+                text = remember(bytes) { formatBytes(bytes) },
                 style = ZemoteType.uiSm,
                 color = colors.foregroundSubtle,
                 maxLines = 1,
@@ -268,3 +285,7 @@ internal fun AttachmentPill(obj: JsonObject, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** 附件 pill 的全圆角（网页 `rounded-full`）与文件名样式，均为组合外常量。 */
+private val AttachmentPillShape = RoundedCornerShape(percent = 50)
+private val AttachmentNameStyle = ZemoteType.uiBase.copy(fontWeight = FontWeight.Medium)

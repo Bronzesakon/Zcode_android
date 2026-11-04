@@ -9,8 +9,11 @@ import app.zemote.engine.EngineState
 import app.zemote.engine.NativeError
 import app.zemote.engine.RelayState
 import app.zemote.engine.ZemoteEngine
+import app.zemote.log.ZLog
 import app.zemote.pairing.PairingUrl
 import java.net.URI
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -20,10 +23,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -105,6 +112,17 @@ interface EnginePort {
 
     /** 拆掉会话（`dispose` 旧引擎并把状态复位）。没有会话时无副作用。 */
     fun disconnect()
+
+    /**
+     * 强制重建当前会话（保留 URL / OAuth JWT）。
+     *
+     * 正常后台由前台服务 + CPU/Wi-Fi 锁维持连接；但厂商仍可能掐断 socket，且旧连接上的
+     * 握手/订阅会卡在半开状态（`helloConversationV4` 无响应）。回到前台发现已经断了时，
+     * 只 `poke` 不够，必须拆掉旧连接重新建会话，让桥和对话在新连接上重新握手。
+     *
+     * 没有会话时无副作用；并发调用只会重建一次。
+     */
+    suspend fun reconnect()
 
     /** `wait_paired`：等 relay 进入 paired。超时由核心的定时器驱动。 */
     suspend fun waitPaired(timeoutMs: Long = 30_000)
@@ -241,6 +259,12 @@ class ZemoteEnginePort(
 
     private val lock = Any()
 
+    /** 串行化强制重连；并发（回前台 + 用户刷新）只重建一次。 */
+    private val reconnectMutex = Mutex()
+
+    /** 对话层调用序号：日志里靠它还原「谁先谁后」（滑动到底部 vs 订阅重放）。 */
+    private val callSeq = AtomicLong(0)
+
     @Volatile
     private var engine: ZemoteEngine? = null
 
@@ -289,16 +313,35 @@ class ZemoteEnginePort(
     override suspend fun ensureSession(url: String, token: String?) {
         val target = url.trim()
         if (target.isEmpty()) return
+        val startedAt = System.nanoTime()
 
         // 快路径：已经连着同一个 URL + 同一个 OAuth JWT，直接返回（不重复换 token）。
         synchronized(lock) {
-            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) return
+            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) {
+                ZLog.ffi("session", "ensureSession hit host=${hostOf(target) ?: "-"} serial=$sessionSerial")
+                return
+            }
         }
+
+        ZLog.ffi(
+            "session",
+            "ensureSession begin host=${hostOf(target) ?: "-"} hash=${PairingUrl.hasPassHash(target)} " +
+                "jwt=${if (token == null) "no" else "yes"} serial=$sessionSerial",
+        )
 
         // 3.16.1：OAuth JWT 不能直接连 ws2，必须先换 terminal token。
         // 旧链接（带 hash）不需要，`resolveTerminalToken` 会返回 null，继续走 HMAC proof。
         // 网络交换放在锁外，避免阻塞其他会话操作。
-        val terminalToken = resolveTerminalToken(target, token)
+        val terminalToken = try {
+            resolveTerminalToken(target, token)
+        } catch (e: Throwable) {
+            ZLog.ffi("session", "ensureSession token exchange failed ms=${elapsedMs(startedAt)}", e)
+            throw e
+        }
+        ZLog.ffi(
+            "session",
+            "terminal token ready=${if (terminalToken == null) "none" else "yes"} ms=${elapsedMs(startedAt)}",
+        )
         val refreshHost = if (token != null && !PairingUrl.hasPassHash(target)) {
             hostOf(target) ?: throw RemoteTokenException("bad-input", "远控链接缺少 host")
         } else {
@@ -306,7 +349,10 @@ class ZemoteEnginePort(
         }
 
         synchronized(lock) {
-            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) return
+            if (engine != null && _connectedUrl.value == target && connectedAuthToken == token) {
+                ZLog.ffi("session", "ensureSession hit (after token)")
+                return
+            }
             disposeLocked()
             val created = newEngine(scope)
             engine = created
@@ -333,6 +379,10 @@ class ZemoteEnginePort(
             )
             // 新引擎 = 新桥/新对话；宿主缓存的 bridge/conversation key 全部失效。
             sessionSerial += 1
+            ZLog.ffi(
+                "session",
+                "ensureSession started serial=$sessionSerial totalMs=${elapsedMs(startedAt)}",
+            )
         }
     }
 
@@ -377,14 +427,62 @@ class ZemoteEnginePort(
     }
 
     override fun disconnect() {
-        synchronized(lock) { disposeLocked() }
+        synchronized(lock) {
+            ZLog.ffi("session", "disconnect serial=$sessionSerial hasEngine=${engine != null}")
+            disposeLocked()
+        }
     }
 
-    override suspend fun waitPaired(timeoutMs: Long) = requireEngine().waitPaired(timeoutMs)
+    override suspend fun reconnect() {
+        reconnectMutex.withLock {
+            val (url, token) = synchronized(lock) {
+                _connectedUrl.value to connectedAuthToken
+            }
+            if (url == null) {
+                ZLog.ffi("session", "reconnect skipped: no session")
+                return@withLock
+            }
+            ZLog.ffi("session", "reconnect begin serial=$sessionSerial host=${hostOf(url) ?: "-"}")
+            synchronized(lock) { disposeLocked() }
+            ensureSession(url, token)
+            ZLog.ffi("session", "reconnect done serial=$sessionSerial")
+        }
+    }
 
-    override suspend fun bootstrap(): JsonElement = requireEngine().bootstrap()
+    override suspend fun waitPaired(timeoutMs: Long) {
+        val started = System.nanoTime()
+        try {
+            requireEngine().waitPaired(timeoutMs)
+            ZLog.ffi("rpc", "wait_paired ok timeoutMs=$timeoutMs ms=${elapsedMs(started)}")
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "wait_paired failed timeoutMs=$timeoutMs ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
-    override suspend fun listWorkspaces(): JsonElement = requireEngine().listWorkspaces()
+    override suspend fun bootstrap(): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().bootstrap().also {
+                ZLog.ffi("rpc", "bootstrap ok ms=${elapsedMs(started)} bytes=${it.toString().length}")
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "bootstrap failed ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
+
+    override suspend fun listWorkspaces(): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().listWorkspaces().also {
+                ZLog.ffi("rpc", "list_workspaces ok ms=${elapsedMs(started)}")
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "list_workspaces failed ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
     override suspend fun openBridge(
         workspaceKey: String,
@@ -392,47 +490,161 @@ class ZemoteEnginePort(
         taskHostId: String?,
         project: JsonObject?,
     ): Long {
-        val session = requireEngine().openBridge(
-            workspaceKey = workspaceKey,
-            taskId = taskId,
-            taskHostId = taskHostId,
-            project = project,
+        val started = System.nanoTime()
+        ZLog.ffi(
+            "bridge",
+            "open_bridge → key=${clip(workspaceKey)} task=${clip(taskId ?: "-")} " +
+                "host=${clip(taskHostId ?: "-")} project=${if (project == null) "no" else "yes"}",
         )
-        _bridgeSession.value = session
-        _bridgeWorkspaceKey.value = workspaceKey
-        return session
+        return try {
+            requireEngine().openBridge(
+                workspaceKey = workspaceKey,
+                taskId = taskId,
+                taskHostId = taskHostId,
+                project = project,
+            ).also { session ->
+                _bridgeSession.value = session
+                _bridgeWorkspaceKey.value = workspaceKey
+                ZLog.ffi(
+                    "bridge",
+                    "open_bridge ← session=$session key=${clip(workspaceKey)} ms=${elapsedMs(started)}",
+                )
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("bridge", "open_bridge failed key=${clip(workspaceKey)} ms=${elapsedMs(started)}", e)
+            throw e
+        }
     }
 
-    override suspend fun waitHealthy(session: Long, timeoutMs: Long) =
-        requireEngine().waitHealthy(session = session, timeoutMs = timeoutMs)
+    override suspend fun waitHealthy(session: Long, timeoutMs: Long) {
+        val started = System.nanoTime()
+        try {
+            requireEngine().waitHealthy(session = session, timeoutMs = timeoutMs)
+            ZLog.ffi("bridge", "wait_healthy ok session=$session ms=${elapsedMs(started)}")
+        } catch (e: Throwable) {
+            ZLog.ffi("bridge", "wait_healthy failed session=$session ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
-    override suspend fun sendMobileViewState(workspaceKey: String, taskId: String?) =
+    override suspend fun sendMobileViewState(workspaceKey: String, taskId: String?) {
         requireEngine().sendMobileViewState(workspaceKey = workspaceKey, taskId = taskId)
+        ZLog.vm("mobile_view", "send key=${clip(workspaceKey)} task=${clip(taskId ?: "-")}")
+    }
 
-    override suspend fun pokeRelay() = requireEngine().pokeRelay()
+    override suspend fun pokeRelay() {
+        ZLog.net("relay", "poke")
+        requireEngine().pokeRelay()
+    }
 
-    override suspend fun conversationOpen(session: Long, scope: JsonObject): String =
-        requireEngine().conversationOpen(session = session, scope = scope)
+    override suspend fun conversationOpen(session: Long, scope: JsonObject): String {
+        val started = System.nanoTime()
+        val scopeKeys = scope.keys.sorted().joinToString(",")
+        return try {
+            requireEngine().conversationOpen(session = session, scope = scope).also { key ->
+                ZLog.ffi(
+                    "conv",
+                    "conversation_open ← session=$session key=${clip(key)} scope={$scopeKeys} " +
+                        "ms=${elapsedMs(started)}",
+                )
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi(
+                "conv",
+                "conversation_open failed session=$session scope={$scopeKeys} ms=${elapsedMs(started)}",
+                e,
+            )
+            throw e
+        }
+    }
 
     override suspend fun conversationCall(
         session: Long,
         key: String,
         op: String,
         args: JsonObject,
-    ): JsonElement = requireEngine().conversationCall(session, key, op, args)
+    ): JsonElement {
+        val seq = callSeq.incrementAndGet()
+        val started = System.nanoTime()
+        ZLog.ffi(
+            "conv",
+            "#$seq → conversation_call op=$op session=$session key=${clip(key)} args=${argsSummary(args)}",
+        )
+        return try {
+            val result = requireEngine().conversationCall(session, key, op, args)
+            ZLog.ffi(
+                "conv",
+                "#$seq ← conversation_call op=$op ok ms=${elapsedMs(started)} " +
+                    "resultBytes=${result.toString().length}",
+            )
+            result
+        } catch (e: CancellationException) {
+            ZLog.ffi("conv", "#$seq ← conversation_call op=$op canceled ms=${elapsedMs(started)}")
+            throw e
+        } catch (e: Throwable) {
+            ZLog.ffi(
+                "conv",
+                "#$seq ← conversation_call op=$op failed ms=${elapsedMs(started)} kind=${kindOf(e)}",
+                e,
+            )
+            throw e
+        }
+    }
 
     override suspend fun conversationCallNoWait(
         session: Long,
         key: String,
         op: String,
         args: JsonObject,
-    ) = requireEngine().conversationCallNoWait(session, key, op, args)
+    ) {
+        val seq = callSeq.incrementAndGet()
+        val started = System.nanoTime()
+        ZLog.ffi(
+            "conv",
+            "#$seq → conversation_call_no_wait op=$op session=$session key=${clip(key)} " +
+                "args=${argsSummary(args)}",
+        )
+        try {
+            requireEngine().conversationCallNoWait(session, key, op, args)
+            ZLog.ffi(
+                "conv",
+                "#$seq ← conversation_call_no_wait op=$op sent ms=${elapsedMs(started)}",
+            )
+        } catch (e: CancellationException) {
+            ZLog.ffi("conv", "#$seq ← conversation_call_no_wait op=$op canceled ms=${elapsedMs(started)}")
+            throw e
+        } catch (e: Throwable) {
+            ZLog.ffi(
+                "conv",
+                "#$seq ← conversation_call_no_wait op=$op failed ms=${elapsedMs(started)} kind=${kindOf(e)}",
+                e,
+            )
+            throw e
+        }
+    }
 
-    override suspend fun conversationClose(session: Long, key: String) =
-        requireEngine().conversationClose(session = session, key = key)
+    override suspend fun conversationClose(session: Long, key: String) {
+        val started = System.nanoTime()
+        try {
+            requireEngine().conversationClose(session = session, key = key)
+            ZLog.ffi("conv", "conversation_close session=$session key=${clip(key)} ms=${elapsedMs(started)}")
+        } catch (e: Throwable) {
+            ZLog.ffi("conv", "conversation_close failed session=$session key=${clip(key)}", e)
+            throw e
+        }
+    }
 
-    override suspend fun automationCall(session: Long, op: String, args: JsonObject): JsonElement =
-        requireEngine().automationCall(session = session, op = op, args = args)
+    override suspend fun automationCall(session: Long, op: String, args: JsonObject): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().automationCall(session = session, op = op, args = args).also {
+                ZLog.ffi("rpc", "automation_call op=$op session=$session ok ms=${elapsedMs(started)}")
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "automation_call op=$op session=$session failed ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
     override suspend fun channelCall(
         session: Long,
@@ -440,20 +652,77 @@ class ZemoteEnginePort(
         method: String,
         args: JsonArray,
         timeoutMs: Long,
-    ): JsonElement = requireEngine().channelCall(
-        session = session,
-        channel = channel,
-        method = method,
-        args = args,
-        timeoutMs = timeoutMs,
-    )
+    ): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().channelCall(
+                session = session,
+                channel = channel,
+                method = method,
+                args = args,
+                timeoutMs = timeoutMs,
+            ).also {
+                ZLog.ffi(
+                    "rpc",
+                    "channel_call $channel.$method session=$session args=${args.size} " +
+                        "ok ms=${elapsedMs(started)}",
+                )
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi(
+                "rpc",
+                "channel_call $channel.$method session=$session args=${args.size} " +
+                    "failed ms=${elapsedMs(started)}",
+                e,
+            )
+            throw e
+        }
+    }
 
-    override suspend fun snapshot(): JsonElement = requireEngine().snapshot()
+    override suspend fun snapshot(): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().snapshot().also {
+                ZLog.ffi("rpc", "snapshot ok ms=${elapsedMs(started)} bytes=${it.toString().length}")
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "snapshot failed ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
-    override suspend fun conversationSnapshot(session: Long, key: String): JsonElement =
-        requireEngine().conversationSnapshot(session, key)
+    override suspend fun conversationSnapshot(session: Long, key: String): JsonElement {
+        val started = System.nanoTime()
+        return try {
+            requireEngine().conversationSnapshot(session, key).also {
+                ZLog.ffi(
+                    "rpc",
+                    "conversation_snapshot session=$session key=${clip(key)} ok " +
+                        "ms=${elapsedMs(started)} bytes=${it.toString().length}",
+                )
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi(
+                "rpc",
+                "conversation_snapshot session=$session key=${clip(key)} failed ms=${elapsedMs(started)}",
+                e,
+            )
+            throw e
+        }
+    }
 
-    override suspend fun call(command: JsonObject): JsonElement = requireEngine().call(command)
+    override suspend fun call(command: JsonObject): JsonElement {
+        val started = System.nanoTime()
+        val method = (command["method"] as? JsonPrimitive)?.contentOrNull ?: "?"
+        return try {
+            requireEngine().call(command).also {
+                ZLog.ffi("rpc", "call method=$method ok ms=${elapsedMs(started)}")
+            }
+        } catch (e: Throwable) {
+            ZLog.ffi("rpc", "call method=$method failed ms=${elapsedMs(started)}", e)
+            throw e
+        }
+    }
 
     // ------------------------------------------------------------------
     // 内部
@@ -463,6 +732,7 @@ class ZemoteEnginePort(
         engine ?: throw EngineException(NativeError("invalidState", "引擎尚未启动（没有会话）"))
 
     private fun disposeLocked() {
+        if (engine != null) ZLog.ffi("session", "dispose serial=$sessionSerial pendingBridges=${_bridgeSession.value ?: "-"}")
         relayJobs.forEach { it.cancel() }
         relayJobs = emptyList()
         engine?.dispose()
@@ -496,4 +766,41 @@ class ZemoteEnginePort(
         /** 与引擎侧 `events` 的缓冲一致：转接层不该成为新的丢事件点。 */
         const val EVENT_BUFFER = 512
     }
+}
+
+// ---------------------------------------------------------------------------
+// 日志小工具（本文件用）
+// ---------------------------------------------------------------------------
+
+private fun elapsedMs(startedAtNanos: Long): Long = (System.nanoTime() - startedAtNanos) / 1_000_000
+
+private fun clip(text: String, max: Int = 120): String =
+    if (text.length <= max) text else text.take(max) + "…"
+
+/**
+ * 参数摘要：只记**键与大小**，不记正文。
+ *
+ * `text` 这种正文只留长度（用户对话内容允许落本机日志，但整段塞进去会把文件写爆）；
+ * 数字/布尔留原值（seq、limit、timeoutSecs 这些正是判断触发路径的字段）。
+ */
+private fun argsSummary(args: JsonObject): String {
+    if (args.isEmpty()) return "{}"
+    return args.entries.sortedBy { it.key }.joinToString(",", "{", "}") { (key, value) ->
+        when (value) {
+            is JsonPrimitive -> when {
+                value.isString -> "$key:str${value.content.length}"
+                else -> "$key:${value.content.take(24)}"
+            }
+
+            is JsonArray -> "$key:arr${value.size}"
+            is JsonObject -> "$key:obj${value.size}"
+            else -> "$key:?"
+        }
+    }
+}
+
+private fun kindOf(error: Throwable): String = when (error) {
+    is EngineException -> error.error.kind
+    is CancellationException -> "canceled"
+    else -> error.javaClass.simpleName
 }

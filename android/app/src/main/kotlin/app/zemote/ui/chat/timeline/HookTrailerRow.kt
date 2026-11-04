@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Anchor
 import androidx.compose.material.icons.filled.Block
@@ -32,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -62,12 +62,11 @@ internal fun HookTrailerRow(
     val executions = remember(hooks) { flattenHookExecutions(hooks) }
     val summary = remember(executions) { hookSummary(executions) } ?: return
     var open by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(ZemoteRadius.md)
 
     Box(modifier.padding(vertical = ZemoteSpacing.space1)) {
         Row(
             modifier = Modifier
-                .clip(shape)
+                .clip(ZemoteRadius.mdShape)
                 .clickable { open = !open }
                 .padding(horizontal = ZemoteSpacing.space2, vertical = ZemoteSpacing.space1),
             verticalAlignment = Alignment.CenterVertically,
@@ -95,7 +94,7 @@ internal fun HookTrailerRow(
             }
             summary.durationMs?.let { duration ->
                 Text(
-                    text = formatHookDuration(duration),
+                    text = remember(duration) { formatHookDuration(duration) },
                     style = ZemoteType.uiSm,
                     color = colors.foregroundSubtlest,
                     maxLines = 1,
@@ -118,7 +117,7 @@ private fun HookPopover(
     val colors = LocalZemoteColors.current
     Dialog(onDismissRequest = onDismiss) {
         Surface(
-            shape = RoundedCornerShape(12.dp),
+            shape = ZemoteRadius.xlShape,
             color = colors.card,
             shadowElevation = 8.dp,
             modifier = Modifier.width(320.dp),
@@ -171,7 +170,7 @@ private fun HookExecutionItem(execution: HookExecution) {
         )
         execution.durationMs?.let { duration ->
             Text(
-                text = formatHookDuration(duration),
+                text = remember(duration) { formatHookDuration(duration) },
                 style = ZemoteType.uiXs,
                 color = colors.foregroundSubtlest,
             )
@@ -224,10 +223,14 @@ private fun hookStatusIcon(status: String): ImageVector = when (status) {
 }
 
 @Composable
-private fun hookStatusColor(status: String) = when (status) {
-    "blocked", "timedOut" -> LocalZemoteColors.current.warning
-    "failed" -> LocalZemoteColors.current.destructive
-    else -> LocalZemoteColors.current.foregroundSubtle
+private fun hookStatusColor(status: String): Color {
+    // 同一个 LocalZemoteColors 读一次即可，避免 when 每个分支各读一次。
+    val colors = LocalZemoteColors.current
+    return when (status) {
+        "blocked", "timedOut" -> colors.warning
+        "failed" -> colors.destructive
+        else -> colors.foregroundSubtle
+    }
 }
 
 internal fun hookStatusLabel(status: String): String = when (status) {

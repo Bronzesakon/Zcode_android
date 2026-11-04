@@ -10,10 +10,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,18 +42,18 @@ internal fun SubagentRow(
     onClick: (() -> Unit)? = null,
 ) {
     val colors = LocalZemoteColors.current
-    val type = row["subagentType"].asString() ?: "子代理"
-    val status = statusLabel(row["status"].asString().orEmpty())
-    val summary = row["summaryText"].asString().orEmpty()
+    val type = remember(row) { row["subagentType"].asString() ?: "子代理" }
+    val status = remember(row) { statusLabel(row["status"].asString().orEmpty()) }
+    val summary = remember(row) { row["summaryText"].asString().orEmpty() }
+    // 时长可能落到 `endedAt - startedAt`（结果是「此刻」），不做缓存以保持原来的刷新节奏。
     val elapsed = durationMs(row)
-    val shape = RoundedCornerShape(ZemoteRadius.lg)
 
     Row(
         modifier = modifier
             .padding(vertical = ZemoteSpacing.space1)
-            .clip(shape)
+            .clip(ZemoteRadius.lgShape)
             .background(colors.card)
-            .border(1.dp, colors.cardBorder, shape)
+            .border(1.dp, colors.cardBorder, ZemoteRadius.lgShape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = ZemoteSpacing.space3, vertical = ZemoteSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
@@ -72,7 +72,7 @@ internal fun SubagentRow(
             ) {
                 Text(
                     text = type,
-                    style = ZemoteType.uiBase.copy(fontFamily = FontFamily.Monospace),
+                    style = SubagentTypeStyle,
                     color = colors.foreground,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -106,3 +106,6 @@ internal fun SubagentRow(
         }
     }
 }
+
+/** 子代理类型名的等宽样式（组合外常量）。 */
+private val SubagentTypeStyle = ZemoteType.uiBase.copy(fontFamily = FontFamily.Monospace)

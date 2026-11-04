@@ -16,10 +16,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -56,6 +61,7 @@ fun SettingsHomeScreen(
     val colors = LocalZemoteColors.current
     val controller = LocalThemeController.current
     val mode = currentThemeMode()
+    var showLogs by remember { mutableStateOf(false) }
 
     val remoteGroups = SettingsGroup.entries.filter { it != SettingsGroup.LOCAL }
     val localCategories = setOf(
@@ -64,8 +70,9 @@ fun SettingsHomeScreen(
         SettingsCategory.NOTIFICATIONS,
     )
 
+    Box(modifier = modifier.fillMaxSize().background(colors.background)) {
     LazyColumn(
-        modifier = modifier.fillMaxSize().background(colors.background),
+        modifier = Modifier.fillMaxSize(),
     ) {
         item(key = "header") { SettingsHeader(version = version) }
 
@@ -136,6 +143,17 @@ fun SettingsHomeScreen(
                         },
                     )
                 }
+
+                // 运行日志：闪退/卡顿取证入口（导出或直接分享，不依赖电脑）。
+                ZemoteCard {
+                    SettingsRow(
+                        title = "运行日志",
+                        description = "闪退与滑动重载取证；可查看、导出或分享",
+                        leading = { ZemoteIconTile(Icons.Default.Description) },
+                        onClick = { showLogs = true },
+                        trailing = { SettingsChevron() },
+                    )
+                }
             }
         }
 
@@ -165,6 +183,11 @@ fun SettingsHomeScreen(
         }
 
         item(key = "bottom-space") { Spacer(Modifier.height(24.dp)) }
+    }
+
+        if (showLogs) {
+            LogViewerDialog(onDismiss = { showLogs = false })
+        }
     }
 }
 

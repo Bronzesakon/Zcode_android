@@ -40,6 +40,8 @@ sealed interface Route {
         val deviceId: String,
         val workspaceKey: String? = null,
         val taskId: String? = null,
+        /** 首页已知的任务标题：对话页在 sessions-index 到达前先用它，避免显示「未命名」。 */
+        val taskTitle: String? = null,
         val workspacePath: String? = null,
         val workspaceIdentity: String? = null,
         val hostId: String? = null,

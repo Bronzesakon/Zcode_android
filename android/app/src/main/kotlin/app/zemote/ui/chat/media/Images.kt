@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -51,7 +52,6 @@ import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -59,26 +59,129 @@ import kotlinx.coroutines.withContext
  * 图片加载与全屏预览。
  *
  * 不引 Coil：整个应用只有两种来源（`http(s)` 的 Markdown 图片、`attachmentRead` 的附件），
- * 用 HttpURLConnection + BitmapFactory 足够；缓存只做进程内、按 key 去重，退出即释放。
+ * 用 HttpURLConnection + BitmapFactory 足够。缓存全部进程内且有界（原图字节与解码结果
+ * 都按条数 + 字节数双封顶），退出即释放；解码一律在后台线程并做缩略图降采样。
  */
 
 /** 附件缩略图边长（UI-CONFIRM §1.1：图片 48dp 缩略图）。 */
 val AttachmentThumbSize: Dp = 48.dp
 
-private val imageCache = ConcurrentHashMap<String, ByteArray>()
+/**
+ * 原图字节缓存：条数与总字节双上限。
+ *
+ * 之前是无界 ConcurrentHashMap + 单张 32MB 上限：浏览过的每张图都常驻内存，
+ * 图片一多就是几百 MB。现在只保留最近几张，退出进程自然释放。
+ */
+private class ByteImageCache(
+    private val maxEntries: Int = 6,
+    private val maxTotalBytes: Long = 32L * 1024 * 1024,
+) {
+    private val map = LinkedHashMap<String, ByteArray>(8, 0.75f, true)
+    private var totalBytes = 0L
 
-private fun decode(bytes: ByteArray?): ImageBitmap? {
+    @Synchronized
+    fun get(key: String): ByteArray? = map[key]
+
+    @Synchronized
+    fun put(key: String, bytes: ByteArray) {
+        // 单张就超预算：不入缓存，免得把其它图全部挤掉。
+        if (bytes.size > maxTotalBytes) return
+        map.remove(key)?.let { totalBytes -= it.size }
+        map[key] = bytes
+        totalBytes += bytes.size
+        val iterator = map.entries.iterator()
+        while (iterator.hasNext() && (map.size > maxEntries || totalBytes > maxTotalBytes)) {
+            totalBytes -= iterator.next().value.size
+            iterator.remove()
+        }
+    }
+}
+
+/** 解码结果缓存键：同一张图按不同解码目标（缩略图 / 预览）分别缓存。 */
+private data class BitmapKey(val key: String, val maxDimensionPx: Int)
+
+/** 解码结果缓存：条数与总像素字节双上限，避免大图把缓存撑成几十 MB。 */
+private class BitmapImageCache(
+    private val maxEntries: Int = 12,
+    private val maxTotalBytes: Long = 24L * 1024 * 1024,
+) {
+    private val map = LinkedHashMap<BitmapKey, ImageBitmap>(16, 0.75f, true)
+    private var totalBytes = 0L
+
+    @Synchronized
+    fun get(key: BitmapKey): ImageBitmap? = map[key]
+
+    @Synchronized
+    fun put(key: BitmapKey, bitmap: ImageBitmap) {
+        val bytes = bytesOf(bitmap)
+        // 单张就超预算：不入缓存（仍然渲染，只是下次要重新解码）。
+        if (bytes > maxTotalBytes) return
+        map.remove(key)?.let { totalBytes -= bytesOf(it) }
+        map[key] = bitmap
+        totalBytes += bytes
+        val iterator = map.entries.iterator()
+        while (iterator.hasNext() && (map.size > maxEntries || totalBytes > maxTotalBytes)) {
+            totalBytes -= bytesOf(iterator.next().value)
+            iterator.remove()
+        }
+    }
+
+    /** ARGB_8888 每像素 4 字节。 */
+    private fun bytesOf(bitmap: ImageBitmap): Long =
+        bitmap.width.toLong() * bitmap.height.toLong() * 4L
+}
+
+private val imageBytesCache = ByteImageCache()
+private val imageBitmapCache = BitmapImageCache()
+
+/**
+ * 未显式给缩略图尺寸时的解码目标（像素，最长边）。
+ *
+ * 注意是「目标」不是硬上限：采样按 2 的幂取整，实际最长边落在 [目标, 2×目标)，
+ * 这样小图不会被放大，缩略图也不会因为采样过度而发虚。
+ */
+private const val DEFAULT_MAX_DECODE_PX = 1024
+
+/** 全屏预览的解码目标：手机屏幕上 1.5K 长边足够清晰，放大 2x 内仍可看。 */
+private const val PREVIEW_MAX_DECODE_PX = 1_536
+
+/**
+ * 计算 BitmapFactory 的 inSampleSize（2 的幂）。
+ *
+ * 取「采样后最长边仍不小于 [maxDimension]」的最大 2 的幂，因此结果落在
+ * [maxDimension, 2×maxDimension)：既不会把缩略图采样到发虚，也把内存封在
+ * 目标的 4 倍像素以内（4000px 原图按 ARGB_8888 整张解就是 64MB）。
+ */
+internal fun calculateSampleSize(width: Int, height: Int, maxDimension: Int): Int {
+    if (width <= 0 || height <= 0 || maxDimension <= 0) return 1
+    val longest = maxOf(width, height)
+    var sample = 1
+    // 上限 1 shl 20：防止恶意/损坏的尺寸头把 sample 乘到溢出。
+    while (sample < (1 shl 20) && longest / (sample * 2) >= maxDimension) {
+        sample *= 2
+    }
+    return sample
+}
+
+/** 解码（含降采样）。调用方必须放到后台线程：这里只做纯 CPU 工作。 */
+private fun decodeSampled(bytes: ByteArray?, maxDimensionPx: Int): ImageBitmap? {
     if (bytes == null || bytes.isEmpty()) return null
     return try {
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val sample = calculateSampleSize(bounds.outWidth, bounds.outHeight, maxDimensionPx)
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
     } catch (e: OutOfMemoryError) {
+        null
+    } catch (e: IllegalArgumentException) {
         null
     }
 }
 
 /** 下载一张 http(s) 图片；失败返回 `null`。 */
 suspend fun fetchImageBytes(url: String): ByteArray? {
-    imageCache[url]?.let { return it }
+    imageBytesCache.get(url)?.let { return it }
     if (!url.startsWith("http://") && !url.startsWith("https://")) return null
     return withContext(Dispatchers.IO) {
         try {
@@ -92,7 +195,7 @@ suspend fun fetchImageBytes(url: String): ByteArray? {
                 if (connection.responseCode !in 200..299) return@withContext null
                 val bytes = connection.inputStream.use { it.readBytes() }
                 if (bytes.size > MAX_IMAGE_BYTES) return@withContext null
-                imageCache[url] = bytes
+                imageBytesCache.put(url, bytes)
                 bytes
             } finally {
                 connection.disconnect()
@@ -106,12 +209,17 @@ suspend fun fetchImageBytes(url: String): ByteArray? {
 /**
  * 异步取一张图并渲染。
  *
+ * 解码全部在后台线程且按缩略图尺寸降采样；解码结果与原始字节都走有界缓存，
+ * 命中时首帧直接出图（不会先闪一下进度环）。
+ *
  * 加载中用极简进度环、失败用 broken-image 占位，两者都走 theme 令牌，
  * 不再写死白色文字（浅色主题下原来会看不见）。
  *
  * @param key 缓存键（URL 或附件 ref）。
  * @param loader 取字节；返回 `null` 时显示失败占位。
  * @param contentScale 缩略图用 [ContentScale.Crop]，预览用 [ContentScale.Fit]。
+ * @param maxDecodeSize 解码目标（最长边，实际结果落在 [目标, 2×目标)）；
+ *   `null` 时用 [DEFAULT_MAX_DECODE_PX]。
  */
 @Composable
 fun RemoteImage(
@@ -120,16 +228,34 @@ fun RemoteImage(
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
     onClick: (() -> Unit)? = null,
+    maxDecodeSize: Dp? = null,
 ) {
-    var bitmap by remember(key) { mutableStateOf(decode(imageCache[key])) }
-    var failed by remember(key) { mutableStateOf(false) }
+    val density = LocalDensity.current
+    val maxPx = remember(density, maxDecodeSize) {
+        if (maxDecodeSize == null) {
+            DEFAULT_MAX_DECODE_PX
+        } else {
+            with(density) { maxDecodeSize.toPx() }.toInt().coerceAtLeast(64)
+        }
+    }
+    val cacheKey = remember(key, maxPx) { BitmapKey(key, maxPx) }
 
-    LaunchedEffect(key) {
+    var bitmap by remember(cacheKey) { mutableStateOf(imageBitmapCache.get(cacheKey)) }
+    var failed by remember(cacheKey) { mutableStateOf(false) }
+
+    LaunchedEffect(cacheKey) {
         if (bitmap != null) return@LaunchedEffect
-        val bytes = loader(key)
-        if (bytes != null) imageCache[key] = bytes
-        bitmap = decode(bytes)
-        failed = bitmap == null
+        val decoded = withContext(Dispatchers.Default) {
+            val bytes = loader(key) ?: return@withContext null
+            imageBytesCache.put(key, bytes)
+            decodeSampled(bytes, maxPx)
+        }
+        if (decoded != null) {
+            imageBitmapCache.put(cacheKey, decoded)
+            bitmap = decoded
+        } else {
+            failed = true
+        }
     }
 
     val description = when {
@@ -205,6 +331,8 @@ fun ImageThumbGrid(
                     RemoteImage(
                         key = key,
                         loader = loader,
+                        // 缩略图按显示尺寸上限解码，避免整张原图进内存。
+                        maxDecodeSize = thumbSize,
                         modifier = Modifier
                             .size(thumbSize)
                             .clip(thumbShape)
@@ -225,15 +353,22 @@ fun ImageViewerDialog(
     loader: suspend (String) -> ByteArray?,
     onDismiss: () -> Unit,
 ) {
-    var bytes by remember(key) { mutableStateOf(imageCache[key]) }
-    var loading by remember(key) { mutableStateOf(bytes == null) }
-    LaunchedEffect(key) {
-        if (bytes == null) {
-            bytes = loader(key)
+    val cacheKey = remember(key) { BitmapKey(key, PREVIEW_MAX_DECODE_PX) }
+    var image by remember(cacheKey) { mutableStateOf(imageBitmapCache.get(cacheKey)) }
+    var loading by remember(cacheKey) { mutableStateOf(image == null) }
+    LaunchedEffect(cacheKey) {
+        if (image != null) {
             loading = false
+            return@LaunchedEffect
         }
+        val decoded = withContext(Dispatchers.Default) {
+            val bytes = loader(key) ?: return@withContext null
+            imageBytesCache.put(key, bytes)
+            decodeSampled(bytes, PREVIEW_MAX_DECODE_PX)
+        }
+        image = decoded
+        loading = false
     }
-    val image = remember(bytes) { decode(bytes) }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -265,9 +400,11 @@ fun ImageViewerDialog(
                 },
             contentAlignment = Alignment.Center,
         ) {
+            // 局部 val 供 smart cast：委托属性（by remember）不能直接 smart cast。
+            val shown = image
             when {
-                image != null -> Image(
-                    bitmap = image,
+                shown != null -> Image(
+                    bitmap = shown,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier

@@ -97,7 +97,7 @@ class ChatCacheTest {
     }
 
     @Test
-    fun save_keepsAllRowsWithoutTruncation() {
+    fun save_keepsOnlyTailWindow() {
         val cache = newCache()
         val rows = (0 until 5005).map { row(it) }
 
@@ -105,8 +105,9 @@ class ChatCacheTest {
         val loaded = cache.loadConversation("ws", "big")
 
         assertNotNull(loaded)
-        assertEquals(5005, loaded!!.rows.size)
-        assertEquals(rows, loaded.rows)
+        // 只缓存尾部窗口：完整历史留在服务端，滚动时 rowsRange 按需拉。
+        assertEquals(400, loaded!!.rows.size)
+        assertEquals(rows.takeLast(400), loaded.rows)
     }
 
     @Test
@@ -174,5 +175,32 @@ class ChatCacheTest {
         assertEquals(listOf(row(1)), loaded!!.rows)
         assertNull(loaded.logEpoch)
         assertNull(loaded.firstRowId)
+    }
+
+    /**
+     * 写入前按字节收缩：单行很大的历史（工具输出）不能写出一个下次进页会被丢弃的超限文件。
+     *
+     * 5 × 2MB 文本 > 6MiB 上限；必须还能读回、且只剩尾部若干行。
+     */
+    @Test
+    fun oversizedPayload_isTrimmedByBytesAndStillReadable() {
+        val cache = newCache()
+        val blob = "x".repeat(2 * 1024 * 1024)
+        val rows = (1..5).map { id ->
+            buildJsonObject {
+                put("rowId", id)
+                put("kind", "toolCall")
+                put("text", blob)
+            }
+        }
+
+        cache.saveConversation("ws", "big", rows, logEpoch = "e", firstRowId = 1L)
+
+        val file = cacheFile("ws", "big")
+        assertTrue("缓存文件不应超过读取上限", file.length() <= 6L * 1024 * 1024)
+        val loaded = cache.loadConversation("ws", "big")
+        assertNotNull(loaded)
+        assertTrue("只保留尾部行", loaded!!.rows.size < rows.size)
+        assertEquals("5", loaded.rows.last()["rowId"].toString())
     }
 }

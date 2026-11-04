@@ -44,49 +44,90 @@ object ConversationRows {
         )
     }
 
-    /** 应用一批 deltas。认不出的 op 静默忽略（与网页端一致）。 */
+    /**
+     * 应用一批 deltas。认不出的 op 静默忽略（与网页端一致）。
+     *
+     * 一批 deltas 只复制一次列表，`rowId → 下标` 按需建一次（与逐条 `indexOfFirst`
+     * **同语义**：重复 `rowId` 取首次出现的位置）。流式帧里几十条 delta 不会再退化成
+     * 「每条都 indexOfFirst + toMutableList」的 O(n²)。
+     */
     fun apply(window: Window, deltas: JsonArray): Window {
-        var rows = window.rows
+        if (deltas.isEmpty()) return window
+        val rows = window.rows.toMutableList()
         var total = window.totalCount
         var first = window.firstRowId
+        var index: MutableMap<Long, Int>? = null
+
+        // 下标表与 `indexOfFirst { it.rowId == id }` 等价：同一 rowId 只记第一次出现的位置，
+        // 缺失/非数字 rowId 的行不进表（逐条查找也永远匹配不到它们）。
+        fun indexOf(id: Long): Int {
+            val map = index ?: HashMap<Long, Int>(rows.size * 2).also { created ->
+                rows.forEachIndexed { position, row ->
+                    val rowId = row["rowId"].asLong() ?: return@forEachIndexed
+                    if (!created.containsKey(rowId)) created[rowId] = position
+                }
+                index = created
+            }
+            return map[id] ?: -1
+        }
 
         for (element in deltas) {
             val op = element as? JsonObject ?: continue
             when (op["op"].asString()) {
                 "row.appended" -> {
                     val row = op["row"] as? JsonObject ?: continue
-                    rows = rows + row
+                    // 重复 rowId 说明服务端重发了同一行（重连/快照重叠常见）：按 upsert
+                    // 替换，而不是再插一条。否则时间线会出现两条同 key 的行，翻页后
+                    // normalize 又会保留「最后一份」，前后行为不一致（10 审计 P2-11）。
+                    val existingId = row["rowId"].asLong()
+                    if (existingId != null) {
+                        val existing = indexOf(existingId)
+                        if (existing >= 0) {
+                            rows[existing] = row
+                            continue
+                        }
+                    }
+                    val position = rows.size
+                    rows.add(row)
                     total += 1
                     if (first == null) first = row["rowId"].asLong()
+                    // 下标表只补首条，保持「重复 rowId 取首次出现」。
+                    row["rowId"].asLong()?.let { id ->
+                        index?.let { if (!it.containsKey(id)) it[id] = position }
+                    }
                 }
 
                 "row.upserted" -> {
                     val row = op["row"] as? JsonObject ?: continue
                     val id = row["rowId"].asLong() ?: continue
-                    val index = rows.indexOfFirst { it["rowId"].asLong() == id }
-                    if (index >= 0) {
-                        rows = rows.toMutableList().also { it[index] = row }
-                    }
+                    val position = indexOf(id)
+                    if (position >= 0) rows[position] = row
                 }
 
                 "row.removed" -> {
                     val from = op["fromRowId"].asLong() ?: continue
-                    val kept = rows.filter { (it["rowId"].asLong() ?: 0L) < from }
-                    val removed = rows.size - kept.size
+                    var removed = 0
+                    val iterator = rows.iterator()
+                    while (iterator.hasNext()) {
+                        if ((iterator.next()["rowId"].asLong() ?: 0L) >= from) {
+                            iterator.remove()
+                            removed += 1
+                        }
+                    }
                     val clearsAll = first != null && from <= first
-                    rows = kept
                     total = if (clearsAll) 0 else (total - removed).coerceAtLeast(0)
                     if (clearsAll) first = null
+                    // 行的下标整体变了：丢掉旧表，下次查找按新列表重建。
+                    index = null
                 }
 
                 "row.delta" -> {
                     val id = op["rowId"].asLong() ?: continue
                     val path = op["path"].asString() ?: continue
                     val append = op["append"].asString() ?: ""
-                    val index = rows.indexOfFirst { it["rowId"].asLong() == id }
-                    if (index >= 0) {
-                        val updated = appendPath(rows[index], path, append)
-                        rows = rows.toMutableList().also { it[index] = updated }
+                    val position = indexOf(id)
+                    if (position >= 0) {
+                        rows[position] = appendPath(rows[position], path, append)
                     }
                 }
 

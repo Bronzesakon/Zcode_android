@@ -113,6 +113,12 @@ internal fun statusLabel(status: String): String = when (status) {
     else -> status
 }
 
+/** 摘要优先读取的结构化输入键（顺序即优先级）。 */
+private val TOOL_SUMMARY_KEYS = arrayOf(
+    "path", "file_path", "filePath", "command", "cmd", "query", "pattern",
+    "url", "description", "prompt", "name",
+)
+
 /**
  * 工具行的单行摘要。
  *
@@ -120,11 +126,7 @@ internal fun statusLabel(status: String): String = when (status) {
  */
 internal fun toolSummary(row: JsonObject): String {
     val input = row["input"].asObj()
-    val candidates = listOf(
-        "path", "file_path", "filePath", "command", "cmd", "query", "pattern",
-        "url", "description", "prompt", "name",
-    )
-    for (key in candidates) {
+    for (key in TOOL_SUMMARY_KEYS) {
         input?.get(key).asString()?.takeIf { it.isNotBlank() }?.let { return singleLine(it) }
     }
     return singleLine(
@@ -135,5 +137,16 @@ internal fun toolSummary(row: JsonObject): String {
     )
 }
 
+/** 折叠所有空白用的正则（每次调用现编译代价高，提到组合外）。 */
+private val WHITESPACE_REGEX = Regex("\\s+")
+
 /** 通知/单行摘要用：折叠所有空白。 */
-internal fun singleLine(value: String): String = value.replace(Regex("\\s+"), " ").trim()
+internal fun singleLine(value: String): String = value.replace(WHITESPACE_REGEX, " ").trim()
+
+/**
+ * 文本行数是否超过 [limit]（延迟求值，等价于 `text.lines().size > limit`，但不建整表）。
+ *
+ * shell 展开态的「展开命令」按钮判定用它，避免每次组合都分配整段行列表。
+ */
+internal fun lineCountExceeds(text: String, limit: Int): Boolean =
+    text.lineSequence().take(limit + 1).count() > limit

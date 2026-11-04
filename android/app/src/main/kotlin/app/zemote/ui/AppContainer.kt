@@ -189,6 +189,11 @@ class AppContainer private constructor(context: Context) {
         app.zemote.data.ChatCache(appContext)
     }
 
+    /** 首页项目树的本地快照：冷启动/Activity 重建先出内容，再后台刷新。 */
+    private val homeCache: app.zemote.data.HomeCache by lazy {
+        app.zemote.data.HomeCache(appContext)
+    }
+
     /**
      * 进程级对话保活：按工作区复用桥与 conversation，离开页面不关闭。
      *
@@ -257,6 +262,7 @@ class AppContainer private constructor(context: Context) {
         deviceId: String,
         workspaceKey: String?,
         taskId: String?,
+        taskTitle: String? = null,
         workspacePath: String? = null,
         workspaceIdentity: String? = null,
         hostId: String? = null,
@@ -272,6 +278,7 @@ class AppContainer private constructor(context: Context) {
                     deviceId = deviceId,
                     initialWorkspaceKey = workspaceKey,
                     initialTaskId = taskId,
+                    initialTaskTitle = taskTitle,
                     initialWorkspacePath = workspacePath,
                     initialWorkspaceIdentity = workspaceIdentity,
                     initialHostId = hostId,
@@ -298,6 +305,7 @@ class AppContainer private constructor(context: Context) {
                     authStore = authStore,
                     registry = conversationRegistry,
                     cache = chatCache,
+                    homeCache = homeCache,
                 )
             }
         }

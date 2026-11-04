@@ -352,4 +352,66 @@ class TimelineUnitsTest {
         )
         assertFalse("done" in open)
     }
+
+    @Test
+    fun `缺 rowId 的匿名行 key 去重后全局唯一`() {
+        fun anon(text: String) = buildJsonObject {
+            put("kind", "assistantText")
+            put("turnId", "turn-1")
+            put("text", text)
+        }
+
+        val units = buildTimelineUnits(listOf(anon("same"), anon("same"), anon("same")))
+        assertEquals(3, units.size)
+
+        val base = units.first().key
+        val keys = uniqueTimelineKeys(units)
+        assertEquals(listOf(base, "$base#1", "$base#2"), keys)
+        assertEquals(3, keys.toSet().size)
+    }
+
+    @Test
+    fun `分组 key 取组首行，运行中追加同家族工具后保持不变`() {
+        val before = buildTimelineUnits(
+            listOf(
+                row(3, "toolCall", toolName = "Read"),
+                row(4, "toolCall", toolName = "Grep"),
+            ),
+        ).single() as TimelineUnit.Group
+
+        val after = buildTimelineUnits(
+            listOf(
+                row(3, "toolCall", toolName = "Read"),
+                row(4, "toolCall", toolName = "Grep"),
+                row(5, "toolCall", toolName = "Glob"),
+            ),
+        ).single() as TimelineUnit.Group
+
+        // 运行中的组只会往尾部追加：key 不能跟着组尾变，否则每次追加都丢展开态/锚点。
+        assertEquals("tool-group:3", before.key)
+        assertEquals(before.key, after.key)
+    }
+
+    @Test
+    fun `匿名行保持原相对位置，不会被挪到最旧端`() {
+        val anonymous = buildJsonObject {
+            put("kind", "timelineMarker")
+            put("marker", "x")
+        }
+        val normalized = normalizeTimelineRows(
+            listOf(
+                row(1, "assistantText"),
+                anonymous,
+                row(2, "assistantText"),
+                row(3, "assistantText"),
+            ),
+        )
+
+        // 反向布局里列表末尾 = 视觉最顶 = 最旧；匿名行必须留在 1 和 2 之间。
+        assertEquals(4, normalized.size)
+        assertEquals("1", normalized[0]["rowId"].toString())
+        assertNull(normalized[1]["rowId"])
+        assertEquals("2", normalized[2]["rowId"].toString())
+        assertEquals("3", normalized[3]["rowId"].toString())
+    }
 }

@@ -197,6 +197,28 @@ class RichBridge(
     }
 }
 
+/**
+ * `assets/rich/index.html` 模板进程内只读一次。
+ *
+ * 之前每个公式/图表块在组合期都做一次主线程 Asset 读取 + 整文件解码，
+ * 一条消息里出现多个富内容块时会直接卡住若干帧。模板不会在运行时变化，
+ * 缓存字符串即可（不持有 Context，避免泄漏）。
+ */
+private object RichTemplate {
+    private var cached: String? = null
+
+    @Synchronized
+    fun load(context: Context): String {
+        cached?.let { return it }
+        val text = context.assets
+            .open("rich/index.html")
+            .bufferedReader(Charsets.UTF_8)
+            .use { it.readText() }
+        cached = text
+        return text
+    }
+}
+
 private fun buildHtml(
     context: Context,
     type: RichBlockType,
@@ -204,10 +226,7 @@ private fun buildHtml(
     colors: ZemoteColors,
     dark: Boolean,
 ): String {
-    val template = context.assets
-        .open("rich/index.html")
-        .bufferedReader(Charsets.UTF_8)
-        .use { it.readText() }
+    val template = RichTemplate.load(context)
 
     val sourceB64 = Base64.encodeToString(source.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
     return template

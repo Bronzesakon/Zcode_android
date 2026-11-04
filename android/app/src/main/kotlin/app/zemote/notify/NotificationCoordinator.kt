@@ -12,6 +12,7 @@ import app.zemote.ui.chat.WorkspaceProjection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -49,6 +50,9 @@ class NotificationCoordinator(
     private val appContext = context.applicationContext
     private val notifier = Notifier.get(appContext)
 
+    /** 后台时撑住 CPU / Wi-Fi，避免息屏后 relay 心跳停摆。 */
+    private val keepAlive = RelayKeepAlive(appContext)
+
     /** taskId → 上一次看到的运行态。 */
     private var wasRunning: Map<String, Boolean> = emptyMap()
 
@@ -64,10 +68,30 @@ class NotificationCoordinator(
     /** workspaceKey → sessions-index 投影出的任务（workspace-list 本身不带 tasks）。 */
     private val tasksByWorkspace = HashMap<String, List<TaskItem>>()
 
+    /**
+     * workspaceKey → 待执行的索引刷新。
+     *
+     * `sessionsIndexUpdated` 在流式期间每秒十几次，每次都要拉整份对话快照；通知只需要
+     * 秒级新鲜度，所以按 key 合并成「最多每 [INDEX_REFRESH_MIN_INTERVAL_MS] 一次」，
+     * 避免和对话页抢同一个单线程引擎 dispatcher。
+     */
+    private val indexRefreshJobs = HashMap<String, Job>()
+    private val indexRefreshSyncTasks = HashMap<String, Boolean>()
+
     /** 已经发过「等待确认」的任务；回到无待交互时移除。 */
     private val attentionPosted = mutableSetOf<String>()
 
     private var serviceWanted = false
+
+    /** 应用是否在前台；切后台时启用 CPU/网络锁，回前台释放。 */
+    private var appForeground = true
+
+    /** Activity 前台/后台切换（MainActivity 调用）。 */
+    fun onAppForeground(foreground: Boolean) {
+        if (appForeground == foreground) return
+        appForeground = foreground
+        syncKeepAlive()
+    }
 
     fun start() {
         scope.launch {
@@ -126,6 +150,7 @@ class NotificationCoordinator(
             serviceWanted = false
             ZemoteForegroundService.stop(appContext)
         }
+        syncKeepAlive()
         if (!current.notificationEnabled) {
             // 总开关关掉：撤掉全部卡片；服务通知也一起没掉（服务本身继续跑）。
             notifier.clearAll()
@@ -144,6 +169,16 @@ class NotificationCoordinator(
             // 首次启动发生在 Activity 前台，正常不会命中。这里不让它把应用带崩。
             Log.e(TAG, "启动前台服务失败: ${e.message}")
         }
+    }
+
+    /**
+     * 后台保活锁的唯一开关。
+     *
+     * 应用在前台时不锁（屏幕亮着，系统本来就不会休眠）；切后台或仍有任务在跑时
+     * 才锁 CPU / Wi-Fi。前台服务本身只管进程不被回收，管不了息屏后的 CPU 和射频。
+     */
+    private fun syncKeepAlive() {
+        keepAlive.setActive(serviceWanted && (!appForeground || runningNow.isNotEmpty()))
     }
 
     private fun onEvent(event: EngineEvent) {
@@ -169,8 +204,10 @@ class NotificationCoordinator(
                     ?.get("type")?.let { (it as? JsonPrimitive)?.contentOrNull }
                 when (type) {
                     // 任务状态只在 sessions-index 里；不从这里同步，运行卡/完成提醒永远为空。
-                    "sessionsIndexUpdated" -> refreshFromIndex(event.session, event.key, syncTasks = true)
-                    "stateChanged" -> refreshFromIndex(event.session, event.key, syncTasks = false)
+                    "sessionsIndexUpdated" ->
+                        requestIndexRefresh(event.session, event.key, syncTasks = true)
+                    "stateChanged" ->
+                        requestIndexRefresh(event.session, event.key, syncTasks = false)
                 }
             }
 
@@ -241,6 +278,8 @@ class NotificationCoordinator(
         wasRunning = nextRunning
         previousIds = nextIds
         runningNow = running
+        // 通知总开关关掉也要保连接：锁跟着「前台服务开启 + 后台 / 有任务在跑」。
+        syncKeepAlive()
 
         if (!current.notificationEnabled) return
 
@@ -266,6 +305,22 @@ class NotificationCoordinator(
                     else -> Unit
                 }
             }
+        }
+    }
+
+    /**
+     * 合并同一工作区的索引刷新请求。
+     *
+     * 第一个事件立即排一次刷新（延迟 [INDEX_REFRESH_MIN_INTERVAL_MS]），后续事件只把
+     * `syncTasks` 标志并进同一次刷新；通知的秒级新鲜度足够，不需要逐事件拉快照。
+     */
+    private fun requestIndexRefresh(session: Long, key: String, syncTasks: Boolean) {
+        indexRefreshSyncTasks[key] = (indexRefreshSyncTasks[key] ?: false) || syncTasks
+        if (indexRefreshJobs[key]?.isActive == true) return
+        indexRefreshJobs[key] = scope.launch {
+            delay(INDEX_REFRESH_MIN_INTERVAL_MS)
+            val withTasks = indexRefreshSyncTasks.remove(key) ?: false
+            refreshFromIndex(session, key, withTasks)
         }
     }
 
@@ -314,5 +369,8 @@ class NotificationCoordinator(
 
     private companion object {
         const val TAG = "ZemoteNotifyCoord"
+
+        /** 同一工作区索引刷新的最小间隔；通知不需要逐帧新鲜度。 */
+        const val INDEX_REFRESH_MIN_INTERVAL_MS: Long = 1_000
     }
 }

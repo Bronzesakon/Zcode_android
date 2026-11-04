@@ -7,7 +7,9 @@ package app.zemote.ui.chat.markdown
 //  - 块级节点各自一个 Composable；块间距按网页的 margin 规则近似（见 markdownBlockGap）；
 //  - 行内节点先拼成 AnnotatedString 再一次性交给 Text，避免每个词一个 Composable；
 //  - 链接点击走 LocalUriHandler，图片点击回调给调用方（运行时不依赖图片库）；
-//  - 解析结果用 remember(text) 缓存，流式刷新时只重解析变化后的文本。
+//  - 解析结果进进程内 LRU（MarkdownParseCache），组合期不再全量重解析；
+//  - 流式追加的文本按 80ms 采样（rememberStreamThrottledText），窗口到期补渲染
+//    最后一帧；换消息/整段替换/非流式文本仍然立即解析。
 //
 //  版式口径（docs/chat/03 §1.3、07 与 UI-CONFIRM §1.1/§2.3）：
 //  - 正文 14sp / 1.75 行高（网页 Markdown 根 `leading-[1.75]`，14px → 24.5px）；
@@ -109,7 +111,8 @@ private fun TextStyle.withMarkdownLeading(): TextStyle =
  * - 流式安全：未闭合的围栏与强调符号降级为普通文本，不抛异常。
  * - 图片只做缩略图 + 点击回调，实际取图与全屏预览由调用方（media/Images.kt）处理。
  *
- * 解析结果按 [text] 缓存，长文本滚动时不会重复分词。
+ * 解析结果按文本进 [MarkdownParseCache] 缓存，长文本滚动/重组时不会重复分词；
+ * 流式追加的文本先经 [rememberStreamThrottledText] 采样，避免每个 delta 都全量解析。
  */
 @Composable
 fun MarkdownText(
@@ -117,7 +120,8 @@ fun MarkdownText(
     modifier: Modifier = Modifier,
     onImageClick: (url: String) -> Unit = {},
 ) {
-    val blocks = remember(text) { MarkdownParser.parse(text) }
+    val visibleText = rememberStreamThrottledText(text)
+    val blocks = remember(visibleText) { MarkdownParseCache.blocks(visibleText) }
     MarkdownBlocks(
         blocks = blocks,
         modifier = modifier,
@@ -373,6 +377,8 @@ private fun SingleImage(image: MdBlock.Image, onImageClick: (String) -> Unit) {
         RemoteImage(
             key = image.url,
             loader = { url -> fetchImageBytes(url) },
+            // 缩略图按 240dp 上限解码：再大的原图也只是等比例降采样，不会整张进内存。
+            maxDecodeSize = 240.dp,
             modifier = Modifier
                 .width(240.dp)
                 .height(150.dp)
@@ -414,7 +420,9 @@ private fun TableBlock(table: MdBlock.Table, onImageClick: (String) -> Unit) {
 
     val annotatedRows = remember(table, colors) {
         (listOf(table.header) + table.rows).map { row ->
-            row.map { cell -> buildInlineAnnotated(cell, colors) }
+            row.map { cell ->
+                MarkdownInlineCache.annotated(cell, colors) { buildInlineAnnotated(cell, colors) }
+            }
         }
     }
 
@@ -525,7 +533,9 @@ private fun InlineText(
     onImageClick: (String) -> Unit = {},
 ) {
     val colors = LocalZemoteColors.current
-    val annotated = remember(inlines, colors) { buildInlineAnnotated(inlines, colors) }
+    val annotated = remember(inlines, colors) {
+        MarkdownInlineCache.annotated(inlines, colors) { buildInlineAnnotated(inlines, colors) }
+    }
     AnnotatedText(
         annotated = annotated,
         style = style,

@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -126,7 +127,8 @@ internal fun ChatComposer(
             .fillMaxWidth()
             .clip(RoundedCornerShape(ZemoteRadius.xxl))
             .background(surfaceColor)
-            .border(1.dp, borderColor, RoundedCornerShape(ZemoteRadius.xxl))
+            // 网页是 border-[0.5px]；Compose 用 0.5dp 保留同样的细线。
+            .border(0.5.dp, borderColor, RoundedCornerShape(ZemoteRadius.xxl))
             .padding(ZemoteSpacing.space3),
         verticalArrangement = Arrangement.spacedBy(ZemoteSpacing.space3),
     ) {
@@ -189,7 +191,7 @@ internal fun ChatComposer(
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space1),
+                horizontalArrangement = Arrangement.spacedBy(ZemoteSpacing.space1_5),
             ) {
                 ModelButton(model = model, onClick = onOpenModel)
                 if (levels.isNotEmpty()) {
@@ -240,10 +242,10 @@ private fun ModelButton(model: String?, onClick: () -> Unit) {
     val colors = LocalZemoteColors.current
     Row(
         modifier = Modifier
-            .height(ZemoteSpacing.space9)
+            .height(ZemoteSpacing.space7)
             .clip(RoundedCornerShape(ZemoteRadius.lg))
             .clickable(onClick = onClick)
-            .padding(horizontal = ZemoteSpacing.space2),
+            .padding(start = ZemoteSpacing.space2, end = ZemoteSpacing.space1_5),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -272,7 +274,7 @@ private fun ModeButton(mode: String?, onSelect: (String) -> Unit) {
     Box {
         Box(
             modifier = Modifier
-                .size(ZemoteSpacing.space9)
+                .size(ZemoteSpacing.space7)
                 .clip(RoundedCornerShape(ZemoteRadius.lg))
                 .clickable { open = true },
             contentAlignment = Alignment.Center,
@@ -281,7 +283,7 @@ private fun ModeButton(mode: String?, onSelect: (String) -> Unit) {
                 modeIcon(current),
                 contentDescription = "模式：${modeLabel(current)}",
                 tint = if (current == "yolo") colors.warning else colors.foregroundSubtle,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(16.dp),
             )
         }
         DropdownMenu(
@@ -322,7 +324,7 @@ private fun EffortButton(thought: String?, levels: List<String>, onSelect: (Stri
     Box {
         Row(
             modifier = Modifier
-                .height(ZemoteSpacing.space9)
+                .height(ZemoteSpacing.space7)
                 .clip(RoundedCornerShape(ZemoteRadius.lg))
                 .clickable { open = true }
                 .padding(horizontal = ZemoteSpacing.space1_5),
@@ -379,8 +381,8 @@ private fun SendStopButton(
     if (running && inputBlank) {
         Box(
             modifier = Modifier
-                .size(ZemoteSpacing.space9)
-                .clip(RoundedCornerShape(ZemoteRadius.lg))
+                .size(ZemoteSpacing.space7)
+                .clip(CircleShape)
                 .background(colors.secondary)
                 .clickable(onClick = onStop),
             contentAlignment = Alignment.Center,
@@ -395,8 +397,8 @@ private fun SendStopButton(
     } else {
         Box(
             modifier = Modifier
-                .size(ZemoteSpacing.space9)
-                .clip(RoundedCornerShape(ZemoteRadius.lg))
+                .size(ZemoteSpacing.space7)
+                .clip(CircleShape)
                 .background(if (canSend || sending) colors.brand else colors.brand.copy(alpha = 0.4f))
                 .clickable(enabled = canSend, onClick = onSend),
             contentAlignment = Alignment.Center,
@@ -541,14 +543,16 @@ internal fun modelLabel(config: JsonObject?): String? {
     return if (provider.isNullOrBlank() || provider == "glm") model else "$provider/$model"
 }
 
-/** 网页端 Mode 菜单不含 plan（plan 由独立开关控制）；兼容值 edit 按需兜底。 */
+/**
+ * 网页 3.17.1 的模式集合：build / guarded / plan / yolo（`edit` 是兼容值）。
+ *
+ * 之前注释里的「plan 由独立开关控制」是错的——本端没有那个开关，plan 必须能直接选。
+ * 未知值（如 `default`）按网页口径归一成 build 展示，不再追加成可下发的选项。
+ */
 private fun modeOptions(current: String?): List<String> {
-    val base = listOf("build", "guarded", "yolo")
-    return if (current != null && current.isNotBlank() && current !in base) {
-        base + current
-    } else {
-        base
-    }
+    val base = listOf("build", "guarded", "plan", "yolo")
+    // `edit` 是旧会话可能停在的兼容值：保留它作为已选项，但不主动提供给新选择。
+    return if (current == "edit") base + "edit" else base
 }
 
 /** 网页 `src-AL-_ONNp.js:49494` 的 Mode 展示名。 */
@@ -557,7 +561,7 @@ private fun modeLabel(id: String): String = when (id) {
     "guarded" -> "自主模式"
     "plan" -> "计划模式"
     "yolo" -> "完全访问"
-    "edit" -> "编辑"
+    "edit" -> "自动编辑"
     else -> id
 }
 

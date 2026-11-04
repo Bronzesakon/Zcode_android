@@ -16,17 +16,21 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -71,10 +75,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import app.zemote.engine.RelayState
 import app.zemote.ui.chat.media.ImageViewerDialog
 import app.zemote.ui.chat.media.fetchImageBytes
 import app.zemote.ui.chat.timeline.ConversationTimeline
@@ -109,6 +115,8 @@ fun ChatScreen(
     state: ChatUiState,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    /** 错误条「重试」：优先重发失败的动作（如模式切换），没有时由调用方回退到刷新。 */
+    onRetry: () -> Unit = onRefresh,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
     onLoadOlder: () -> Unit,
@@ -127,6 +135,8 @@ fun ChatScreen(
     onRemoveAttachment: (Int) -> Unit = {},
     onLoadAttachment: suspend (String) -> ByteArray? = { null },
     onDraftRestored: () -> Unit = {},
+    /** 时间线回报「可见区已远离最老端」：窗口裁剪的安全信号。 */
+    onWindowTrimSafe: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = LocalZemoteColors.current
@@ -170,15 +180,16 @@ fun ChatScreen(
         ChatTopBar(
             title = state.selectedTask?.title?.takeIf { it.isNotBlank() }
                 ?: if (state.selectedTaskId == null) "新对话" else "未命名",
-            onBack = onBack,
-        )
-
-        ChatPageHeader(
-            workspace = state.selectedWorkspace,
+            // 只显示工作区文件夹名；磁盘路径不再占一行。
+            subtitle = state.selectedWorkspace?.let { workspace ->
+                workspace.label.takeIf { it.isNotBlank() }
+                    ?: workspace.path.substringAfterLast('/').substringAfterLast('\\')
+            },
             showActions = state.selectedTaskId != null,
             pinned = state.selectedTask?.pinned == true,
             menuOpen = menuOpen,
             onMenuOpenChange = { menuOpen = it },
+            onBack = onBack,
             onPin = onPin,
             onRename = { menuOpen = false; renameOpen = true },
             onArchive = { menuOpen = false; onArchive() },
@@ -186,8 +197,16 @@ fun ChatScreen(
         )
 
         // 对话页也要能看见连接状态：否则桥降级/掉线时只能看到消息不再更新。
+        val connectionText = when (state.relayState) {
+            RelayState.Reconnecting -> "连接中断，正在重连…"
+            RelayState.Connecting, RelayState.Authenticating -> "正在连接…"
+            RelayState.Waiting -> "等待桌面端连接…"
+            RelayState.Error, RelayState.Kicked, RelayState.Closed -> "连接已断开"
+            else -> null
+        }
         val statusText = state.error
             ?: state.bridgeDegraded?.let { "工作区连接已降级：$it" }
+            ?: connectionText
             ?: if (state.relayFailureVisible) {
                 "连接中断${state.relayFailure?.reason?.let { "：$it" }.orEmpty()}"
             } else {
@@ -195,21 +214,17 @@ fun ChatScreen(
             }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            val showWelcome = state.rows.isEmpty() &&
-                !state.loading &&
-                state.selectedTaskId == null &&
-                !state.isRunning
-            val showEmptyResult = state.rows.isEmpty() &&
-                !state.loading &&
-                state.selectedTaskId != null &&
-                !state.isRunning
+            // 已选中任务但当前任务的首个对话快照还没到（本地缓存/快照都未应用）：
+            // 给轻量骨架，别先闪一屏「没有可展示内容」再跳成时间线。
+            val showSkeleton = state.selectedTaskId != null && !state.rowsReady
+            val showWelcome = state.selectedTaskId == null && state.rows.isEmpty()
             when {
+                showSkeleton -> ConversationSkeleton()
+
                 showWelcome -> WelcomeEmpty(
                     workspace = state.selectedWorkspace,
                     onSuggestion = { prompt -> input = prompt },
                 )
-
-                showEmptyResult -> EmptyResult()
 
                 else -> ConversationTimeline(
                     rows = state.rows,
@@ -220,17 +235,20 @@ fun ChatScreen(
                     onImageClick = { key -> previewKey = key },
                     imageLoader = imageLoader,
                     onSubagentClick = { subagentDetail = it },
+                    onWindowTrimSafe = onWindowTrimSafe,
                 )
             }
 
-            if (state.loading) {
+            // 骨架本身已经在表达「正在加载对话…」，不再叠全屏遮罩；
+            // 初次进页（还没有选中任务）仍保留遮罩挡住空页操作。
+            if (state.loading && !showSkeleton) {
                 LoadingOverlay()
             }
 
             if (statusText != null) {
                 StatusNotice(
                     text = statusText,
-                    onRetry = onRefresh,
+                    onRetry = onRetry,
                     onDismiss = onDismissError,
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -247,8 +265,9 @@ fun ChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
-                .imePadding()
+                // 键盘弹起时只让出一次空间：IME 与导航栏取并集（取较大者），
+                // 不叠 imePadding + navigationBarsPadding，否则 adjustResize 下会多推一条键盘高度。
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .padding(
                     start = ZemoteSpacing.space4,
                     end = ZemoteSpacing.space4,
@@ -275,7 +294,7 @@ fun ChatScreen(
                 hasHistory = state.rows.isNotEmpty(),
                 attachments = state.attachments,
                 model = modelLabel(state.config),
-                mode = state.config?.get("mode").asString(),
+                mode = state.config?.get("mode").asString() ?: state.draftMode,
                 thought = state.config?.get("thought").asString(),
                 levels = currentModelReasoningLevels(state.modelView, state.config)
                     .ifEmpty {
@@ -368,36 +387,56 @@ fun ChatScreen(
 // 顶栏 / 页内头
 // ---------------------------------------------------------------------------
 
-/** 网页 `div.flex.h-11.border-b.bg-header.px-2`：44dp 返回栏。 */
+/**
+ * 合并后的对话页顶栏：返回 + 任务标题/工作区文件夹名 + 任务操作。
+ *
+ * 原来的「44dp 标题栏 + 48dp 工作区行 + 分割线」合并成这一栏：磁盘路径不再显示，
+ * 工作区文件夹名作为标题下的副标题，⋮ 移到标题行右侧；底部不再画分割线。
+ */
 @Composable
-private fun ChatTopBar(title: String, onBack: () -> Unit) {
+private fun ChatTopBar(
+    title: String,
+    subtitle: String?,
+    showActions: Boolean,
+    pinned: Boolean,
+    menuOpen: Boolean,
+    onMenuOpenChange: (Boolean) -> Unit,
+    onBack: () -> Unit,
+    onPin: (Boolean) -> Unit,
+    onRename: () -> Unit,
+    onArchive: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val colors = LocalZemoteColors.current
-    Box(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(colors.header)
             .statusBarsPadding()
-            .heightIn(min = ZemoteHeight.Control),
+            .heightIn(min = 56.dp)
+            .padding(horizontal = ZemoteSpacing.space2),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = ZemoteSpacing.space2),
-            verticalAlignment = Alignment.CenterVertically,
+        Box(
+            modifier = Modifier
+                .size(ZemoteHeight.Control)
+                .clip(RoundedCornerShape(ZemoteRadius.lg))
+                .clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .height(ZemoteHeight.Control)
-                    .width(ZemoteSpacing.space12)
-                    .clip(RoundedCornerShape(ZemoteRadius.lg))
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Default.ArrowBack,
-                    contentDescription = "返回",
-                    tint = colors.foreground,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
+            Icon(
+                Icons.Default.ArrowBack,
+                contentDescription = "返回",
+                tint = colors.foreground,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = ZemoteSpacing.space1),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Text(
                 text = title,
                 style = ZemoteType.uiBase,
@@ -405,117 +444,57 @@ private fun ChatTopBar(title: String, onBack: () -> Unit) {
                 color = colors.foreground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
             )
-        }
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(colors.border),
-        )
-    }
-}
-
-/** 页内头：`header h-12 p-2 border-b border-border/50`，工作区名 + 等宽路径 + ⋮。 */
-@Composable
-private fun ChatPageHeader(
-    workspace: WorkspaceItem?,
-    showActions: Boolean,
-    pinned: Boolean,
-    menuOpen: Boolean,
-    onMenuOpenChange: (Boolean) -> Unit,
-    onPin: (Boolean) -> Unit,
-    onRename: () -> Unit,
-    onArchive: () -> Unit,
-    onDelete: () -> Unit,
-) {
-    val colors = LocalZemoteColors.current
-    val name = workspace?.label?.takeIf { it.isNotBlank() }
-        ?: workspace?.key
-        ?: "工作区"
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = ZemoteHeight.Touch)
-            .background(colors.background),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(ZemoteSpacing.space2),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center,
-            ) {
+            if (!subtitle.isNullOrBlank()) {
                 Text(
-                    text = name,
-                    style = ZemoteType.uiBase.copy(lineHeight = 18.sp),
-                    fontWeight = FontWeight.Medium,
-                    color = colors.foreground,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = workspace?.path.orEmpty(),
-                    style = ZemoteType.uiXs.copy(
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 14.sp,
-                    ),
+                    text = subtitle,
+                    style = ZemoteType.uiSm,
                     color = colors.foregroundSubtle,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (showActions) {
-                Box {
-                    Box(
-                        modifier = Modifier
-                            .size(ZemoteSpacing.space8)
-                            .clip(RoundedCornerShape(ZemoteRadius.md))
-                            .clickable { onMenuOpenChange(true) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Default.MoreVert,
-                            contentDescription = "更多",
-                            tint = colors.foregroundSubtle,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { onMenuOpenChange(false) },
-                        modifier = Modifier.background(colors.popover),
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(if (pinned) "取消置顶" else "置顶") },
-                            leadingIcon = { Icon(Icons.Default.PushPin, contentDescription = null) },
-                            onClick = { onMenuOpenChange(false); onPin(!pinned) },
-                        )
-                        DropdownMenuItem(text = { Text("重命名") }, onClick = onRename)
-                        DropdownMenuItem(
-                            text = { Text("归档") },
-                            leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
-                            onClick = onArchive,
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除") },
-                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                            onClick = onDelete,
-                        )
-                    }
+        }
+        if (showActions) {
+            Box {
+                Box(
+                    modifier = Modifier
+                        .size(ZemoteHeight.Control)
+                        .clip(RoundedCornerShape(ZemoteRadius.lg))
+                        .clickable { onMenuOpenChange(true) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.MoreVert,
+                        contentDescription = "更多",
+                        tint = colors.foregroundSubtle,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { onMenuOpenChange(false) },
+                    modifier = Modifier.background(colors.popover),
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(if (pinned) "取消置顶" else "置顶") },
+                        leadingIcon = { Icon(Icons.Default.PushPin, contentDescription = null) },
+                        onClick = { onMenuOpenChange(false); onPin(!pinned) },
+                    )
+                    DropdownMenuItem(text = { Text("重命名") }, onClick = onRename)
+                    DropdownMenuItem(
+                        text = { Text("归档") },
+                        leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                        onClick = onArchive,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除") },
+                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                        onClick = onDelete,
+                    )
                 }
             }
         }
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(1.dp)
-                .background(colors.border.copy(alpha = 0.5f)),
-        )
     }
 }
 
@@ -624,7 +603,7 @@ private fun LoadingOverlay() {
 }
 
 // ---------------------------------------------------------------------------
-// 空对话：欢迎页 / 无内容结果
+// 空对话：欢迎页 / 加载骨架
 // ---------------------------------------------------------------------------
 
 private data class DraftSuggestion(val label: String, val prompt: String)
@@ -725,29 +704,45 @@ private fun WelcomeEmpty(workspace: WorkspaceItem?, onSuggestion: (String) -> Un
     }
 }
 
-/** 已有任务但没有任何可展示内容（`chat.emptyResult.*`）。 */
+/**
+ * 已选中任务、首个对话快照尚未应用时的占位骨架。
+ *
+ * 静态灰条 + 一行「正在加载对话…」：不转圈、不做无限动画，也不遮挡 composer/队列卡。
+ */
 @Composable
-private fun EmptyResult() {
+private fun ConversationSkeleton() {
     val colors = LocalZemoteColors.current
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = ZemoteSpacing.space8),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = ZemoteSpacing.space4, vertical = ZemoteSpacing.space4),
+        verticalArrangement = Arrangement.spacedBy(ZemoteSpacing.space4),
     ) {
         Text(
-            text = "没有可展示内容",
-            style = ZemoteType.uiBase,
-            fontWeight = FontWeight.Medium,
-            color = colors.foreground,
-        )
-        Spacer(Modifier.height(ZemoteSpacing.space1))
-        Text(
-            text = "这个任务没有生成聊天内容，可能是在模型返回正文前被停止了。",
+            text = "正在加载对话…",
             style = ZemoteType.uiSm,
             color = colors.foregroundSubtle,
-            textAlign = TextAlign.Center,
         )
+        SkeletonBar(widthFraction = 0.42f, height = 14.dp, color = colors.foregroundSubtlest)
+        SkeletonBar(widthFraction = 0.86f, height = 10.dp, color = colors.foregroundSubtlest)
+        SkeletonBar(widthFraction = 0.72f, height = 10.dp, color = colors.foregroundSubtlest)
+        Spacer(Modifier.height(ZemoteSpacing.space2))
+        SkeletonBar(widthFraction = 0.55f, height = 14.dp, color = colors.foregroundSubtlest)
+        SkeletonBar(widthFraction = 0.80f, height = 10.dp, color = colors.foregroundSubtlest)
+        SkeletonBar(widthFraction = 0.64f, height = 10.dp, color = colors.foregroundSubtlest)
+        SkeletonBar(widthFraction = 0.30f, height = 10.dp, color = colors.foregroundSubtlest)
     }
+}
+
+@Composable
+private fun SkeletonBar(widthFraction: Float, height: Dp, color: Color) {
+    Box(
+        Modifier
+            .fillMaxWidth(widthFraction)
+            .height(height)
+            .clip(RoundedCornerShape(ZemoteRadius.sm))
+            .background(color),
+    )
 }
 
 /** 网页 `a9t`：按小时返回欢迎语键。 */

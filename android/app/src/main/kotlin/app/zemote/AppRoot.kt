@@ -5,12 +5,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.zemote.data.AppTheme
+import app.zemote.log.ZLog
 import app.zemote.ui.AppContainer
 import app.zemote.ui.NotificationGate
 import app.zemote.ui.nav.AppNavHost
@@ -37,6 +40,8 @@ import app.zemote.ui.theme.ZemoteTheme
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
+    // 兜底：Activity 之外的入口（预览/测试宿主）也应把日志底座装起来；幂等。
+    remember(context) { ZLog.install(context.applicationContext) }
     val container = remember(context) { AppContainer.get(context) }
     val settings by container.appSettings.collectAsStateWithLifecycle()
 
@@ -45,6 +50,10 @@ fun AppRoot() {
         AppTheme.LIGHT -> false
         AppTheme.SYSTEM -> isSystemInDarkTheme()
     }
+
+    LaunchedEffect(Unit) { ZLog.ui("root", "first composition") }
+    LaunchedEffect(settings.theme) { ZLog.ui("root", "theme=${settings.theme}") }
+    DisposableEffect(Unit) { onDispose { ZLog.ui("root", "composition disposed") } }
 
     ZemoteTheme(darkTheme = darkTheme) {
         // 颜色令牌（含底色）在 ui/theme 里，这里只是把根节点的背景铺满。

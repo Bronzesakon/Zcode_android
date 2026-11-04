@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -31,7 +32,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,7 +44,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import app.zemote.log.ZLog
 import app.zemote.ui.chat.asLong
+import app.zemote.ui.chat.asObj
 import app.zemote.ui.chat.asString
 import app.zemote.ui.chat.isStreaming
 import app.zemote.ui.chat.kind
@@ -52,22 +54,32 @@ import app.zemote.ui.chat.rowId
 import app.zemote.ui.theme.LocalZemoteColors
 import app.zemote.ui.theme.ZemoteSpacing
 import app.zemote.ui.theme.ZemoteType
-import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 
 /**
  * 对话时间线。
  *
+ * ## 底锚定（reverseLayout）
+ *
+ * 列表以 `reverseLayout` 渲染：index 0 = 最新行 = 视觉底部。停在底部时，流式追加/长高
+ * 在**同一布局回合**把旧行顶上去——先让位、再追加，没有"先溢出再补偿滚动"的一帧滞后。
+ * 程序化贴底只剩兜底职责（IME、锚点漂移、换会话归位）。
+ *
  * ## 跟随（follow）
  *
- * 用户停在底部时，新行/流式更新自动滚底；用户主动上滚后退出跟随，新行只累计
- * 「N 条新消息」角标，不抢滚动位置。回到底部后角标清零、恢复跟随。
+ * 用户停在底部时新内容自动可见；主动上滚后退出跟随，新行只累计不抢滚动；回到底部恢复。
  *
  * ## 静默历史
  *
- * 距离顶部 3 行以内时自动调 [onLoadOlder]，没有按钮、没有占位跳变；列表以
- * `rowId` 为 key，向前插入不会改变当前视口锚点。
+ * 视觉顶部（最高 index）约一屏半以内时自动调 [onLoadOlder]；向前插入只发生在列表末尾
+ * （高 index 侧），不会改变底部锚点。
  */
 @Composable
 internal fun ConversationTimeline(
@@ -79,6 +91,8 @@ internal fun ConversationTimeline(
     onImageClick: (String) -> Unit,
     imageLoader: suspend (String) -> ByteArray?,
     onSubagentClick: (JsonObject) -> Unit,
+    /** 可见区是否已远离最老端；窗口裁剪只在这个信号为 true 时进行（10 审计 §3）。 */
+    onWindowTrimSafe: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
 ) {
@@ -123,63 +137,156 @@ internal fun ConversationTimeline(
         runningTurns = runningTurns,
         finalAnswerRowIds = finalAnswerRowIds,
     )
+    // 交给 LazyColumn 的 key 必须全局唯一：缺 rowId 的匿名行、重复内容行在这里
+    // 兜底追加 `#n`，绝不把重复 key 交给 LazyColumn（重复 key 会直接崩溃）。
+    val unitKeys = remember(visibleUnits) { uniqueTimelineKeys(visibleUnits) }
 
-    val atBottom by remember {
+    // reverseLayout 的坐标真理：firstVisibleItemIndex/ScrollOffset 就是「距视觉底」的坐标，
+    // (0,0) = 准确贴底。不要再用可见项的几何反推（08 审计 P0-2：旧公式在真底部恒 false）。
+    val bottomEpsilonPx = with(density) { BOTTOM_EPSILON_DP.dp.roundToPx() }
+    val atBottom by remember(listState, bottomEpsilonPx) {
+        derivedStateOf {
+            listState.layoutInfo.totalItemsCount > 0 &&
+                listState.firstVisibleItemIndex == 0 &&
+                listState.firstVisibleItemScrollOffset <= bottomEpsilonPx
+        }
+    }
+
+    val nearTop by remember(listState) {
+        derivedStateOf {
+            // 视觉顶部 = 最高 index。按像素算距顶（网页阈值 max(64px, 2×视口高)）；
+            // 内容装得下（不可滚动）时永不预取。
+            val info = listState.layoutInfo
+            if (!listState.canScrollBackward && !listState.canScrollForward) {
+                return@derivedStateOf false
+            }
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf false
+            val contentTop = info.viewportEndOffset - info.afterContentPadding
+            val distanceFromTop = contentTop - (last.offset + last.size)
+            distanceFromTop <= maxOf(
+                with(density) { 64.dp.roundToPx() },
+                2 * info.viewportSize.height,
+            )
+        }
+    }
+
+    // 可见区距最老端 > 3 屏才允许窗口裁剪（10 审计 §3：安全裁剪距离）。
+    // 与 nearTop 同一像素口径，但阈值更保守；不可滚动时不动数据。
+    val farFromTop by remember(listState) {
         derivedStateOf {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf false
-            last.index >= info.totalItemsCount - 1 &&
-                info.viewportEndOffset - (last.offset + last.size) <= with(density) { 48.dp.roundToPx() }
+            val contentTop = info.viewportEndOffset - info.afterContentPadding
+            val distanceFromTop = contentTop - (last.offset + last.size)
+            distanceFromTop > 3 * info.viewportSize.height
         }
     }
-    val nearTop by remember {
-        derivedStateOf {
-            // 网页按像素预取（距顶 max(64px, 2×视口高)）；LazyColumn 拿不到精确累计高度，
-            // 用「首个可见行索引」近似：约一屏半的提前量。
-            listState.firstVisibleItemIndex <= PREFETCH_ROWS
-        }
+    val currentTrimCallback = rememberUpdatedState(onWindowTrimSafe)
+    LaunchedEffect(Unit) {
+        snapshotFlow { farFromTop }.collect { currentTrimCallback.value(it) }
     }
 
     // 跟随是「用户意图」而不是「当前位置」：程序化滚动或向前插入历史时 atBottom
     // 会短暂为 false，不能据此退出跟随，否则预取一插入就把视口丢在历史中间。
-    // 只有用户手指拖动时才按当前位置重算意图。
+    // 手指一开始拖动就立即退出跟随；松手后可能还有惯性滚动，必须等滚动真正停止
+    // 再按最终位置决定是否恢复，避免「松手瞬间仍在底部」把 following 抢回 true。
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     var following by remember { mutableStateOf(true) }
+    var userDragged by remember { mutableStateOf(false) }
 
-    LaunchedEffect(dragging, atBottom) {
+    LaunchedEffect(dragging) {
         if (dragging) {
-            following = atBottom
-        } else if (atBottom) {
-            following = true
+            userDragged = true
+            following = false
+            ZLog.ui("timeline", "drag start → following=false units=${visibleUnits.size}")
+            return@LaunchedEffect
         }
+        if (!userDragged) return@LaunchedEffect
+        // 松手后可能还有惯性滚动：等它停下并留一段稳定期，再以最终位置定意图。
+        snapshotFlow { listState.isScrollInProgress }.first { !it }
+        delay(SETTLE_DELAY_MS)
+        following = atBottom && !listState.isScrollInProgress
+        ZLog.ui("timeline", "drag end → following=$following atBottom=$atBottom")
     }
 
-    // 单一长驻效果：不随 key 重启，避免预取连续插入时把 scrollToItem 反复取消。
-    // 同时观察「单元数」与「最后一行内容长度」，流式文本增长也会跟随。
+    // 新窗口从空变为有内容（首次加载/切换会话）时重新以贴底为意图：不沿用上一个
+    // 会话「已上滚」的旧状态。reverseLayout 的初始锚点就是底部（index 0），一般无需滚动；
+    // 复用 listState 换会话时才需要显式归位。
+    LaunchedEffect(rows.isEmpty()) {
+        if (rows.isEmpty()) return@LaunchedEffect
+        following = true
+        listState.pinToBottom()
+        ZLog.ui(
+            "timeline",
+            "content appeared → follow+bottom rows=${orderedRows.size} units=${visibleUnits.size}",
+        )
+    }
+
+    // 内容变化时的跟随（承重逻辑）：reverseLayout **不会**因为 index 0 插入而自动跟随
+    // （LazyList 按首个可见项的 key 锚定），新行/新单元必须显式 pin；行内长高由锚点天然保持。
+    // 只统计最后一个 turn 的流式签名，避免每个 delta 对全量 1300 行做 sumOf（08 审计 P2-4）。
     val latestUnits by rememberUpdatedState(visibleUnits)
-    val latestLastContent by rememberUpdatedState(
-        orderedRows.lastOrNull()?.contentSignature() ?: 0,
+    val latestContentSignature by rememberUpdatedState(
+        run {
+            val lastTurn = orderedRows.lastOrNull()?.get("turnId").asString()
+            val tail = orderedRows.takeLastWhile { it["turnId"].asString() == lastTurn }
+            tail.sumOf { row ->
+                if (row.isStreaming()) row.contentSignature().toLong() else 0L
+            } + (orderedRows.lastOrNull()?.contentSignature() ?: 0)
+        },
     )
     LaunchedEffect(Unit) {
         snapshotFlow {
-            Triple(latestUnits.size, latestUnits.lastOrNull()?.lastRowId, latestLastContent)
-        }.collectLatest {
-            if (following && latestUnits.isNotEmpty()) {
-                listState.scrollToItem(latestUnits.lastIndex)
-            }
+            Triple(latestUnits.size, latestUnits.lastOrNull()?.lastRowId, latestContentSignature)
         }
+            .collect {
+                if (dragging || !following || latestUnits.isEmpty()) return@collect
+                // 已贴底时 no-op；新行插入会把位置顶到 (1,0)，这里必须补一次 pin。
+                if (!atBottom) {
+                    ZLog.ui("timeline", "follow pin units=${latestUnits.size}")
+                    listState.pinToBottom()
+                }
+            }
     }
 
-    // 静默向前翻历史：接近顶部就自动取，不显示按钮。
-    // 每个「行数」只请求一次：加载失败（行数不变）时不会随 loadingOlder 翻转反复重试；
-    // 成功插入旧行后行数变化，仍在顶部才继续取下一页。
-    var olderRequestRowCount by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(nearTop, canLoadOlder, loadingOlder, orderedRows.size) {
-        if (!nearTop || !canLoadOlder) {
-            olderRequestRowCount = -1
-        } else if (!loadingOlder && olderRequestRowCount != orderedRows.size) {
-            olderRequestRowCount = orderedRows.size
-            onLoadOlder()
+    // 视口高度变化（IME/分屏）：跟随时贴回底边；非跟随时补偿同样的位移，
+    // 让屏幕上正在读的内容保持不动。
+    LaunchedEffect(Unit) {
+        var previousHeight = listState.layoutInfo.viewportSize.height
+        snapshotFlow { listState.layoutInfo.viewportSize.height }
+            .distinctUntilChanged()
+            .collect { height ->
+                val delta = previousHeight - height
+                previousHeight = height
+                if (delta == 0 || latestUnits.isEmpty()) return@collect
+                if (following) {
+                    if (!atBottom) listState.pinToBottom()
+                } else {
+                    // reverse：视口底边上移 delta，向后滚 delta 让内容跟随，屏幕位置不变。
+                    listState.scrollBy(-delta.toFloat())
+                }
+            }
+    }
+
+    // 静默向前翻历史：滚动驱动、一次手势最多一页。
+    // 到达视觉顶部拉一页后解除武装；只有当视口离开阈值区（新内容插在上方后自然发生）
+    // 才重新武装。不再用「rows.size 变化 + 1.5s 无限重试」——那会在 pin 抖动时自激，
+    // 把整段历史自动拉完（08/10 审计）。
+    val canLoadRef = rememberUpdatedState(canLoadOlder)
+    val loadingOlderRef = rememberUpdatedState(loadingOlder)
+    val onLoadOlderRef = rememberUpdatedState(onLoadOlder)
+    var pagingArmed by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { nearTop }.collect { top ->
+            if (!top) {
+                pagingArmed = true
+                return@collect
+            }
+            if (pagingArmed && canLoadRef.value && !loadingOlderRef.value) {
+                pagingArmed = false
+                ZLog.ui("timeline", "loadOlder trigger nearTop rows=${orderedRows.size}")
+                onLoadOlderRef.value()
+            }
         }
     }
 
@@ -187,14 +294,19 @@ internal fun ConversationTimeline(
         if (rows.isEmpty()) {
             EmptyTimeline(running = isRunning)
         } else {
+            // reverseLayout：index 0 = 最新行 = 视觉底部。底锚定让流式追加/长高在同一
+            // 布局回合把旧行顶上去（先让位、再追加），不需要事后 scrollToItem 补偿。
+            val bottomFirstUnits = remember(visibleUnits) { visibleUnits.asReversed() }
+            val bottomFirstKeys = remember(unitKeys) { unitKeys.asReversed() }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = TimelineContentPadding,
+                reverseLayout = true,
                 // 网页 turn 内 flow items 是 `gap-5`（20px）；turn 之间再加 turnHeader 的 36dp。
                 verticalArrangement = Arrangement.spacedBy(ZemoteSpacing.space5),
             ) {
-                items(visibleUnits, key = { it.key }) { unit ->
+                itemsIndexed(bottomFirstUnits, key = { index, _ -> bottomFirstKeys[index] }) { _, unit ->
                     Box(Modifier.fillMaxWidth()) {
                         when (unit) {
                             is TimelineUnit.Single -> {
@@ -273,6 +385,8 @@ internal fun ConversationTimeline(
                             is TimelineUnit.HookTrailer -> HookTrailerRow(unit.hooks)
 
                             is TimelineUnit.Group -> {
+                                // 展开态的身份基准与 Group.key 一致：运行中的组只追加到尾部，
+                                // 用组尾会让每次追加都丢掉用户手动展开/收起的选择（09 P2-3）。
                                 val key = unit.rows.first().rowId()
                                 val open = when {
                                     key in openGroups.value -> true
@@ -308,9 +422,18 @@ internal fun ConversationTimeline(
             }
         }
 
-        // 非贴底时底部渐隐，提示下面还有内容。
+        // 右侧滚动进度指示条（timeline/TimelineScrollIndicator.kt）。空时间线不显示，
+        // 避免 LazyColumn 不在树上时读到上一次的 layoutInfo。
+        if (visibleUnits.isNotEmpty()) {
+            TimelineScrollIndicator(
+                listState = listState,
+                modifier = Modifier.align(Alignment.CenterEnd),
+            )
+        }
+
+        // 非跟随（用户在读历史）时底部渐隐，提示下面还有新内容。
         AnimatedVisibility(
-            visible = !atBottom && visibleUnits.isNotEmpty(),
+            visible = !following && visibleUnits.isNotEmpty(),
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -327,13 +450,15 @@ internal fun ConversationTimeline(
             )
         }
 
-        // 网页端按钮无显隐动画。
-        if (!atBottom && visibleUnits.isNotEmpty()) {
+        // 显隐跟「用户意图」走而不是「是否恰好贴底」：插入新行的一帧里 atBottom
+        // 会短暂为 false，用它会闪一下（08 审计 P1-3）。网页端按钮无显隐动画。
+        if (!following && visibleUnits.isNotEmpty()) {
             Surface(
                 onClick = {
+                    following = true
                     scope.launch {
-                        listState.animateScrollToItem(visibleUnits.lastIndex)
-                        following = true
+                        // 瞬时贴底（最新行底边对齐视口底部），不是动画滚到顶部对齐。
+                        listState.pinToBottom()
                     }
                 },
                 shape = CircleShape,
@@ -353,7 +478,8 @@ internal fun ConversationTimeline(
 }
 
 @Composable
-private fun EmptyTimeline(running: Boolean) {    val colors = LocalZemoteColors.current
+private fun EmptyTimeline(running: Boolean) {
+    val colors = LocalZemoteColors.current
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             text = if (running) "正在加载对话…" else "这个对话还没有内容",
@@ -379,13 +505,11 @@ private fun UnknownRow(row: JsonObject) {
     }
 }
 
-/**
- * 提前取历史的行数阈值。
- *
- * 网页按像素预取（距顶 `max(64px, 2×视口高)`）；`LazyColumn` 不暴露精确的累计高度，
- * 这里用「首个可见行索引」近似，约一屏半的提前量。
- */
-private const val PREFETCH_ROWS = 16
+/** 贴底判定容差（与网页 48px 对齐）：再往上滚超过这个距离就视为「离开底部」。 */
+private const val BOTTOM_EPSILON_DP = 48
+
+/** 松手后等待惯性滚动稳定的时间，期间不恢复跟随。 */
+private const val SETTLE_DELAY_MS = 100L
 
 /** 列表内边距：常量实例，完整历史下不会在每次重组时重新分配。 */
 private val TimelineContentPadding =
@@ -405,14 +529,21 @@ internal sealed interface TimelineUnit {
         /** 与这条 Agent 工具调用配对的 subagent 行（网页端会合并进工具摘要行）。 */
         val subagent: JsonObject? = null,
     ) : TimelineUnit {
-        override val key: Any get() = row.rowId()
+        // 缺 rowId 时退回「轮次 + 类型 + 正文 hash」的内容键；同键重复由
+        // uniqueTimelineKeys 追加序号，避免所有匿名行都撞在 0 上。
+        override val key: Any get() = row["rowId"].asLong() ?: "anon:${row.contentKeyFragment()}"
         override val turnId: String? get() = row["turnId"].asString()
         override val isWork: Boolean get() = row.kind() in WORK_ROW_KINDS
         override val lastRowId: Long get() = row.rowId()
     }
 
     class Group(val family: ToolFamily, val rows: List<JsonObject>) : TimelineUnit {
-        override val key: Any get() = "tool-group:${rows.first().rowId()}"
+        // 身份基准取组首行：运行中的组只会往尾部追加，组首不变，key 稳定 → 展开态和
+        // 视口锚点不会被每次追加打断。代价是向前翻历史把更早的同族工具并进组首时
+        // 会换 key；prepend 频率远低于流式追加，且只影响正读顶部的那一个组（08 P2-3）。
+        override val key: Any
+            get() = rows.first()["rowId"].asLong()?.let { "tool-group:$it" }
+                ?: "tool-group:${turnId.orEmpty()}:${family.name}:${rows.first().contentKeyFragment()}"
         override val turnId: String? get() = rows.first()["turnId"].asString()
         override val isWork: Boolean get() = true
         override val lastRowId: Long get() = rows.last().rowId()
@@ -420,7 +551,16 @@ internal sealed interface TimelineUnit {
 
     /** 轮次底部的钩子入口；不是时间线行，不参与折叠。 */
     class HookTrailer(override val turnId: String?, val hooks: List<JsonObject>) : TimelineUnit {
-        override val key: Any get() = "hook-trailer:${turnId ?: hooks.first().rowId()}"
+        override val key: Any
+            get() {
+                turnId?.let { return "hook-trailer:$it" }
+                val firstId = hooks.first()["rowId"].asLong()
+                return if (firstId != null) {
+                    "hook-trailer:$firstId"
+                } else {
+                    "hook-trailer:anon:${hooks.size}:${hooks.first().contentKeyFragment()}"
+                }
+            }
         override val isWork: Boolean get() = false
         override val lastRowId: Long get() = hooks.last().rowId()
     }
@@ -438,22 +578,35 @@ internal fun normalizeTimelineRows(rows: List<JsonObject>): List<JsonObject> {
     var ordered = true
     var previous = Long.MIN_VALUE
     val byId = LinkedHashMap<Long, JsonObject>(rows.size)
-    val anonymous = ArrayList<JsonObject>()
+    // 匿名行（缺 rowId）不能简单拼到末尾——那是视觉最顶/最旧端，流式行会「跳上去」。
+    // 记住它前面最近一条有 id 的行，排序后原样贴回该行后面（08 审计 §5.2）。
+    val anonymous = ArrayList<Pair<Long, JsonObject>>()
+    var lastId = Long.MIN_VALUE
     for (row in rows) {
         val id = row["rowId"].asLong()
         if (id == null) {
-            anonymous += row
+            anonymous += lastId to row
             ordered = false
             continue
         }
         if (id < previous) ordered = false
         previous = id
+        lastId = id
         // put 返回旧值即重复 rowId：保留最后一份内容，位置随后按 rowId 重排。
         if (byId.put(id, row) != null) ordered = false
     }
     if (ordered && anonymous.isEmpty()) return rows
     val sorted = byId.entries.sortedBy { it.key }.map { it.value }
-    return if (anonymous.isEmpty()) sorted else sorted + anonymous
+    if (anonymous.isEmpty()) return sorted
+    // 无锚点（排在所有有 id 行之前）的保持在最前，其余跟在自己锚点行之后。
+    val byAnchor = anonymous.groupBy({ it.first }, { it.second })
+    val result = ArrayList<JsonObject>(rows.size)
+    byAnchor[Long.MIN_VALUE]?.let { result += it }
+    for (row in sorted) {
+        result += row
+        byAnchor[row["rowId"].asLong()]?.let { result += it }
+    }
+    return result
 }
 
 /** 每轮「最终回答」所在行的 rowId：该轮最后一个 `assistantText`。 */
@@ -637,4 +790,60 @@ private fun JsonObject.contentSignature(): Int =
     (get("text").asString()?.length ?: 0) +
         (get("summaryText").asString()?.length ?: 0) +
         (get("inputText").asString()?.length ?: 0) +
-        (get("output")?.toString()?.length ?: 0)
+        // output 是对象；只读它的 text，别对整棵 JSON 做 toString（08 P2-4）。
+        (get("output").asObj()?.get("text").asString()?.length ?: 0)
+
+/** 匿名行（缺 rowId）的内容键片段：turnId + kind + 正文字段 hash。 */
+private fun JsonObject.contentKeyFragment(): String {
+    val hash = buildString {
+        append(get("text").asString().orEmpty())
+        append('\u0000')
+        append(get("summaryText").asString().orEmpty())
+        append('\u0000')
+        append(get("inputText").asString().orEmpty())
+        append('\u0000')
+        append(get("output")?.toString().orEmpty())
+    }.hashCode()
+    return "${this["turnId"].asString().orEmpty()}:${kind()}:$hash"
+}
+
+/**
+ * 与 [units] 一一对应的 LazyColumn key，保证全局唯一。
+ *
+ * 有 rowId 的单元用 rowId（Long）或带前缀的复合字符串；匿名行的内容键仍可能重复，
+ * 这里给重复项依次追加 `#n`（直到真正未使用），避免重复 key 让 LazyColumn 崩溃。
+ */
+internal fun uniqueTimelineKeys(units: List<TimelineUnit>): List<Any> {
+    val used = HashSet<Any>(units.size * 2)
+    return units.map { unit ->
+        val base = unit.key
+        if (used.add(base)) return@map base
+        var n = 1
+        var candidate: Any = "$base#$n"
+        while (!used.add(candidate)) {
+            n += 1
+            candidate = "$base#$n"
+        }
+        candidate
+    }
+}
+
+/**
+ * 贴底：reverseLayout 下 `(index 0, offset 0)` 就是视觉底边，**不能**用大 offset——
+ * 正偏移在反向布局里朝视觉顶部推进，旧实现 `Int.MAX_VALUE / 2` 会直接跳到最旧端。
+ *
+ * 已经贴底时严格 no-op：无谓的 `scrollToItem` 会清掉 LazyList 的 lastKnownFirstItemKey，
+ * 破坏紧随其后的数据变化的 key 锚定（08 审计 §5.2）。滚动异常只影响跟随，不打断渲染。
+ */
+private suspend fun LazyListState.pinToBottom() {
+    if (firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0) return
+    try {
+        scrollToItem(index = 0, scrollOffset = 0)
+    } catch (cancelled: CancellationException) {
+        // 区分「组合被取消」与「被另一次滚动打断」：后者不能终止长驻的跟随效果。
+        currentCoroutineContext().ensureActive()
+        ZLog.ui("timeline", "pinToBottom superseded")
+    } catch (error: Exception) {
+        ZLog.ui("timeline", "pinToBottom failed: ${error.javaClass.simpleName}: ${error.message}")
+    }
+}

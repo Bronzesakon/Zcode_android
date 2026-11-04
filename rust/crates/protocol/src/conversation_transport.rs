@@ -1674,7 +1674,7 @@ impl ConversationTransport {
                 });
                 if let Some(state) = self.conversation_state_mut(&session_id) {
                     state.history_exhausted = value;
-                    events.push(rows_updated_event(&session_id, None, state));
+                    push_rows_updated(events, &session_id, None, state);
                 }
                 events.push(ConversationEvent::Completed {
                     token,
@@ -1693,7 +1693,7 @@ impl ConversationTransport {
                 let mut failed = None;
                 if let Some(state) = self.conversation_state_mut(&session_id) {
                     match state.prepend_older_rows(&rows, new_first_row_id) {
-                        Ok(()) => events.push(rows_updated_event(&session_id, None, state)),
+                        Ok(()) => push_rows_updated(events, &session_id, None, state),
                         Err(e) => failed = Some(e),
                     }
                 }
@@ -1718,7 +1718,7 @@ impl ConversationTransport {
                     state.optimistic_patch(&patch);
                     // Dart: `if (snapshot == null) return;` → 不通知。
                     if had_snapshot {
-                        events.push(rows_updated_event(&session_id, None, state));
+                        push_rows_updated(events, &session_id, None, state);
                     }
                 }
                 events.push(ConversationEvent::Completed {
@@ -1738,7 +1738,7 @@ impl ConversationTransport {
                 let mut failed = None;
                 if let Some(state) = self.conversation_state_mut(&session_id) {
                     match state.optimistic_row_update(row_id, &patch) {
-                        Ok(()) => events.push(rows_updated_event(&session_id, None, state)),
+                        Ok(()) => push_rows_updated(events, &session_id, None, state),
                         Err(e) => failed = Some(e),
                     }
                 }
@@ -1761,7 +1761,7 @@ impl ConversationTransport {
                 let mut failed = None;
                 if let Some(state) = self.conversation_state_mut(&session_id) {
                     match state.optimistic_remove_queue_item(&queue_item_id) {
-                        Ok(()) => events.push(rows_updated_event(&session_id, None, state)),
+                        Ok(()) => push_rows_updated(events, &session_id, None, state),
                         Err(e) => failed = Some(e),
                     }
                 }
@@ -2059,6 +2059,34 @@ impl ConversationTransport {
                         )),
                         Err(e) => Completion::Failed(protocol_error_to_transport(e)),
                     },
+                    SimpleCall::RowsRange {
+                        before_row_id,
+                        limit,
+                        ..
+                    } => {
+                        // 分页应答：宿主靠 beforeRowId / atLogEpoch 做 CAS，日志里必须能看到
+                        // 「请求的游标 → 返回行数 → 是否还有更早」这一组。
+                        let row_count = res
+                            .get("rows")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        events.push(ConversationEvent::Log(format!(
+                            "[conv] rowsRange reply beforeRowId={} limit={} rows={} hasMore={} atLogEpoch={} atSeq={}",
+                            opt_value(*before_row_id),
+                            limit,
+                            row_count,
+                            res.get("hasMore")
+                                .and_then(|v| v.as_bool())
+                                .map(|b| b.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            res.get("atLogEpoch").and_then(|v| v.as_str()).unwrap_or("-"),
+                            res.get("atSeq")
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        )));
+                        Completion::Value(res)
+                    }
                     _ => Completion::Value(res),
                 };
                 emit_completion(&flow, outcome, events);
@@ -2398,7 +2426,7 @@ impl ConversationTransport {
             events.push(ConversationEvent::Log(format!(
                 "[v4] watchdog: no frames for {quiet}s while active, resync"
             )));
-            self.request_resync(key, channels, now_ms, events);
+            self.request_resync(key, channels, now_ms, events, "watchdog");
         }
         events.push(ConversationEvent::TimerStart {
             token,
@@ -3138,17 +3166,26 @@ impl ConversationTransport {
                     sub.core.set_subscription_id(subscription_id.clone());
                     sub.started = true;
                 }
+                let ack_epoch = ack
+                    .ack
+                    .as_ref()
+                    .map(|a| Value::Object(a.clone()))
+                    .and_then(|v| conversation_ack_log_epoch(&v));
+                // 订阅 ack 是「握手 → 订阅」这条链的确认点；resubscribe 标记必须带上：
+                // 桥恢复后的重订阅在宿主侧会表现成「自己重载」，排查时要能区分。
                 events.push(ConversationEvent::Log(format!(
                     "[{tag}] subscribed {topic} id={subscription_id}"
                 )));
+                // 补充：ack 的 epoch 与订阅模式（first / resubscribe）。桥恢复后的重订阅
+                // 在宿主侧会表现成「自己重载」，排查时要能和首次订阅区分开。
+                events.push(ConversationEvent::Log(format!(
+                    "[conv] subscribe ack topic={topic} mode={} epoch={}",
+                    if sf.resubscribe { "resubscribe" } else { "first" },
+                    interp_opt_str(ack_epoch.as_deref()),
+                )));
                 // `_onSubscribeAck`（只有 ConversationSubscription 覆写）。
                 if matches!(sf.kind, SubKind::Conversation { .. }) {
-                    let epoch = ack
-                        .ack
-                        .as_ref()
-                        .map(|a| Value::Object(a.clone()))
-                        .and_then(|v| conversation_ack_log_epoch(&v));
-                    if let Some(epoch) = epoch {
+                    if let Some(epoch) = ack_epoch {
                         if let Some(sub) = self.subscriptions.get_mut(&key) {
                             if let SubState::Conversation(state) = &mut sub.state {
                                 state.log_epoch = Some(epoch);
@@ -3508,11 +3545,11 @@ impl ConversationTransport {
             events.push(ConversationEvent::Log(format!(
                 "[{tag}] applyFrame failed: {e}"
             )));
-            self.request_resync(key, channels, now_ms, events);
+            self.request_resync(key, channels, now_ms, events, "apply-frame-failed");
             return;
         }
         if gap {
-            self.request_resync(key, channels, now_ms, events);
+            self.request_resync(key, channels, now_ms, events, "gap");
             return;
         }
         // `notifyListeners()` 只在 payload 是 Map 时发生（deltas 的 gap 已提前返回）。
@@ -3529,6 +3566,24 @@ impl ConversationTransport {
                     Some(SubKind::Conversation { session_id }) => session_id.clone(),
                     _ => return,
                 };
+                // 逻辑帧摘要：滑动手势 / 运行时推送都会走到这里，是「谁触发了重载」的直接证据。
+                let payload = frame.get("payload");
+                let kind = payload
+                    .and_then(|p| p.get("kind"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
+                let ops = payload
+                    .and_then(|p| p.get("deltas"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                events.push(ConversationEvent::Log(format!(
+                    "[conv] rowsUpdated session={session_id} source=frame kind={kind} ops={ops} seq={} total={} rows={} firstRow={}",
+                    state.seq,
+                    state.total_count,
+                    state.rows.len(),
+                    opt_value(state.first_row_id),
+                )));
                 ConversationEvent::RowsUpdated {
                     session_id,
                     frame: Some(frame),
@@ -3552,12 +3607,16 @@ impl ConversationTransport {
     }
 
     /// 对应 `_resync()`：门控 + 日志 + 发 `resync*V4`。
+    ///
+    /// `reason` 只用于日志：滑动手势引发的 gap / watchdog 静默 / applyFrame 失败
+    /// 走的是同一条重载路径，日志里必须能区分。
     fn request_resync(
         &mut self,
         key: u64,
         channels: &mut dyn ChannelRpc,
         now_ms: i64,
         events: &mut Vec<ConversationEvent>,
+        reason: &'static str,
     ) {
         let (tag, subscription_id, epoch, seq, method, extra) = match self.subscriptions.get(&key) {
             Some(sub) => (
@@ -3586,6 +3645,10 @@ impl ConversationTransport {
         events.push(ConversationEvent::Log(format!(
             "[{tag}] resync (gap detected) seq={seq} logEpoch={}",
             interp_opt_str(epoch.as_deref())
+        )));
+        // 补充：谁触发的重载（watchdog 静默 / 帧 gap / applyFrame 失败）。
+        events.push(ConversationEvent::Log(format!(
+            "[conv] resync request reason={reason} seq={seq} subscriptionId={subscription_id}"
         )));
         let args = resync_request_args(&self.scope, &subscription_id, &extra, epoch.as_deref(), seq);
         let token = self.new_internal_token("resync");
@@ -3640,6 +3703,32 @@ fn rows_updated_event(
         first_row_id: state.first_row_id,
         row_count: state.rows.len(),
     }
+}
+
+/// 状态写入类 op 触发的 `RowsUpdated`：先把摘要写进日志，再发事件。
+///
+/// `prependOlderRows` / `setHistoryExhausted` 等是 UI 主动改本地窗口的路径，和网络帧
+/// 区分开（`source=op`），排查「滑动后谁把窗口重置了」时能一眼看到。
+fn push_rows_updated(
+    events: &mut Vec<ConversationEvent>,
+    session_id: &str,
+    frame: Option<JsonMap>,
+    state: &ConversationState,
+) {
+    events.push(ConversationEvent::Log(format!(
+        "[conv] rowsUpdated session={session_id} source=op seq={} total={} rows={} firstRow={}",
+        state.seq,
+        state.total_count,
+        state.rows.len(),
+        opt_value(state.first_row_id),
+    )));
+    events.push(rows_updated_event(session_id, frame, state));
+}
+
+fn opt_value(value: Option<i64>) -> String {
+    value
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn protocol_error_to_transport(e: ProtocolError) -> TransportError {

@@ -326,6 +326,16 @@ class FakeEnginePort(
         engineStateFlow.value = EngineState.Idle
     }
 
+    var reconnectCount: Int = 0
+        private set
+
+    override suspend fun reconnect() {
+        reconnectCount += 1
+        val url = connectedUrlFlow.value ?: return
+        disconnected = false
+        ensureSessionHook(url)
+    }
+
     override suspend fun waitPaired(timeoutMs: Long) {
         waitPairedFailure?.let { throw it }
     }
@@ -512,9 +522,15 @@ class FakeChatOps : ChatOps {
 
     var failure: Throwable? = null
 
+    /**
+     * 调用时钩子：`subscribe` 现在要等首帧才算成功，测试用它模拟桌面端推快照。
+     */
+    var onCall: ((op: String) -> Unit)? = null
+
     override suspend fun call(op: String, args: JsonObject, scope: JsonObject?): JsonElement {
         calls += op to args
         scopes += scope
+        onCall?.invoke(op)
         failure?.let { throw it }
         return result
     }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
@@ -25,6 +26,7 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -62,7 +64,7 @@ class ChatViewModelTest {
         repository: FakeDeviceRepository = FakeDeviceRepository(initialDevices = listOf(deviceRecord())),
         engine: FakeEnginePort = FakeEnginePort(),
         authStore: FakeAuthStore = FakeAuthStore(),
-        chatOps: FakeChatOps = FakeChatOps(),
+        chatOps: ChatOps = FakeChatOps(),
         deviceId: String = "d1",
         workspaceKey: String? = null,
         taskId: String? = null,
@@ -155,7 +157,20 @@ class ChatViewModelTest {
     @Test
     fun `路由带的工作区在进页时自动打开`() = runTest(mainRule.dispatcher) {
         val engine = FakeEnginePort()
-        val model = viewModel(engine = engine, workspaceKey = "w1", taskId = "t9")
+        // 订阅成功 = ack + 首帧：模拟桌面端在 subscribe 时推来首份快照。
+        val chatOps = FakeChatOps().apply {
+            onCall = { op ->
+                if (op == ChatOps.OP_SUBSCRIBE) {
+                    engine.eventsFlow.tryEmit(snapshotEvent(taskId = "t9"))
+                }
+            }
+        }
+        val model = viewModel(
+            engine = engine,
+            chatOps = chatOps,
+            workspaceKey = "w1",
+            taskId = "t9",
+        )
         advanceUntilIdle()
 
         model.onEnter()
@@ -167,6 +182,24 @@ class ChatViewModelTest {
         assertEquals("w1", model.state.value.selectedWorkspaceKey)
         assertEquals("t9", model.state.value.selectedTaskId)
     }
+
+    /** 构造一条能通过事件门禁的 `rowsUpdated` 快照帧（首帧判据用）。 */
+    private fun snapshotEvent(
+        taskId: String,
+        session: Long = 7,
+        key: String = "conv-key",
+    ): EngineEvent.ConversationEvent = EngineEvent.ConversationEvent(
+        session = session,
+        key = key,
+        event = Json.parseToJsonElement(
+            """
+            {"type":"rowsUpdated","sessionId":"$taskId","frame":{"payload":{
+              "kind":"snapshot",
+              "snapshot":{"rows":{"window":[],"totalCount":0},"logEpoch":"e1"}
+            }}}
+            """.trimIndent(),
+        ),
+    )
 
     @Test
     fun `引擎状态与桥状态映射进状态`() = runTest(mainRule.dispatcher) {
@@ -600,6 +633,210 @@ class ChatViewModelTest {
         assertEquals("t7", model.state.value.selectedTaskId)
     }
 
+    // ------------------------------------------------------------------
+    // 首屏可用性：rowsReady 与历史分页
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `当前会话首个快照到达前 rowsReady 为假`() = runTest(mainRule.dispatcher) {
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine)
+        advanceUntilIdle()
+
+        model.selectTask("t1")
+        assertFalse(model.state.value.rowsReady)
+
+        // 别的会话的快照既不能置就绪，也不能把行混进来。
+        engine.eventsFlow.emit(
+            EngineEvent.ConversationEvent(
+                session = 1,
+                key = "k",
+                event = rowsUpdatedEvent("t2", listOf(5L, 6L), firstRowId = 1),
+            ),
+        )
+        advanceUntilIdle()
+        assertFalse(model.state.value.rowsReady)
+        assertTrue(model.state.value.rows.isEmpty())
+
+        // 当前会话的空窗口也算「已应用」：空对话显示空态，而不是永远停在骨架。
+        engine.eventsFlow.emit(
+            EngineEvent.ConversationEvent(
+                session = 1,
+                key = "k",
+                event = rowsUpdatedEvent("t1", emptyList(), firstRowId = 0),
+            ),
+        )
+        advanceUntilIdle()
+        assertTrue(model.state.value.rowsReady)
+    }
+
+    @Test
+    fun `首屏不静默预取 滚动分页逐页加载且部分页不判取完`() = runTest(mainRule.dispatcher) {
+        var page = 0
+        val pages = listOf(listOf(8L, 9L), listOf(6L, 7L), listOf(4L, 5L))
+        val chatOps = ScriptedChatOps { op, _ ->
+            when (op) {
+                "rowsRange" -> {
+                    val rows = pages.getOrElse(page) { emptyList() }
+                    page += 1
+                    buildJsonObject {
+                        put("atLogEpoch", "e1")
+                        put("rows", JsonArray(rows.map { rowJson(it) }))
+                        put("hasMore", true)
+                    }
+                }
+
+                else -> JsonNull
+            }
+        }
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine, chatOps = chatOps)
+        advanceUntilIdle()
+
+        model.selectTask("t1")
+        engine.eventsFlow.emit(
+            EngineEvent.ConversationEvent(
+                session = 1,
+                key = "k",
+                event = rowsUpdatedEvent("t1", listOf(10L, 11L), firstRowId = 1),
+            ),
+        )
+        advanceUntilIdle()
+
+        // 网页同样没有首屏静默预取：先只展示服务端快照窗口，滚动到顶部再分页。
+        assertEquals(0, chatOps.calls.count { it.first == "rowsRange" })
+        assertEquals(listOf(10L, 11L), model.state.value.rows.map { it.rowId() })
+
+        model.loadOlder()
+        advanceUntilIdle()
+        assertEquals(1, chatOps.calls.count { it.first == "rowsRange" })
+        assertEquals(listOf(8L, 9L, 10L, 11L), model.state.value.rows.map { it.rowId() })
+        assertFalse(model.state.value.historyExhausted)
+        assertTrue(model.state.value.canLoadOlder)
+
+        // 再翻一页；不足一页但 hasMore=true 时绝不能判取完。
+        model.loadOlder()
+        advanceUntilIdle()
+        assertEquals(
+            listOf(6L, 7L, 8L, 9L, 10L, 11L),
+            model.state.value.rows.map { it.rowId() },
+        )
+        assertFalse(model.state.value.historyExhausted)
+        assertTrue(model.state.value.canLoadOlder)
+    }
+
+    @Test
+    fun `翻页失败不把历史标记成已取完`() = runTest(mainRule.dispatcher) {
+        var failedOnce = false
+        val chatOps = ScriptedChatOps { op, _ ->
+            when (op) {
+                "rowsRange" -> {
+                    if (!failedOnce) {
+                        failedOnce = true
+                        throw engineError("timeout", "操作超时")
+                    }
+                    buildJsonObject {
+                        put("atLogEpoch", "e1")
+                        put("rows", JsonArray(listOf(rowJson(8), rowJson(9))))
+                        put("hasMore", true)
+                    }
+                }
+
+                else -> JsonNull
+            }
+        }
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine, chatOps = chatOps)
+        advanceUntilIdle()
+
+        model.selectTask("t1")
+        engine.eventsFlow.emit(
+            EngineEvent.ConversationEvent(
+                session = 1,
+                key = "k",
+                event = rowsUpdatedEvent("t1", listOf(10L, 11L), firstRowId = 1),
+            ),
+        )
+        advanceUntilIdle()
+        // 首屏没有静默预取，初始失败会走用户可见的错误条，但不写 historyExhausted。
+        model.loadOlder()
+        advanceUntilIdle()
+        assertFalse(model.state.value.historyExhausted)
+        assertNotNull(model.state.value.error)
+
+        // 下一次（滚动触发的）loadOlder 必须能重试成功。
+        model.loadOlder()
+        advanceUntilIdle()
+        assertEquals(
+            listOf(8L, 9L, 10L, 11L),
+            model.state.value.rows.map { it.rowId() },
+        )
+        assertFalse(model.state.value.historyExhausted)
+    }
+
+    @Test
+    fun `hasMore 为假时才判历史取完`() = runTest(mainRule.dispatcher) {
+        val chatOps = ScriptedChatOps { op, _ ->
+            when (op) {
+                "rowsRange" -> buildJsonObject {
+                    put("atLogEpoch", "e1")
+                    put("rows", JsonArray(listOf(rowJson(8), rowJson(9))))
+                    put("hasMore", false)
+                }
+
+                else -> JsonNull
+            }
+        }
+        val engine = FakeEnginePort()
+        val model = viewModel(engine = engine, chatOps = chatOps)
+        advanceUntilIdle()
+
+        model.selectTask("t1")
+        engine.eventsFlow.emit(
+            EngineEvent.ConversationEvent(
+                session = 1,
+                key = "k",
+                event = rowsUpdatedEvent("t1", listOf(10L, 11L), firstRowId = 1),
+            ),
+        )
+        advanceUntilIdle()
+
+        // 首屏不自动翻页；用户滚到顶部触发一次后才根据 hasMore 判取完。
+        model.loadOlder()
+        advanceUntilIdle()
+        assertTrue(model.state.value.historyExhausted)
+        assertFalse(model.state.value.canLoadOlder)
+    }
+
+    /** 一行 assistantText；不带 `turnId`，避免触发首轮补头的额外翻页。 */
+    private fun rowJson(id: Long): JsonObject = buildJsonObject {
+        put("rowId", id)
+        put("kind", "assistantText")
+        put("text", "r$id")
+    }
+
+    private fun rowsUpdatedEvent(
+        sessionId: String,
+        rowIds: List<Long>,
+        firstRowId: Long,
+    ): JsonObject = buildJsonObject {
+        put("type", "rowsUpdated")
+        put("sessionId", sessionId)
+        put("frame", buildJsonObject {
+            put("payload", buildJsonObject {
+                put("kind", "snapshot")
+                put("snapshot", buildJsonObject {
+                    put("logEpoch", "e1")
+                    put("rows", buildJsonObject {
+                        put("window", JsonArray(rowIds.map { rowJson(it) }))
+                        put("totalCount", rowIds.size)
+                        put("firstRowId", firstRowId)
+                    })
+                })
+            })
+        })
+    }
+
     @Test
     fun `设备名与凭据状态从持久化流映射`() = runTest(mainRule.dispatcher) {
         val repository = FakeDeviceRepository(initialDevices = listOf(deviceRecord(name = "书房电脑")))
@@ -718,5 +955,119 @@ class ChatViewModelTest {
             """{"workspaces":[{"workspacePath":"/w","tasks":[{"taskId":"t1"}]}]}""",
         )
         assertEquals(0, WorkspaceProjection.from(json).single().taskCount)
+    }
+
+    // ------------------------------------------------------------------
+    // 协作模式
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `草稿态选模式只记本地，不向引擎发命令`() = runTest(mainRule.dispatcher) {
+        val chatOps = FakeChatOps()
+        val model = viewModel(chatOps = chatOps)
+        advanceUntilIdle()
+
+        model.switchMode("plan")
+        advanceUntilIdle()
+
+        assertEquals("plan", model.state.value.draftMode)
+        assertNull(model.state.value.error)
+        assertTrue("草稿态不应发命令，实际 ${chatOps.calls.map { it.first }}", chatOps.calls.isEmpty())
+    }
+
+    @Test
+    fun `草稿态模式随 createSession 下发，并按 plan 语义提交首条消息`() =
+        runTest(mainRule.dispatcher) {
+            val engine = FakeEnginePort().apply { bootstrapResult = workspacesJson() }
+            val chatOps = FakeChatOps().apply { result = JsonPrimitive("new-1") }
+            val model = viewModel(
+                engine = engine,
+                chatOps = chatOps,
+                workspaceKey = "id-proj",
+                taskId = null,
+            )
+            advanceUntilIdle()
+            model.onEnter()
+            advanceUntilIdle()
+
+            model.switchMode("plan")
+            model.sendText("hi")
+            advanceUntilIdle()
+
+            val create = chatOps.calls.first { it.first == "createSession" }
+            assertEquals(
+                "plan",
+                (create.second["config"] as? JsonObject)?.get("mode")?.jsonPrimitive?.content,
+            )
+            val send = chatOps.calls.last { it.first == ChatOps.OP_SEND_TEXT }
+            // web 口径：plan 归一成 build + planEnabled=true。
+            assertEquals("build", send.second["mode"]!!.jsonPrimitive.content)
+            assertEquals(true, send.second["planEnabled"]!!.jsonPrimitive.boolean)
+        }
+
+    @Test
+    fun `已有会话切换模式带乐观回填并接受 ack`() = runTest(mainRule.dispatcher) {
+        val chatOps = FakeChatOps().apply {
+            result = buildJsonObject { put("status", "accepted"); put("revisionAtDecision", 3) }
+        }
+        val model = viewModel(chatOps = chatOps)
+        advanceUntilIdle()
+        model.selectTask("t1")
+
+        model.switchMode("yolo")
+        advanceUntilIdle()
+
+        val call = chatOps.calls.first { it.first == "switchCollaborationMode" }
+        assertEquals("yolo", call.second["mode"]!!.jsonPrimitive.content)
+        assertEquals("yolo", model.state.value.config?.get("mode")?.jsonPrimitive?.content)
+        assertNull(model.state.value.error)
+        assertNull(model.state.value.failedMode)
+    }
+
+    @Test
+    fun `服务端拒绝时回滚 config 并登记可重试动作`() = runTest(mainRule.dispatcher) {
+        val chatOps = FakeChatOps().apply {
+            result = buildJsonObject {
+                put("status", "rejected")
+                put("reasonCode", "fault.mode")
+                put("message", "运行中不允许切换")
+            }
+        }
+        val model = viewModel(chatOps = chatOps)
+        advanceUntilIdle()
+        model.selectTask("t1")
+
+        model.switchMode("guarded")
+        advanceUntilIdle()
+
+        assertNull(model.state.value.config)
+        assertTrue(model.state.value.error!!.contains("模式切换被拒绝"))
+        assertEquals("guarded", model.state.value.failedMode)
+
+        // 错误条「重试」重发的是模式切换，而不是整页 refresh。
+        model.retryLastAction()
+        advanceUntilIdle()
+        assertEquals(
+            2,
+            chatOps.calls.count { it.first == "switchCollaborationMode" },
+        )
+    }
+}
+
+/**
+ * 按 `op` 脚本化返回的 [ChatOps] 替身。
+ *
+ * [FakeChatOps] 只有一个全局 `result`，无法让 `rowsRange` 逐页给出不同结果；
+ * 分页语义（预取页数、部分页、失败重试）需要按 `op` 控制返回。
+ */
+private class ScriptedChatOps(
+    private val handler: (op: String, args: JsonObject) -> JsonElement,
+) : ChatOps {
+
+    val calls = mutableListOf<Pair<String, JsonObject>>()
+
+    override suspend fun call(op: String, args: JsonObject, scope: JsonObject?): JsonElement {
+        calls += op to args
+        return handler(op, args)
     }
 }

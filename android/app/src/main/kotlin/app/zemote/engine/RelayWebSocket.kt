@@ -172,13 +172,19 @@ class RelayWebSocket(
         /**
          * 进程级共享客户端：OkHttp 的连接池与 dispatcher 就是为复用设计的。
          *
-         * `readTimeout` 归零——WebSocket 是长连接，读超时会把它误杀；探活由核心的
-         * `pair_status_query` 心跳（10s）负责，不用 OkHttp 的 ping。
+         * `readTimeout` 归零——WebSocket 是长连接，读超时会把它误杀；协议层仍有
+         * `pair_status_query` 心跳。这里额外开 WebSocket ping：应用层心跳只能在进程
+         * 醒着时发现断链，而 Android 后台/换网常留下半开 socket，ping 由 OkHttp 直接
+         * 探测底层连接，失败即 `onFailure`，比等下一次 ack 超时快得多。
          */
         private val sharedClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(0, TimeUnit.MILLISECONDS)
+                // 应用层心跳负责协议配对状态，但 Android 切后台/换网后 socket 可能半开：
+                // 只有写、没有任何读，核心的 ack 超时要等很久才发现。WebSocket ping 让
+                // OkHttp 主动探活，失败会走 onFailure → socket_closed，尽快进入重连。
+                .pingInterval(10, TimeUnit.SECONDS)
                 .build()
         }
     }

@@ -10,7 +10,8 @@ package app.zemote.ui.chat.markdown
 //  取舍：
 //  - 复制走 LocalClipboardManager（系统剪贴板），不额外引依赖；复制始终是完整代码。
 //  - 折叠只截断显示，不改变着色结果之外的任何内容。
-//  - 着色结果用 remember(code, language) 缓存；流式更新时只有代码变化才重新分词。
+//  - 着色结果由 MarkdownHighlighter 内部按 (code, language, colors) 做有界 LRU；
+//    这里再用 remember 挡住同一组合内的重复查表。超长代码由高亮器去色降级。
 //  - 不用 WebView / 不联网。
 // ---------------------------------------------------------------------------
 
