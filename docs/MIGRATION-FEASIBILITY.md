@@ -23,7 +23,7 @@
 
 | # | 事项 | 性质 | 影响 |
 | --- | --- | --- | --- |
-| B1 | **壳的 Tier2 原生接管只支持 3.15.3 的 HMAC 认证** | 源码事实 | 3.16.1+ 链接没有 `hash`，`maybePostRelayCreds()` 直接 return ⇒ **后台原生接管在 3.17.1 上不会启动** |
+| B1 | **壳的原生承载（原生接管）只支持 3.15.3 的 HMAC 认证** | 源码事实 | 3.16.1+ 链接没有 `hash`，`maybePostRelayCreds()` 直接 return ⇒ **后台原生接管在 3.17.1 上不会启动** |
 | B2 | **原生仓库有 67 个未提交改动** | 工作树事实 | 归档前必须先 commit/建分支，否则 Compose 工作全部丢失 |
 | B3 | **壳最后验证基线是 3.15.3** | 源码 + 文档 | 协议级注入稳定；`RemoteHistoryPatch` 写死 3.15.3 资源路径，3.17.1 上静默失效；DOM 锚点需重跑审计 |
 | B4 | **签名/Secrets 换人** | 发布事实 | 仓库 Secrets 当前是 `app.zemote` 的 keystore；主线换成 `com.zcode.remote`，必须换成壳的 keystore，否则老用户无法覆盖升级 |
@@ -200,7 +200,7 @@ Zcode_android/
 | 后台承载 | `25-android-shell-后台原生承载-独立设计.md`（与 `android-shell/docs/15` 同 MD5，只迁一份） |
 | 全仓审计 | `26-android-shell-全仓审计-错误路线残留与清理.md`（与 `android-shell/docs/18` 同 MD5，只迁一份） |
 | 功能域 | `29`–`34`（通知/诊断/多工作区/运行态/TaskStore/看门狗） |
-| 分区审计 | `35`–`47`（relay-core、shell-runtime、tier2、activities、notify、core-state、inject-js a–d、protocol-js、resources、tests） |
+| 分区审计 | `35`–`47`（relay-core、shell-runtime、carrier、activities、notify、core-state、inject-js a–d、protocol-js、resources、tests） |
 | 性能 | `安卓壳-快速交接与性能收窄.md` |
 
 目标：`docs/android/`（保持原编号，便于与旧文档互引）。
@@ -319,7 +319,7 @@ Zcode_android/
 | `RemoteHistoryPatch` | 写死 `/remote/v4/3.15.3/assets/index-BGa3KiRe.js`；3.17.1 上不命中，补丁静默失效 | **直接删除**（优化失效但不会崩），或按 3.17.1 重写 |
 | DOM 锚点 | 3.17.1 的 `[data-mobile-page="chat"]` 等选择器需重跑审计 | 用 doc 28 的方法重跑 37 锚点；不通过再改 |
 | `mobile-task-view-update` | 3.17.1 新帧，壳旧解析器不认识 | 只做通知则影响小；要做“查看状态”再补 |
-| **Tier2** | 只支持 legacy HMAC；3.16.1+ 无 `hash`，`maybePostRelayCreds()` 直接 return | **第一阶段不启用后台接管**；第二阶段用 Rust carrier（见下） |
+| **原生承载** | 只支持 legacy HMAC；3.16.1+ 无 `hash`，`maybePostRelayCreds()` 直接 return | **第一阶段不启用后台接管**；第二阶段用 Rust carrier（见下） |
 
 ### 5.3 后台接管的正确路径
 
@@ -330,13 +330,13 @@ Zcode_android/
 - FGS + 10s 心跳泵；
 - 冷启动路由恢复。
 
-**做不了**：原生直连 relay 的后台接管（Tier2 认证不匹配）。
+**做不了**：原生直连 relay 的后台接管（原生承载认证不匹配）。
 
 第二阶段可选：
 
 1. **Rust 引擎做 carrier**（推荐）：Rust 已支持 `auth_token` / ws2 / OAuth token 交换；
    把参考壳的 `HandoffState` / 判死判据 / 交还不变式移植过来；
-2. 给 Tier2 补 OAuth：注入层把页面实际使用的 relay URL（含短 token）交给原生，Tier2 改走 ws2 + token。
+2. 给原生承载补 OAuth：注入层把页面实际使用的 relay URL（含短 token）交给原生，原生承载改走 ws2 + token。
 
 **建议**：主线先只做“页面持有 + 只读旁路 + 心跳泵”，把 UI 和“回前台不重载”跑通；
 后台接管放到 P3，用 Rust carrier，不再维护第二套 Kotlin 协议实现。
@@ -349,7 +349,7 @@ Zcode_android/
 | --- | --- | --- | --- |
 | R1 | 原生 67 个未提交改动丢失 | **高** | 归档前先 commit + tag `native-compose-final` |
 | R2 | 签名 Secrets 没换成壳的 keystore | **高** | `com.zcode.remote` 的已有安装无法覆盖升级；迁移前核对 keystore 别名/密码 |
-| R3 | Tier2 在 3.17.1 不工作 | **高（功能）** | 第一阶段不启用；P3 用 Rust carrier |
+| R3 | 原生承载在 3.17.1 不工作 | **高（功能）** | 第一阶段不启用；P3 用 Rust carrier |
 | R4 | 3.17.1 DOM 锚点回归 | 中 | 重跑 37 锚点审计；history patch 删除/重写 |
 | R5 | `rust/target` 3.2 GB 被搬进归档 | 中 | 只迁源码；`archive/native-compose/rust/` 加 `.gitignore` |
 | R6 | 厂商文档 200 MB+ 入库 | 中 | vendor/coloros 本地-only + manifest |
@@ -390,7 +390,7 @@ Zcode_android/
 
 ### P3：后台接管（可选，2–4 周）
 
-- 用 Rust 引擎做 carrier（替代 Tier2）；
+- 用 Rust 引擎做 carrier（替代原生承载）；
 - 参考壳的 `HandoffState` / 判死 / 交还 / logo 罩；
 - 有在跑任务时立即接管，否则延迟；
 - 验收：后台通知实时；回前台 ≤1.5s 可交互；KICKED 零闪现。
@@ -423,4 +423,4 @@ Zcode_android/
 ## 9. 一句话总结
 
 **这次迁移的本质是“换主线”：壳原样搬进 `android/`，原生（含 Rust、UI 文档、67 个未提交改动）整体封存到 `archive/native-compose/`，CI/文档/鸿蒙净化照旧。**
-没有合并冲突，没有双 owner；真正的风险只剩三个——**未提交的原生工作要先保全、签名 Secrets 要换成壳的、Tier2 在 3.17.1 上已失效**。
+没有合并冲突，没有双 owner；真正的风险只剩三个——**未提交的原生工作要先保全、签名 Secrets 要换成壳的、原生承载在 3.17.1 上已失效**。

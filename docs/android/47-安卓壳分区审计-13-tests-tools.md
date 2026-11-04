@@ -13,7 +13,7 @@ Commands actually run (evidence): `node tools/protocol.test.js`, `node tools/inj
 Kotlin unit tests — `android-shell/app/src/test/java/com/zcode/remote/core/` (11 files, 2135 lines, 111 `@Test`):
 
 - `NotifyStateTest.kt` (496) — notification decision logic + `TaskStore` update semantics
-- `RelayBridgeTest.kt` (497) — Tier2 bridge engine + sessions-index state machine (scripted desktop)
+- `RelayBridgeTest.kt` (497) —原生承载 bridge engine + sessions-index state machine (scripted desktop)
 - `RelayWireTest.kt` (375) — wire codec golden bytes, fragment assembly, conversation tail
 - `ControllerTasksStateTest.kt` (331) — controller/tasks-index state machine + three-source priority
 - `PromotionPolicyTest.kt` (128) — Live-Updates slot allocation
@@ -22,7 +22,7 @@ Kotlin unit tests — `android-shell/app/src/test/java/com/zcode/remote/core/` (
 - `PageBarColorTest.kt` (85) — fixed status-bar colour table
 - `UploadMimeTest.kt` (72) — accept-type normalisation
 - `PreviewSettleTest.kt` (41) — card-body settle window
-- `Tier2ProofTest.kt` (31) — `relayProof` HMAC regression anchor
+- `NativeRelayClientTest.kt` (31) — `relayProof` HMAC regression anchor
 
 Tools — `android-shell/tools/` (11 files, 4821 lines):
 
@@ -223,7 +223,7 @@ Tools — `android-shell/tools/` (11 files, 4821 lines):
   - Kotlin: `@Test` grep over `app/src/test/**` → **111** annotations; file count → **11** test classes.
     Per class: NotifyStateTest 33, RelayWireTest 21, ControllerTasksStateTest 12, PromotionPolicyTest 8,
     UploadMimeTest 8, CarrierHandbackTest 7, PageBarColorTest 6, SurvivalVerdictTest 5, RelayBridgeTest 5,
-    PreviewSettleTest 4, Tier2ProofTest 2 = 111. → `README.md:247` ("Kotlin **111 项 / 11 个测试类**"
+    PreviewSettleTest 4, NativeRelayClientTest 2 = 111. → `README.md:247` ("Kotlin **111 项 / 11 个测试类**"
     plus that exact per-class breakdown) is **correct**; `docs/18:741` ("92 项") is **stale**.
   - JS: `node tools/protocol.test.js` → `tests 52 / pass 52`; `node tools/inject.test.js` →
     `tests 45 / pass 45` → **97**, matching the 52 `test(` / 45 `test(` I counted statically.
@@ -248,7 +248,7 @@ Tools — `android-shell/tools/` (11 files, 4821 lines):
   the `/ws/remote-control/window/<token>` socket (`docs/15:29/90`) — while the value the project still
   credits it with (see "Suspected") is a different, relay-side sequence.
 - **Reference search**: repo-wide `check_kotlin_structure`-style grep for `cdp-capture` → **6 hits**:
-  `cdp-capture.mjs:3/15/16` (self), `README.md:484`, `Tier2Probe.kt:400` (both as a *citation* of past
+  `cdp-capture.mjs:3/15/16` (self), `README.md:484`, `NativeRelayClient.kt:400` (both as a *citation* of past
   captures). Nothing invokes it: `.github/workflows/android-shell.yml` never calls it, no `package.json`
   script exists, and no other tool `spawn`s it.
 - **Confidence**: medium — the docstring/docs contradiction is proven; whether the tool is still *useful*
@@ -296,7 +296,7 @@ Tools — `android-shell/tools/` (11 files, 4821 lines):
   still drives `applyLiveTasks` from the page's own controller stream (`ShellRuntime.kt:1616-1631`).
 - `RelayWire.METHOD_ROWS_RANGE` — §4 marks it a dead end; no test in this area references it.
   Re-check: reason holds (nothing changed).
-- `tier2_test` / `tier2_stop` / `tier2_takeover` — experiment hooks kept for takeover verification; not
+- `carrier_test` / `carrier_stop` / `carrier_takeover` — experiment hooks kept for takeover verification; not
   referenced from `tools/` at all. Re-check: reason holds.
 - `nudgePageRecovery` + `nudge_now` / `nudge_close` — diagnostic-only; `inject.test.js:1709-1743` pins the
   two `__zcodeShellNudgeRecover` modes as "仅取证". Re-check: reason holds, and the tests state it.
@@ -310,7 +310,7 @@ Tools — `android-shell/tools/` (11 files, 4821 lines):
 
 ## Suspected but unproven
 
-- **U1. What `cdp-capture.mjs` actually recorded.** `README.md:484-485` and `Tier2Probe.kt:399-400`
+- **U1. What `cdp-capture.mjs` actually recorded.** `README.md:484-485` and `NativeRelayClient.kt:399-400`
   credit it with recording the post-pairing relay frame order
   (`auth_init → auth_challenge → auth_response → auth_ack → bootstrap-request → workspace-bridge-open`).
   The script as it stands only logs `Network.requestWillBeSent` URLs containing `/api/remote-control/`
@@ -318,7 +318,7 @@ Tools — `android-shell/tools/` (11 files, 4821 lines):
   `/ws/remote-control/window/<token>` surface (`docs/15:29/90`), not the relay socket. Missing evidence:
   which socket carried `auth_init` at capture time (needs the original capture log, or a device rerun).
   If the two are different sockets, the citation is stale and the tool's surviving use is nil.
-- **U2. `Tier2ProofTest.kt:29`** uses Kotlin's `assert(...)`, not `org.junit.Assert`. It only executes
+- **U2. `NativeRelayClientTest.kt:29`** uses Kotlin's `assert(...)`, not `org.junit.Assert`. It only executes
   because Gradle's `Test` task defaults `enableAssertions = true`; `app/build.gradle.kts:133-134`
   (`testOptions { unitTests.isReturnDefaultValues = true }`) sets nothing either way. If anyone ever
   disables assertions for the test JVM, `differentRolesChangeTheProof` becomes a green no-op test.

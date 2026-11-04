@@ -292,11 +292,11 @@
     var sockets = [];
     var activeSocket = null;
     var deviceSid = null;
-    // KICK 实验素材（Tier2 可行性验证用）：页面建线用的 URL 与 auth_init 帧
+    // KICK 实验素材（原生承载可行性验证用）：页面建线用的 URL 与 auth_init 帧
     // 原文。两者都是会话凭证级内容，只留内存、绝不进日志（safePath 只留路径）。
     var lastRelayUrl = null;
     var lastAuthInitText = null;
-    // Tier2（原生直连 relay）凭证移交：URL + sid/hash/mid，一次性 post 给原生，
+    // 原生承载（原生直连 relay）凭证移交：URL + sid/hash/mid，一次性 post 给原生，
     // 原生仅驻内存。凭证参数名与页面一致（sid=deviceSid, hash=passHash, mid=deviceMid）。
     var relayCredsPosted = false;
 
@@ -323,7 +323,7 @@
             passHash: hash,
             deviceMid: mid
         });
-        diag('info', 'Tier2: relay 凭证已移交原生（仅内存，不落日志）');
+        diag('info', '承载: relay 凭证已移交原生（仅内存，不落日志）');
     }
 
     function installWebSocketHook() {
@@ -920,12 +920,12 @@
     //
     // 2026-09-17（D7 删除）：这里原本是"主动开桥"的调度器（`maybeStartActive`：
     // 配对后等页面安静 800ms、最多推迟 12s，然后 `client.start()` 给**每个**工作区
-    // 在页面那条 socket 上开桥 + 订索引）。它是 D7「订阅所有工作区」的 Tier1 实现，
+    // 在页面那条 socket 上开桥 + 订索引）。它是 D7「订阅所有工作区」的页面侧实现，
     // 2026-09-15 真机 A/B 定罪：与页面自己的订阅争用 → 页面卡"工作中"+转圈。
     // 一并删掉的还有 `ACTIVE_START_*` 四个常量、`startScheduled`/`startAttempts`。
     //
     // **只读壳契约**（见 SHELL_READ_ONLY）：注入层永不主动开桥；多工作区覆盖由
-    // Tier2（原生自开 socket，`RelayBridge`）+ 发现链承载。别把这段调度器加回来。
+    // 原生承载（原生自开 socket，`RelayBridge`）+ 发现链承载。别把这段调度器加回来。
     // -----------------------------------------------------------------------
 
     /**
@@ -1458,7 +1458,7 @@
             if (liveness.backgroundFirstTickDelayMs < 0 && backgroundStartedWallMs > 0) {
                 liveness.backgroundFirstTickDelayMs = nowMs - backgroundStartedWallMs;
             }
-            // Tier1 后台连续性取证：泵在跳但入站帧停了，说明 renderer 被冻结或
+            // 页面链路后台连续性取证：泵在跳但入站帧停了，说明 renderer 被冻结或
             // 链路半死——这是"后台实况窗断掉/滞后"最可能的形状，留证据行。
             if (liveness.lastInboundAt && nowMs - liveness.lastInboundAt > 60000 &&
                 nowMs - lastBackgroundSilenceLoggedAt > 60000) {
@@ -2425,7 +2425,7 @@
     //   vitals   读一次 DOM 体征并落日志；
     //   l1_test  手动走一次"轻推"路径（只读壳下它只留一行拒绝日志——见
     //            nudgeReconnect：socket 永远不会被关）；
-    //   kick_test Tier2 可行性实验：用页面同款 URL+auth_init 开第二条
+    //   kick_test 原生承载可行性实验：用页面同款 URL+auth_init 开第二条
     //            WebSocket，观察 relay 的 KICK/takeover 语义（第二条是被
     //            接纳还是把旧连接踢掉）。全部结果走 diag/pagelog 落日志，
     //            实验连接 30s 后自动关闭。

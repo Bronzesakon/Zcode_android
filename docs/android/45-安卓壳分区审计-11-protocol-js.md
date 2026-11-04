@@ -232,8 +232,8 @@ Search: `\.(start|openBridge|listWorkspaces|awaitPageIdle|inFlightPageRpcs|isSta
   `awaitPageIdle`, `inFlightPageRpcs`.
 - **Why dead / superseded**: `start()` is the D7 "subscribe every workspace" burst; D7's switch was
   deleted on 2026-09-17 (`docs/18` §3.9①, `inject.js:1029-1031, :844-846, :897`) and the
-  multi-workspace job now belongs to the **native** carrier — `Tier2Probe.startCoverage` /
-  `BridgeManager(maxWorkspaces = Tier2Probe.DEFAULT_MAX_COVERAGE = 5)` with the 12 s rotation
+  multi-workspace job now belongs to the **native** carrier — `NativeRelayClient.startCoverage` /
+  `BridgeManager(maxWorkspaces = NativeRelayClient.DEFAULT_MAX_COVERAGE = 5)` with the 12 s rotation
   (`docs/18` §3.8/§3.9②, `RelayBridge.reanchorProgress`, `RelayBridge.kt:1458-1459`
   "工作区列表（对应 JS listWorkspaces）"). The JS side is the replaced implementation: it opens
   bridges in a sequential burst with a shared 8 s yield budget (`:2228-2239`) — precisely the design
@@ -525,7 +525,7 @@ Search: `\.(start|openBridge|listWorkspaces|awaitPageIdle|inFlightPageRpcs|isSta
   functions and nothing else: `nativeRunningSessions` / `nativeRunningSessionsProvider`
   (`zcode-protocol.js:1812-1822` ← `inject.js:797, 801-808`) and the `config()`→`runningSessions`
   bridge (`WebAppBridge.kt:56`, `inject.js:787-788`) — the native carrier has its own live equivalent
-  (`ShellRuntime.kt:460` → `Tier2Probe.runningSessionsProvider` → `RelayBridge.kt:1125`), so the JS
+  (`ShellRuntime.kt:460` → `NativeRelayClient.runningSessionsProvider` → `RelayBridge.kt:1125`), so the JS
   copy is a vestige of the sealed design.
 - **Active-section keep-for-tests** (`docs/18` §3.9④: "`zcode-protocol.js` 的 active 段 … 留给下一轮";
   `:2109-2125` says the same in-file) — **documented deferral, not in brief §5's list**, so it is

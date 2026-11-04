@@ -961,7 +961,7 @@ class MainActivity : AppCompatActivity() {
     private fun runDiagCommand(cmd: String) {
         if (cmd.isEmpty()) return
         Diagnostics.log("info", "诊断指令: $cmd")
-        // 原生侧命令（Tier2 实验、手动轻推 nudge_now/nudge_close）统一走
+        // 原生侧命令（原生承载实验、手动轻推 nudge_now/nudge_close）统一走
         // ShellRuntime.runNativeDiag：与 DiagReceiver（adb broadcast → 后台可用）
         // 共用同一份实现，避免两处漂移。
         if (ShellRuntime.runNativeDiag(cmd)) return

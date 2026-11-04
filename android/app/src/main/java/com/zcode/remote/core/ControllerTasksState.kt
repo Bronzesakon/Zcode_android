@@ -3,7 +3,7 @@ package com.zcode.remote.core
 import org.json.JSONObject
 
 /**
- * `controller/tasks-index` 的本地状态（Tier2 的**运行态**来源）。
+ * `controller/tasks-index` 的本地状态（原生承载的**运行态**来源）。
  *
  * 为什么需要它：`sessions-index` 的 `phase` 是**持久化**的会话状态——一轮对话
  * 结束就写 `completedSuccess`，与"此刻是否在跑"无关。网页客户端的实时运行态来自
@@ -11,7 +11,7 @@ import org.json.JSONObject
  * error`）才是正源（2026-09-14 从 bundle 定案，见 docs/05 的 `taskSchema` 与
  * `windowControllerTaskListRegistry`）。
  *
- * 真机后果：Tier2 从不订阅这条流，接管后 `sessions-index` 的快照把 store 里
+ * 真机后果：原生承载从不订阅这条流，接管后 `sessions-index` 的快照把 store 里
  * 仅剩的运行态覆盖成"全完成"，`runningTaskRefs()` 变空 → 活进展被丢弃 →
  * 流体云卡片冻在接管那一刻（pre.96/97/98 连续复现）。
  *

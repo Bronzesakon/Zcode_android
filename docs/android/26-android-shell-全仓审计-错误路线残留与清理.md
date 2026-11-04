@@ -4,7 +4,7 @@
 > 缘起是用户的一句话——**"此前一百多轮 CI 都走在了错误的道路上，积攒了很多无效代码"**，
 > 所以这次不是修 bug，而是把"因为当时以为要那样做"而留下的代码系统性清掉。
 >
-> **方法**：四个子代理并行只读审计（Tier2 原生层 / Tier1 注入层 / 胶水与开关层 / 全仓残留），
+> **方法**：四个子代理并行只读审计（原生承载原生层 / 页面侧注入层 / 胶水与开关层 / 全仓残留），
 > 每条结论都带 `文件:行`；本会话逐条落地并用门禁 + 单测 + 本机编译验证。
 >
 > **状态**：第一轮清理已落地并通过全部门禁（见 §6）；§5 是刻意**没做**的部分，原因写在里面。
@@ -32,7 +32,7 @@
 | 位置 | 内容 | 为什么是死的 |
 | --- | --- | --- |
 | `ShellRuntime.kt` | `AUTO_TAKEOVER_ENABLED` + `scheduleBackgroundTakeover` 的死分支 + `maybeTakeOverInBackground` + `takeOverNow` + `rendererProbeToken` | 总闸恒 false；整条"退后台 5s 自动接管"路径永不执行，且与新承载路径重复 |
-| `ShellRuntime.kt` | `checkTier1Silence` + `forceTier1SilenceCheckForTest` + `tier1_silence_test` 指令 | 唯一效果是调 `maybeTakeOverInBackground`，而它第一行就 return |
+| `ShellRuntime.kt` | `check页面侧Silence` + `force页面侧SilenceCheckForTest` + `tier1_silence_test` 指令 | 唯一效果是调 `maybeTakeOverInBackground`，而它第一行就 return |
 | `ShellRuntime.kt` | `maybeNudgeStalledPage` + `nudgeCount/lastNudgeAt/pendingNudgeAt/pendingNudgeMark/nudgeEscalated` + `NUDGE_*` ×3 | **零调用者**（全仓只剩注释提到它）；`nudgeMark()` 保留（承载防误判在用） |
 | `ShellRuntime.kt` | `externalPickerActive` + `setExternalPickerActive`（含 `MainActivity` 3 处调用） | 唯一作用是"文件选择器期间不接管"，而接管早已不走那条路 |
 | `ShellRuntime.kt` | `lastLivenessAt` + `TIER2_TAKEOVER_SILENCE_MS` / `RENDERER_PROBE_MS` / `BACKGROUND_TAKEOVER_DELAY_MS` | 只服务上面这些死分支 |
@@ -125,9 +125,9 @@
 
 | 改动 | 位置 | 说明 |
 | --- | --- | --- |
-| 单键过滤 → 显式清单 | `Tier2Probe.startCoverage()` | 三档：① 显式清单（多工作区/诊断）② 页面工作区（默认，已验收的生产路径）③ 都没有 → `ordered.take(3)`。**不再全量** |
-| 上限 | `Tier2Probe.DEFAULT_MAX_COVERAGE = 3`，传给 `BridgeManager(maxWorkspaces=…)` | 每座桥 = 桌面端一条常驻会话 |
-| 失败退避 | `Tier2Probe.recordBridgeResult` / `cooledDown` + `BridgeManager.onBridgeResult` | 同一工作区连续 2 次开桥失败 → 冷却 10 分钟；**显式清单不受冷却影响**（E1 要能看到失败） |
+| 单键过滤 → 显式清单 | `NativeRelayClient.startCoverage()` | 三档：① 显式清单（多工作区/诊断）② 页面工作区（默认，已验收的生产路径）③ 都没有 → `ordered.take(3)`。**不再全量** |
+| 上限 | `NativeRelayClient.DEFAULT_MAX_COVERAGE = 3`，传给 `BridgeManager(maxWorkspaces=…)` | 每座桥 = 桌面端一条常驻会话 |
+| 失败退避 | `NativeRelayClient.recordBridgeResult` / `cooledDown` + `BridgeManager.onBridgeResult` | 同一工作区连续 2 次开桥失败 → 冷却 10 分钟；**显式清单不受冷却影响**（E1 要能看到失败） |
 | 独立开关 | `ShellRuntime.multiWorkspaceCoverage`（adb：`multi_ws_on/off`，默认关） | 照 `carrierEnabled` 的样子，验证通过再谈改默认 |
 | 诊断覆盖清单 | `ShellRuntime.coverageOverride` + `coverage_ws:<k1>,<k2>` / `coverage_ws_clear` | 专供 E1 做干净 A/B，不必真起第二个任务 |
 | 目标计算 | `ShellRuntime.carrierCoverageTargets()` | 优先级：诊断清单 > 开关（page ∪ 有在跑任务，上限 3）> 只开页面工作区 |
@@ -156,7 +156,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 
 | 判据 | 实测 |
 | --- | --- |
-| 桌面端能否同时**开**多座桥 | ✅ `Tier2: 多工作区覆盖 2 座：…` → **两条 `bridge ready for …`** → `tier2 active coverage: 2 workspace(s)` |
+| 桌面端能否同时**开**多座桥 | ✅ `承载: 多工作区覆盖 2 座：…` → **两条 `bridge ready for …`** → `carrier active coverage: 2 workspace(s)` |
 | 非页面工作区的会话能否拿到正文（E2/E3 合并） | ✅ 两条 `subscribed conversation for sess_…` + 两条 `活进展 <key>：…`，两座桥的正文各自推进（A 122→162、B 191→227，共 10 分钟） |
 | 流体云 | ✅ 两张卡都 `PROMOTED_ONGOING`（`运行中 · …` + `shortCriticalText=运行中`），编号分属两条对话 |
 | ⚠️ **能否同时"收帧"** | ❌ **不能——同一时刻只有一座桥被服务**（见 §3.3，147 实测的铁证）；所以更准确的说法是"**轮流跟手**"，不是"并行跟手" |
@@ -168,7 +168,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 16:57:17.170（同一毫秒）[E:\Zcode_harmony] resyncConversationV4  +  [default] resyncConversationV4
 16:57:17.456  reanchor conversation for sess_46da…(force snapshot)   ← 一个 0.3s 成功
 16:57:25.147  conversation resync failed for sess_ec94…: timed out   ← 另一个正好 8.0s 超时
-16:57:30.350  tier2 bridge recycled for …default (1 session(s) restored)
+16:57:30.350  carrier bridge recycled for …default (1 session(s) restored)
 ```
 **每 24s 必有一座桥超时 → 整桥回收，输家交替**；10 分钟 **25 次回收 / 25 次超时 / 26 次重锚成功**。
 内容没断（饿死窗口最长约 96s 后由回收救回），但代价是每 24s 拆建一次握手 + 重订阅。
@@ -228,7 +228,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 ```
 09-16 19:43:05.796  subscribed conversation for sess_ec94…（回收后新桥订阅）
 09-16 19:43:05.865  提升集合变化: []（运行 0 个：）        ← 运行集被抹成 0 → ColorOS 收回卡片
-09-16 19:43:06.077  tier2 bridge recycled for E:\Zcode_harmony
+09-16 19:43:06.077  carrier bridge recycled for E:\Zcode_harmony
 09-16 19:43:06.766  提升集合变化: [#814650 #216987]（运行 2 个）  ← 0.9s 后"重建"
 ```
 
@@ -306,7 +306,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 | 代价 | ~**4 次回收/分钟**（24s 拍时 ~2.5 次）；桌面端 `unregistered host`/`uncaughtException` 需继续观察（基线 7 / 14） |
 
 **新坑（记下来）**：`multi_ws_on` 是**内存开关，进程重启即丢**。09-17 复跑时进程是新的，日志直接写
-`只开页面当前工作区的桥：…` + `tier2 active coverage: 1 workspace(s)`——一轮只测到单桥。**每轮真机测试前先补发**
+`只开页面当前工作区的桥：…` + `carrier active coverage: 1 workspace(s)`——一轮只测到单桥。**每轮真机测试前先补发**
 `multi_ws_on`，并用 `stall_state` 的 `多工作区=true 覆盖=…` 确认。另外**两个任务必须落在不同工作区**，
 且**每个工作区都要在页面上打开过**（壳只认识页面打开过的工作区，见 §3.7 的发现链缺口）。
 
@@ -338,7 +338,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 `workspaceIdentity?.trim() || workspacePath`（页面 `GD`/`Co`，`src:44:3789`；顺序不能反——远程工作区必须用 identity）。
 
 **实现**：`RelayBridge.RelayTaskDigest` 解析两处已在收的响应 → `displayStatus ∈ {running}`（`waiting`/`prewarming` 容错）
-→ `Tier2Probe.discoveredCoverage()` → `startCoverage()` 的覆盖目标。
+→ `NativeRelayClient.discoveredCoverage()` → `startCoverage()` 的覆盖目标。
 
 **接线时机（154 的 bug，已修）**：发现链数据要**配对之后**才有，而覆盖清单原来在
 `maybeStartNativeCarrier` 里算（日志 `发现链 0 个`）→ 把并入点搬到 `startCoverage()`（配对后 1.2 s）；
@@ -351,7 +351,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 19:51:43 承载发现[bootstrap]：82 个任务 · 有活动 2 · running×2/completed×80 ·
          running@C:\Users\…\default | running@E:\Zcode_harmony
 19:51:44 承载发现[workspace-list]：82 个任务 · 有活动 2（与 bootstrap 一致，交叉验证）
-19:51:44 Tier2: 发现链给出 2 个有活动任务的工作区 ⇒ 多工作区覆盖 2 座
+19:51:44 承载: 发现链给出 2 个有活动任务的工作区 ⇒ 多工作区覆盖 2 座
 19:51:46/47 bridge ready ×2（**B 从没在手机上打开过**）
 19:51:54 / 19:52:07 / 19:52:19  rotate 每 12s 两桥交替
          两张卡同时 PROMOTED_ONGOING 且正文各自推进；重锚失败 0、卡片撤回 0、提升集合变化仅启动 2 条
@@ -367,7 +367,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 
 | 改动 | 位置 | 说明 |
 | --- | --- | --- |
-| 覆盖上限 3 → **5** | `Tier2Probe.DEFAULT_MAX_COVERAGE`、`ShellRuntime.MULTI_WS_COVERAGE_CAP`（**必须同步改**；引擎侧 `BridgeManager.maxWorkspaces` 构造默认是 12，是这两处把 5 传进去） | **成本取舍，不是平台/协议限制**：每座桥 = 桌面端一条常驻会话 + 每轮一次回收握手 |
+| 覆盖上限 3 → **5** | `NativeRelayClient.DEFAULT_MAX_COVERAGE`、`ShellRuntime.MULTI_WS_COVERAGE_CAP`（**必须同步改**；引擎侧 `BridgeManager.maxWorkspaces` 构造默认是 12，是这两处把 5 传进去） | **成本取舍，不是平台/协议限制**：每座桥 = 桌面端一条常驻会话 + 每轮一次回收握手 |
 | 一轮耗时与 N 解耦 | `RelayBridge.reanchorProgress` | **只对"被服务的那座"（最近有帧的）发 resync**、**只轮换"最饿的一座"**，其余这一轮什么都不做——它们发出去必然白等 8s 超时（对端同一时刻只应答一座）还会升级成整桥回收。⇒ **一轮恒 ~5s、握手频率恒 1 次/12s，与 N 无关**。单桥（N=1）照常 resync、不轮换 |
 
 **理论结论（写进 README「实现要点」20 固化）**：
@@ -388,7 +388,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 八笔提交（`1eaa771` `3ba59c1` `2a28f7b` `0c2df11` `f09b0d5` `a91069b` `e8cb66b` `11573e4`），
 只含 `android-shell/` 下 15 个文件；JS 94 → **95 项**、Kotlin 92 项不变。
 
-**① 删除 D7「订阅所有工作区」开关**（用户拍板；它是 Tier1 在**页面 socket** 上给所有工作区开桥的实现，
+**① 删除 D7「订阅所有工作区」开关**（用户拍板；它是页面侧在**页面 socket** 上给所有工作区开桥的实现，
 2026-09-15 真机 A/B 定罪，功能已被承载 + 发现链取代）：`Prefs`（键 + 字段）、设置页（开关 + 文案 + 布局行）、
 `WebAppBridge`（配置字段 + 兜底 JSON）、`inject.js`（默认 config / client 选项 / onStatus 重试块 /
 **整个 3b 节 `maybeStartActive`** / `__zcodeShellSetSubscribeAll` / ready 帧字段）、
@@ -407,7 +407,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
 | 2 | 失败路径一轮回收两座（`served` 失败回收后仍去回收 `starved`）⇒ ≈14s > 12s 拍，且两张卡同时消失重建 | `err != null` → 回收 served + sleep 3s + **`return@Thread`**；把"**一轮最多一次握手**"写成不变式 |
 | 3 | 注释说"显式覆盖不受失败冷却影响"，代码却 `filterNot { cooledDown }`（E1 会静默打不通） | **按注释改代码**：`coverageIsDiagnostic == true` 时豁免冷却（两边各自打日志）；另修两处同样写错的 KDoc |
 | 4 | `explicit = (coverageWorkspaces + discovered).distinct()` 未截断 ⇒ 日志可能报 >5 座而实际只开 5 座 | `explicit = wanted.take(DEFAULT_MAX_COVERAGE)` + 超限时把取法写进日志 |
-| 5 | 两处常量"必须同步"只靠注释 | `Tier2Probe.DEFAULT_MAX_COVERAGE` 改 **`internal const val`**，`ShellRuntime.MULTI_WS_COVERAGE_CAP = Tier2Probe.DEFAULT_MAX_COVERAGE`（编译期兜底） |
+| 5 | 两处常量"必须同步"只靠注释 | `NativeRelayClient.DEFAULT_MAX_COVERAGE` 改 **`internal const val`**，`ShellRuntime.MULTI_WS_COVERAGE_CAP = NativeRelayClient.DEFAULT_MAX_COVERAGE`（编译期兜底） |
 | 6 | ① `keyOf` 的 `workspaceLabel` 兜底会产出页面/桌面端都不认的键；② `carrierCoverageTargets()` 里 `discoveredCoverage()` 是死调用；③ 全平局场景未说明 | ① 删兜底（label 只进诊断摘要）；② 删死调用 + 注释指向真正的并入点；③ 加注释说明"全平局＝首轮正常形态，不引入排序状态" |
 
 **③ 通用死代码**：删 3 个 Kotlin 零引用符号 + 1 未用导入、4 个 JS 零调用点函数
@@ -452,9 +452,9 @@ bc carrier_now        # 手动接管（会开这几座桥）
 | --- | --- |
 | 22:48:41.257 | `后台原生承载：候选提前接管（页面最近 72s 前 收到会话帧 · 1 个在跑任务），观察 10s 后动手` |
 | 22:48:51.259 | `后台原生承载：**提前接管**——页面活着但最近 82s 前 收到会话帧（没人喂卡片），且有 1 个在跑任务` |
-| 22:48:51.733 | `Tier2: ★接管配对成功（matched）——页面连接已被顶掉` + `页面连接被顶掉（relay 返回 KICKED，应用在后台）` |
+| 22:48:51.733 | `承载: ★接管配对成功（matched）——页面连接已被顶掉` + `页面连接被顶掉（relay 返回 KICKED，应用在后台）` |
 | 22:48:51.951 | `承载发现[bootstrap]：86 个任务 · 有活动 1 · running×1/completed×84/error×1` |
-| 22:48:53.102 | `Tier2: 发现链给出 1 个有活动任务的工作区` → 22:48:54.015 `bridge ready …`（`zcshell-bridge-mu5nair5-ehfu41`） |
+| 22:48:53.102 | `承载: 发现链给出 1 个有活动任务的工作区` → 22:48:54.015 `bridge ready …`（`zcshell-bridge-mu5nair5-ehfu41`） |
 
 **② 卡片跟手（同刻三方核对：`android.text` + `when` + 日志那一拍，规矩见 README「写给自己」）**
 
@@ -473,9 +473,9 @@ bc carrier_now        # 手动接管（会开这几座桥）
 
 ```
 22:49:01.278 WARN 后台原生承载：页面链路已恢复（最新入站帧 16s 前），原生交还
-22:49:01.281 WARN Tier2: 关闭（页面链路已恢复）存活=10s 心跳=1 ack=1
+22:49:01.281 WARN 承载: 关闭（页面链路已恢复）存活=10s 心跳=1 ack=1
 22:49:01.287 WARN 后台原生承载：**提前接管**——…          ← 同一次调用里又接管
-22:49:02.079 WARN Tier2: ★接管配对成功（matched）          ← 重新配对
+22:49:02.079 WARN 承载: ★接管配对成功（matched）          ← 重新配对
 22:49:04.520 DEBUG bridge ready …（第二座桥）              ← 22:49:05.288 第一座才拆完（停止是异步的）
 ```
 
@@ -497,7 +497,7 @@ bc carrier_now        # 手动接管（会开这几座桥）
   `后台原生承载：提前接管暂不交还（页面最近 16s 前 收到会话帧 · socket=-1 paired=false）——age<35s 只说明收到过帧，不说明页面在跟会话`。
 - `ShellRuntime` 记住本次承载的**来路**（`carrierStartedEarly = age < STALL_SILENCE_MS`，即启动那一刻页面是否还活着），
   并在回前台交还 / 关开关 / `clearCarrierState` 三处复位；另加一条自愈：`carrierStarted` 与
-  `Tier2Probe.isRunning()` 不一致时（Tier2 配对失败/桌面端拒桥自停）先对齐标志，免得新分支把不存在的承载一直当在跑。
+  `NativeRelayClient.isRunning()` 不一致时（原生承载配对失败/桌面端拒桥自停）先对齐标志，免得新分支把不存在的承载一直当在跑。
 - 顺手单源：会话帧年龄的文案抽成 `convAgoText()`（原来两处内联三元，现在三处共用）。
 
 **⑤ 发现 2（**未改，待用户拍板**）：轮次边界处卡片撤回 → ~1s 后重建**
@@ -531,10 +531,10 @@ bc carrier_now        # 手动接管（会开这几座桥）
 同拍 `**提前接管**` **0 次**、同一次接管内的第二座 `bridge ready` **0 次**；
 承载期间 `活进展` 持续推进（`第四百四十六次→第四百五十一次回复`）。
 
-期间 23:03:43 桌面端 `Tier2: 服务端 error code=DEVICE_OFFLINE` → EOF → 10s 重连
-（23:03:57 `tier2 bridges disposed (重连重建)` → 23:04:00 重新配对 + 第二座 `bridge ready`）——
+期间 23:03:43 桌面端 `承载: 服务端 error code=DEVICE_OFFLINE` → EOF → 10s 重连
+（23:03:57 `carrier bridges disposed (重连重建)` → 23:04:00 重新配对 + 第二座 `bridge ready`）——
 这是 README 未结项 4 的**既有现象**（桌面端 host 掉线），**不是抖动复现**，看日志时别混。
-回前台（23:04:55）：`Tier2: 关闭（回前台交还）存活=90s` → `KICKED 自愈：1.5s 后重载页面（第 1/2 次）`
+回前台（23:04:55）：`承载: 关闭（回前台交还）存活=90s` → `KICKED 自愈：1.5s 后重载页面（第 1/2 次）`
 → 23:04:57.979 `relay socket open (#1)`，**只重载一次**；后台存活检查 `2 分 10 秒 / 心跳 13 次 / 380 帧 / 配对 12 次 → 保活成立`。
 
 **⑧ 仍未验（别当已验证）**：① §3.9 ⑥ 那批真机回归（12s 轮换一拍、失败只回收一座、设置页一眼）仍未做；
@@ -598,7 +598,7 @@ deltas / 缺口判定都不在 JS 里重写）→ `TaskStore.applyLiveTasks` →
 #### C. 承载覆盖修正（166）：桥开错了工作区 ⇒ 正文只剩工作区名
 
 **用户的追问**："能识别任务了，但卡片正文显示 `default`"。日志：
-`Tier2: 只开页面当前工作区的桥：E:\MiMo ASR Assistant_harmony`，而同刻
+`承载: 只开页面当前工作区的桥：E:\MiMo ASR Assistant_harmony`，而同刻
 `承载发现[bootstrap]：… running@C:\Users\wdn32\.zcode\workspace\default` ——
 页面停在 MiMo，`onlyWorkspace` 就用 MiMo，而 `carrierCoverageTargets()` 里"有在跑任务的工作区"
 被 `multi_ws_*`（**内存态，重启即丢**）挡着 ⇒ **没人订阅那条对话** ⇒ 正文落到工作区名兜底。
@@ -606,7 +606,7 @@ deltas / 缺口判定都不在 JS 里重写）→ `TaskStore.applyLiveTasks` →
 **修法**：`carrierCoverageTargets()` 里"有在跑任务的工作区"**不再受开关管**（那是卡片的本体，
 不是多工作区实验）；开关只决定"页面工作区要不要也覆盖"。修后：
 `承载覆盖目标（启动前）：1 座（page=E:\MiMo… · store 在跑 1 个）` →
-`Tier2: 多工作区覆盖 1 座：C:\...\default` → `subscribed conversation for sess_a997aba1…` →
+`承载: 多工作区覆盖 1 座：C:\...\default` → `subscribed conversation for sess_a997aba1…` →
 `活进展 …：第六十六次回复`，卡片正文 = `第六十八次回复，时间09:28:55`（`when` 09:28:58 / 系统 09:29:08，同刻对齐）。
 
 #### D. 运行态判定：固定优先级 → "谁后到谁算数"（167）
@@ -660,18 +660,18 @@ agent 的正文是**分块**到达的，而通知更新本身有 900ms 节流（
 
 **边界**（§3.11 F 第 1 条）：页面被顶掉后第三条源就停了，而发现链只在**配对那一刻**跑一次
 ⇒ 承载期间在"没被覆盖的工作区"里新起任务，壳不知道。用户拍板补上。
-`Tier2Probe.startCoverageRefresh`：每 **60s** 重问一次 `workspace-list-request`
+`NativeRelayClient.startCoverageRefresh`：每 **60s** 重问一次 `workspace-list-request`
 （响应里的 `tasks` 顺带刷新 `discoveredActiveWorkspaces`），把**新出现的活动工作区**补开桥。
 三条纪律：只补不拆 · 受 `BRIDGE_FAIL_COOLDOWN_MS`（10 分钟）失败冷却约束 ·
 受 `BridgeManager.remainingCoverageSlots()`（总上限 5）约束。每拍一行 debug 供取证：
-真机 `10:10:05 Tier2: 覆盖刷新：已覆盖 2 座 · 发现链 2 座 · 待补 0 座`。
+真机 `10:10:05 承载: 覆盖刷新：已覆盖 2 座 · 发现链 2 座 · 待补 0 座`。
 
 **未验**：**补开桥的正向路径**（需要承载期间在第三个工作区起一个任务；本轮只验到"每拍在跑、待补 0"）。
 
 #### H. 12s 轮换复验（2026-09-18 09:54–09:56，170 之前一版）：**通过**
 
 两个不同工作区各一个持续输出的任务（`C:\...\workspace\default` 与 `E:\Zcode_harmony`），
-应用退后台 ⇒ `Tier2: 多工作区覆盖 2 座（上限 5）` + 两座 `bridge ready` +
+应用退后台 ⇒ `承载: 多工作区覆盖 2 座（上限 5）` + 两座 `bridge ready` +
 `提升集合变化: [#462531 #394010]（运行 2 个）`。
 
 | 判据 | 实测 |
@@ -756,10 +756,10 @@ agent 的正文是**分块**到达的，而通知更新本身有 900ms 节流（
 
 | 位置 | 为什么留 |
 | --- | --- |
-| `RelayBridge.kt` 的 controller **订阅链**（**4a 轮已整体删除**，本行只留取证，别再照它找代码） | **删除理由 + 历史取证**（原保留理由"协议 schema 与单测的依据"已作废）。**为什么当年必须封死**：这条"壳**自己订** `controller/tasks-index`"的流，会让**桌面端 host 进程当场 `uncaughtException` 并自毁**——原生桥对 `zcode-agent.onDynamicControllerFrame` 的那次 `rpc:listen`：`[rpc:listen] zcode-agent.onDynamicSessionsIndexFrame subscribed`（索引流没问题）→ `[rpc:listen] zcode-agent.onDynamicControllerFrame  FAIL {"name":"Error",…}` → `uncaughtException origin=uncaughtException` → `disposing host resources, reason=uncaughtException:uncaughtException` → `[task-realtime] unregistered host` + `host process (local-1) exited with code 1`；配对→崩溃的间隔**固定 4.3 秒**，01:05 / 01:13 / 01:16 三次复现，每次之后桌面端远程控制整体失效（所有 `workspace-bridge` 回 `desktop-disconnected`）、页面跟着 bootstrap 失败。**它在运行态源里原本提供什么**：controller 那条更精确的 `liveStatus`（判定规则是"**谁后到谁算数**"，时刻表 `TaskStore.livePhasesAt`，底下垫 `sessions-index` 持久态）。**现存两条**＝① 会话流 `turnHeader.state`（→ `TaskStore.applyConversationRunState`，按会话生效、只覆盖承载订过的工作区）② **页面自己订的同一条 `controller/tasks-index`**（`controllertasks` → `TaskStore.applyLiveTasks`，唯一**全局**的一条）⇒ 删掉壳自己那条**只损失精度、不丢全局可见性**。**4a 轮删除范围（3 个文件）**：`RelayBridge.kt` 的整条链（`subscribeControllerTasks` / `onControllerWire` / `resyncController` / `unsubscribeController` + 5 个私有字段 + 开关 `controllerStreamEnabled`）+ `BridgeSession.onLiveTasks` + `BridgeManager.liveTaskSink`；`Tier2Probe.kt` 的 `liveTaskSink` 属性与它在 `BridgeManager(...)` 的命名实参；`ShellRuntime.stopLiveProgressPolling` 的交还臂（该臂当时已是空操作——`Tier2Probe.liveTaskSink` 全仓唯一写入就是 `= null`）。同轮还删了 `RelayBridgeTest.kt` 里喂这条流的 **6 处**脚本臂（它们本来就永不触发）。⚠️ **若要重开该能力**：不是"把开关改 `true`"（**开关已不存在**），而要**重新实现订阅并先复验桌面端**——注意 §3.7 那条更正：channel 当年可能就打错了（`onDynamicControllerFrame` 属于 `window-controller`，我们发的是 `zcode-agent`），照旧写法再来一次就是再崩一次 host。**不在删除范围**：`ControllerTasksState` 与 `TaskStore.applyLiveTasks`（页面路径是活的，见下一行）。 |
-| `TaskStore` 三级优先级的 controller 那一档 | **更正（2026-09-18）：不是恒空，它一直在写入。** 页面自己那条全局流就喂它：`inject.js:823` `post('controllertasks', …)` → `ShellRuntime.kt:1529/1538` → `onPageControllerFrame` → `:1631 store.applyLiveTasks`；`TaskStore.kt:249-251` 写 `livePhases`/`liveTitles`/`livePhasesAt`，`:281/289/294/309-311` 读。封死的**只是 Tier2/RelayBridge 侧那条订阅**（`controllerStreamEnabled=false`，`RelayBridge.kt`；该订阅**已于 4a 轮整体删除**，即上一行），不是这份覆盖层。**别删 `applyLiveTasks` 或这几张覆盖层表**（会话流那份同理）：它们是"什么在跑"唯一的全局来源——删了＝别的工作区里在跑的任务**彻底不可见**（`tools/inject.test.js:791` 的注释就是那次当场取证）、承载开错工作区时卡片正文**退化成工作区名**、前台也只剩"页面当前在听的那一个工作区"的 SI 相位（本文件 §3.11 B/C/D） |
+| `RelayBridge.kt` 的 controller **订阅链**（**4a 轮已整体删除**，本行只留取证，别再照它找代码） | **删除理由 + 历史取证**（原保留理由"协议 schema 与单测的依据"已作废）。**为什么当年必须封死**：这条"壳**自己订** `controller/tasks-index`"的流，会让**桌面端 host 进程当场 `uncaughtException` 并自毁**——原生桥对 `zcode-agent.onDynamicControllerFrame` 的那次 `rpc:listen`：`[rpc:listen] zcode-agent.onDynamicSessionsIndexFrame subscribed`（索引流没问题）→ `[rpc:listen] zcode-agent.onDynamicControllerFrame  FAIL {"name":"Error",…}` → `uncaughtException origin=uncaughtException` → `disposing host resources, reason=uncaughtException:uncaughtException` → `[task-realtime] unregistered host` + `host process (local-1) exited with code 1`；配对→崩溃的间隔**固定 4.3 秒**，01:05 / 01:13 / 01:16 三次复现，每次之后桌面端远程控制整体失效（所有 `workspace-bridge` 回 `desktop-disconnected`）、页面跟着 bootstrap 失败。**它在运行态源里原本提供什么**：controller 那条更精确的 `liveStatus`（判定规则是"**谁后到谁算数**"，时刻表 `TaskStore.livePhasesAt`，底下垫 `sessions-index` 持久态）。**现存两条**＝① 会话流 `turnHeader.state`（→ `TaskStore.applyConversationRunState`，按会话生效、只覆盖承载订过的工作区）② **页面自己订的同一条 `controller/tasks-index`**（`controllertasks` → `TaskStore.applyLiveTasks`，唯一**全局**的一条）⇒ 删掉壳自己那条**只损失精度、不丢全局可见性**。**4a 轮删除范围（3 个文件）**：`RelayBridge.kt` 的整条链（`subscribeControllerTasks` / `onControllerWire` / `resyncController` / `unsubscribeController` + 5 个私有字段 + 开关 `controllerStreamEnabled`）+ `BridgeSession.onLiveTasks` + `BridgeManager.liveTaskSink`；`NativeRelayClient.kt` 的 `liveTaskSink` 属性与它在 `BridgeManager(...)` 的命名实参；`ShellRuntime.stopLiveProgressPolling` 的交还臂（该臂当时已是空操作——`NativeRelayClient.liveTaskSink` 全仓唯一写入就是 `= null`）。同轮还删了 `RelayBridgeTest.kt` 里喂这条流的 **6 处**脚本臂（它们本来就永不触发）。⚠️ **若要重开该能力**：不是"把开关改 `true`"（**开关已不存在**），而要**重新实现订阅并先复验桌面端**——注意 §3.7 那条更正：channel 当年可能就打错了（`onDynamicControllerFrame` 属于 `window-controller`，我们发的是 `zcode-agent`），照旧写法再来一次就是再崩一次 host。**不在删除范围**：`ControllerTasksState` 与 `TaskStore.applyLiveTasks`（页面路径是活的，见下一行）。 |
+| `TaskStore` 三级优先级的 controller 那一档 | **更正（2026-09-18）：不是恒空，它一直在写入。** 页面自己那条全局流就喂它：`inject.js:823` `post('controllertasks', …)` → `ShellRuntime.kt:1529/1538` → `onPageControllerFrame` → `:1631 store.applyLiveTasks`；`TaskStore.kt:249-251` 写 `livePhases`/`liveTitles`/`livePhasesAt`，`:281/289/294/309-311` 读。封死的**只是原生承载/RelayBridge 侧那条订阅**（`controllerStreamEnabled=false`，`RelayBridge.kt`；该订阅**已于 4a 轮整体删除**，即上一行），不是这份覆盖层。**别删 `applyLiveTasks` 或这几张覆盖层表**（会话流那份同理）：它们是"什么在跑"唯一的全局来源——删了＝别的工作区里在跑的任务**彻底不可见**（`tools/inject.test.js:791` 的注释就是那次当场取证）、承载开错工作区时卡片正文**退化成工作区名**、前台也只剩"页面当前在听的那一个工作区"的 SI 相位（本文件 §3.11 B/C/D） |
 | `RelayWire.METHOD_ROWS_RANGE` | 注释已标死路（原生侧永远超时） |
-| `tier2_test` / `tier2_stop` / `tier2_takeover` | 实验件，接管语义复验要用 |
+| `carrier_test` / `carrier_stop` / `carrier_takeover` | 实验件，接管语义复验要用 |
 | `nudgePageRecovery` + `nudge_now` / `nudge_close` | 现在是它唯一的使用者；纯取证诊断（**更正：README「诊断指令全集」已记录它们**——`l1_test` / `nudge_now` / `nudge_close` 同一行；原文"README 未记录这两条指令，属已知"是错的） |
 | `TaskStore.Workspace.source` / `.path` / `.identity` | **这三个是一族，要留一起留、要删一起删（不许两留一删）**：都是形状字段（与 wire 同构），Kotlin 侧没有消费读点——`source` 连兜底自读都没有；`path`/`identity` 只在 `applyWorkspace` 的"非空才覆盖"里自读（`TaskStore.kt:225-226`），而唯一的 `Workspace` 消费者 `WebAppBridge.config()` 只读 `.key`。`source` 不是占位符，是**来源枚举**：`"active"`＝本桥自己订阅来的（`zcode-protocol.js:1687`、`RelayBridge.kt:249`）、`"passive"`＝从页面自己的流旁观的（`zcode-protocol.js:2635`）、壳按 controller 整表补出的工作区写 `"controller"`（`TaskStore.kt:272`）；wire 上的 `source` 键**两侧都有单测钉着**（`RelayBridgeTest.kt:37`、`protocol.test.js:378`）。本轮未动 |
 

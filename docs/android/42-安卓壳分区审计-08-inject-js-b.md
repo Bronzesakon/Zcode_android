@@ -49,7 +49,7 @@ via `:1523,1587`; `clickElement` via `:1612,2872`; `fallbackState.chatView` via 
   `inject.js` nor included in the `post('liveness', …)` payload, so the value is unreachable.
 - **Reference search**: `startedAt` over `android-shell` → `inject.js:1353` (this field) plus unrelated
   locals (`:480,483,494,581,582` in `recordDecode`) and unrelated Kotlin (`ShellRuntime.kt:246`,
-  `Tier2Probe.kt:108`). `liveness\.startedAt` over `E:\Zcode_harmony` → 0 hits.
+  `NativeRelayClient.kt:108`). `liveness\.startedAt` over `E:\Zcode_harmony` → 0 hits.
 - **Confidence**: high
 - **Suggested action**: delete the field (1 line).
 - **Risk if removed**: none; not asserted by any test.

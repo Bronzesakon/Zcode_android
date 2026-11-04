@@ -54,7 +54,7 @@
 | --- | --- | --- | --- |
 | 原生宿主 | `MainActivity.kt` | 1,169 行 | WebView 配置、注入时序、文件选择、通知点击定位、自愈重载 |
 | 运行时 | `ShellRuntime.kt` | 2,598 行 | 前后台交接、原生承载、心跳泵、诊断、状态编排 |
-| 协议观测/承载 | `RelayBridge.kt` / `Tier2Probe.kt` / `RelayWire.kt` | 1,342 + 1,073 + 767 行 | 只读观测页面帧 + 可选的原生直连 relay（Tier2） |
+| 协议观测/承载 | `RelayBridge.kt` / `NativeRelayClient.kt` / `RelayWire.kt` | 1,342 + 1,073 + 767 行 | 只读观测页面帧 + 可选的原生直连 relay（原生承载） |
 | 注入层 | `assets/inject.js` | 4,021 行 | document-start 注入：WS hook、心跳、体征、定位、只读取证 |
 | 线协议 | `assets/zcode-protocol.js` | 1,961 行 | 页面帧的编解码与 RPC 取证 |
 | 通知/卡片 | `notify/*` | 约 1,000 行 | 4 渠道 + 7 类通知 + Android 16 Live Updates |
@@ -409,7 +409,7 @@ boolean visible = mIsAttachedToWindow && mIsViewVisible && mIsWindowVisible;
 │   └─ 10s 心跳泵（evaluateJavascript）                              │
 │                                                                   │
 │  （可选，阶段 3）NativeCarrier：页面链路判死时原生直连 relay        │
-│   └─ 可复用本仓库 Rust 协议核心，或移植参考壳 Tier2Probe            │
+│   └─ 可复用本仓库 Rust 协议核心，或移植参考壳 NativeRelayClient            │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -420,7 +420,7 @@ boolean visible = mIsAttachedToWindow && mIsViewVisible && mIsWindowVisible;
 | **P0 spike** | 最小壳 + 软伪装开关 + 生命周期回放；只跑一页对话 | 后台 10 分钟：页面不 suspend、心跳由泵驱动、回前台不 reload 且 3s 内有新帧 |
 | **P1 最小可用** | WebView + document-start 注入 + 文件上传 + 通知权限 + FGS | 冷启动恢复上次对话；旋转不重建；返回键不杀进程 |
 | **P2 保活/通知** | 心跳泵 + 从页面帧生成通知 + 流体云 | 后台 30 分钟存活；任务完成能通知；点击定位到任务 |
-| **P3 原生承载（可选）** | 页面链路判死时原生接管；交还不变式 | 长后台仍能收帧/通知；交还后页面不断线（参考壳 Tier2 的判据可直接复用） |
+| **P3 原生承载（可选）** | 页面链路判死时原生接管；交还不变式 | 长后台仍能收帧/通知；交还后页面不断线（参考壳原生承载的判据可直接复用） |
 | **P4 收敛** | 删除所有「壳主动 reload」；只留终态兜底 | 日志里壳发起的 reload 只出现在 KICKED/冷启动 |
 
 ### 与当前仓库的关系

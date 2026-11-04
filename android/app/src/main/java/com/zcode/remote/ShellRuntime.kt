@@ -20,7 +20,7 @@ import com.zcode.remote.core.PreviewSettle
 import com.zcode.remote.core.RelayCreds
 import com.zcode.remote.core.RelayWire
 import com.zcode.remote.core.SurvivalVerdict
-import com.zcode.remote.core.Tier2Probe
+import com.zcode.remote.core.NativeRelayClient
 import com.zcode.remote.core.TaskSnapshot
 import com.zcode.remote.core.TaskStatus
 import com.zcode.remote.core.TaskStore
@@ -671,13 +671,13 @@ object ShellRuntime {
             // 期间开的 socket"当成"刚刚在重拨"（那会白等 20s，见 maybeStartNativeCarrier）。
             lastSocketMarkForStall = -1L
             lastSocketChangeAt = 0L
-            val restoreAfterCarrier = Tier2Probe.isRunning() || carrierHandedBack || carrierRanThisStint
+            val restoreAfterCarrier = NativeRelayClient.isRunning() || carrierHandedBack || carrierRanThisStint
             // 成功；重连/重载后注入层 runtime 是新的（状态回默认）。
             // 4b（2026-09-18）起没有"僵尸档"了：页面自己回不来时，靠注入层的 KICKED 终态自愈
             // （healKickedOnForeground，在 __zcodeShellSetAppForeground 里）+ 回前台死链兜底
             // （healDeadLinkOnResume）+ 页面自己的重连梯子；承载交还那条路另有下方的一次兜底重载。
-            if (Tier2Probe.isRunning()) {
-                Tier2Probe.stop("回前台交还")
+            if (NativeRelayClient.isRunning()) {
+                NativeRelayClient.stop("回前台交还")
                 carrierHandedBack = true
                 Diagnostics.log(
                     "warn",
@@ -764,7 +764,7 @@ object ShellRuntime {
      * - 更早的 `4`（48s）实测"卡片肉眼可见地半分钟不动"，已否决。
      *
      * ⚠️ **本值是唯一把两种节奏分开的旋钮**（2026-09-18 复核）：命中模的那一拍走**贵**的
-     * 整轮重挂（`Tier2Probe.reanchorProgress()`：回收桥 + 重新握手 + resync，最坏 ~6s），
+     * 整轮重挂（`NativeRelayClient.reanchorProgress()`：回收桥 + 重新握手 + resync，最坏 ~6s），
      * 不命中的拍只做**便宜**的每拍重订会话（`subscribeProgress`）。所以它不是普通调参，
      * 而是"两种工作模式的开关"，并且是两条**跨文件**约束的因子：
      *   1. `core/RelayBridge.kt` 的 `ROTATE_MIN_STARVE_MS`（主动轮换门槛）**必须小于轮换拍长**
@@ -816,13 +816,13 @@ object ShellRuntime {
                 livePollInFlight = true
                 liveProgressThread.execute {
                     try {
-                        if (epoch != liveEpoch || !userIsAway() || !Tier2Probe.isRunning()) return@execute
+                        if (epoch != liveEpoch || !userIsAway() || !NativeRelayClient.isRunning()) return@execute
                         if (reanchor) {
-                            Tier2Probe.reanchorProgress()
+                            NativeRelayClient.reanchorProgress()
                         }
                         for ((key, sessionId) in refs) {
                             if (epoch != liveEpoch) break
-                            Tier2Probe.subscribeProgress(key, sessionId)
+                            NativeRelayClient.subscribeProgress(key, sessionId)
                         }
                     } finally {
                         livePollInFlight = false
@@ -902,13 +902,13 @@ object ShellRuntime {
         liveEpoch += 1
         livePollInFlight = false
         val epoch = liveEpoch
-        Tier2Probe.progressSink = { key, sessionId, text ->
+        NativeRelayClient.progressSink = { key, sessionId, text ->
             if (epoch == liveEpoch) pushLivePreview(key, sessionId, text)
         }
         // 会话流自带的运行态（turnHeader.state）：两条运行态源之一，与另一条**互为冗余**、
         // 按"谁后到谁算数"判定；它按会话生效、只覆盖承载已订阅的工作区（详见下方 controller 流说明）。
         // （原先的第三源＝**壳自己订**的 `controller/tasks-index` 已于 4a 轮删除，见下方承载开关的 KDoc。）
-        Tier2Probe.turnStateSink = turn@{ key, sessionId, running ->
+        NativeRelayClient.turnStateSink = turn@{ key, sessionId, running ->
             if (epoch != liveEpoch || !userIsAway()) return@turn
             mainHandler.post {
                 if (epoch != liveEpoch || !userIsAway() || !livePolling) return@post
@@ -928,7 +928,7 @@ object ShellRuntime {
                 applyUpdate(update)
             }
         }
-        Tier2Probe.runningSessionsProvider = { key ->
+        NativeRelayClient.runningSessionsProvider = { key ->
             store.runningTaskRefs().filter { it.first == key }.map { it.second }
         }
         mainHandler.post(liveProgressPoller)
@@ -938,9 +938,9 @@ object ShellRuntime {
     private fun stopLiveProgressPolling() {
         livePolling = false
         liveEpoch += 1
-        Tier2Probe.progressSink = null
-        Tier2Probe.turnStateSink = null
-        Tier2Probe.runningSessionsProvider = null
+        NativeRelayClient.progressSink = null
+        NativeRelayClient.turnStateSink = null
+        NativeRelayClient.runningSessionsProvider = null
         mainHandler.removeCallbacks(liveProgressPoller)
         // 静默窗里挂着的待推正文一并丢掉：交还之后它们不该再落到卡片上。
         for (pending in previewPending.values) mainHandler.removeCallbacks(pending)
@@ -1013,12 +1013,12 @@ object ShellRuntime {
     fun isUserPresent(): Boolean = !userIsAway()
 
     init {
-        // 配对成功与应用回前台的竞态处置（Tier2Probe 在 OkHttp 线程上回调，转主线程）。
-        Tier2Probe.isForegroundNow = { !userIsAway() }
-        Tier2Probe.foregroundConflict = {
+        // 配对成功与应用回前台的竞态处置（NativeRelayClient 在 OkHttp 线程上回调，转主线程）。
+        NativeRelayClient.isForegroundNow = { !userIsAway() }
+        NativeRelayClient.foregroundConflict = {
             val conflictEpoch = handoff.epoch
             mainHandler.post {
-                // Tier2 has already stopped synchronously on its callback thread.
+                // 原生承载 has already stopped synchronously on its callback thread.
                 // Do not let a queued conflict recover a later foreground window.
                 if (!handoff.isCurrent(conflictEpoch, false) || userIsAway()) return@post
                 Diagnostics.log("warn", "后台原生承载：配对竞态——应用已回前台，交还并重载页面一次")
@@ -1143,15 +1143,15 @@ object ShellRuntime {
     /**
      * 多工作区覆盖一次最多开几座桥。
      *
-     * **单源**（2026-09-17）：直接引用 `Tier2Probe.DEFAULT_MAX_COVERAGE`——两处各写一个 5
-     * 曾经过：改了 Tier2 忘了改这里，"日志说 5 座、实际开 3 座"。现在编译器兜底。
+     * **单源**（2026-09-17）：直接引用 `NativeRelayClient.DEFAULT_MAX_COVERAGE`——两处各写一个 5
+     * 曾经过：改了原生承载忘了改这里，"日志说 5 座、实际开 3 座"。现在编译器兜底。
      *
      * **成本取舍，不是平台限制**：每座桥 = 桌面端一条常驻会话 + 每轮一次回收握手；
      * 轮换已与 N、M 都无关（`RelayBridge.reanchorProgress` 每轮 ≤6s + ~3s），所以抬高它
      * 不会让轮询互相冲突。3 → **5**（2026-09-17）为鸿蒙侧 5 并发实验；**产品真实天花板是 2**
      * （ColorOS 只提升 2 张流体云卡）。
      */
-    private const val MULTI_WS_COVERAGE_CAP = Tier2Probe.DEFAULT_MAX_COVERAGE
+    private const val MULTI_WS_COVERAGE_CAP = NativeRelayClient.DEFAULT_MAX_COVERAGE
 
     /**
      * 后台承载总开关。
@@ -1183,7 +1183,7 @@ object ShellRuntime {
      * 配套两处（同轮真机定案）：① 只开**页面自己正在显示**的那个工作区的桥
      * （`pageWorkspaceKey`）——扫全部工作区会让桌面端每次新建再拆 host；
      * ② 配对后照页面顺序补 `mobile-diagnostic` / `mobile-view-state-update` /
-     * `bootstrap-request` 三帧（见 `Tier2Probe.sendBootstrapThenCoverage`）。
+     * `bootstrap-request` 三帧（见 `NativeRelayClient.sendBootstrapThenCoverage`）。
      */
     @Volatile
     private var carrierEnabled = true
@@ -1243,8 +1243,8 @@ object ShellRuntime {
      * 自上次回前台以来，壳**启动过原生承载**（回前台读一次并清掉）。
      *
      * 为什么需要它（2026-09-18 真机缺陷，父代理在回归中撞出）：
-     * 原实现只在 [carrierHandedBack] 这一条路径上安排兜底，即"回前台那一刻 `Tier2Probe.isRunning()`
-     * 仍为真"。可承载完全可能在**后台期间**就被停掉（诊断 `tier2_stop`/`carrier_off`、探针自停、
+     * 原实现只在 [carrierHandedBack] 这一条路径上安排兜底，即"回前台那一刻 `NativeRelayClient.isRunning()`
+     * 仍为真"。可承载完全可能在**后台期间**就被停掉（诊断 `carrier_stop`/`carrier_off`、探针自停、
      * 任何非"回前台交还"的路径），那时 `isRunning()` 已是 false ⟹ **兜底永不安排**；
      * 而注入层那条 KICKED 自愈（`healKickedOnForeground`）要求页面**亲眼看见** KICKED 帧——
      * 页面若在接管前就已 `dispose` 掉 socket（真机 19:54:33 `socket.close() … X2t.dispose`），
@@ -1261,7 +1261,7 @@ object ShellRuntime {
      *   * **本次后台承载跑过**（[carrierRanThisStint]）⟹ 页面很可能在后台期间被顶过。
      * 只在这两种情况下，`MainActivity` 才走"预设任务 + 交还 + 重载"那条路。
      */
-    fun carrierMayHaveKickedPage(): Boolean = Tier2Probe.isRunning() || carrierRanThisStint
+    fun carrierMayHaveKickedPage(): Boolean = NativeRelayClient.isRunning() || carrierRanThisStint
 
     /**
      * 通知卡片点击定位用：**把承载交还给页面**，并清掉与它相关的状态。
@@ -1270,8 +1270,8 @@ object ShellRuntime {
      * 页面重载后**自己也会被再顶一次**、又回到 KICKED 终态 —— 那重载就白做了。
      */
     fun handBackCarrierForLocate() {
-        if (Tier2Probe.isRunning()) {
-            Tier2Probe.stop("通知点击定位：先交还")
+        if (NativeRelayClient.isRunning()) {
+            NativeRelayClient.stop("通知点击定位：先交还")
             Diagnostics.log("warn", "定位：先停掉原生承载，把连接还给页面")
         }
         clearCarrierState()
@@ -1323,8 +1323,8 @@ object ShellRuntime {
     fun setCarrierEnabled(enabled: Boolean) {
         carrierEnabled = enabled
         Diagnostics.log("warn", "后台原生承载：${if (enabled) "已开启" else "已关闭"}")
-        if (!enabled && Tier2Probe.isRunning()) {
-            Tier2Probe.stop("后台承载被关闭")
+        if (!enabled && NativeRelayClient.isRunning()) {
+            NativeRelayClient.stop("后台承载被关闭")
             stopLiveProgressPolling()
             releaseCarrierWakeLock()
             carrierStarted = false
@@ -1344,7 +1344,7 @@ object ShellRuntime {
      *
      * **为什么"有在跑任务的工作区"不再受开关管**（2026-09-18 真机）：那是**卡片的本体**。
      * 开关（内存态，重启即丢）关着、页面又停在别的工作区时，桥会开在页面那个工作区上：
-     * 现场是 `Tier2: 只开页面当前工作区的桥：E:\MiMo…`，而任务在
+     * 现场是 `承载: 只开页面当前工作区的桥：E:\MiMo…`，而任务在
      * `C:\Users\wdn32\.zcode\workspace\default` 里跑 —— 运行集对、卡片在，但**没人订阅那条
      * 对话**，卡片正文只能落到工作区名（用户看到的就是 `default` 三个字母）。
      * 多工作区**开关**留给"页面工作区也要覆盖"这件事，以及诊断 A/B。
@@ -1357,10 +1357,10 @@ object ShellRuntime {
         if (coverageOverride.isNotEmpty()) return coverageOverride
         val out = LinkedHashSet<String>()
         if (multiWorkspaceCoverage && pageWorkspaceKey.isNotEmpty()) out.add(pageWorkspaceKey)
-        // **这里不读发现链**（2026-09-17 删掉那行 `Tier2Probe.discoveredCoverage()`）：
+        // **这里不读发现链**（2026-09-17 删掉那行 `NativeRelayClient.discoveredCoverage()`）：
         // 本函数在**承载启动前**算，而发现链的数据（bootstrap/workspace-list 的 tasks）
         // 要配对之后才有——那一刻它必然是空表，留着只会让后人误以为"发现链已经并进来了"。
-        // 真正的并入点在 `Tier2Probe.startCoverage()`（日志行 `Tier2: 发现链给出 …`）。
+        // 真正的并入点在 `NativeRelayClient.startCoverage()`（日志行 `承载: 发现链给出 …`）。
         for ((key, _) in store.runningTaskRefs()) {
             if (out.size >= MULTI_WS_COVERAGE_CAP) break
             if (key.isNotEmpty()) out.add(key)
@@ -1369,7 +1369,7 @@ object ShellRuntime {
             Diagnostics.log(
                 "info",
                 "承载覆盖目标（启动前）：${out.size} 座（page=${pageWorkspaceKey.ifEmpty { "未知" }} · " +
-                    "store 在跑 ${store.runningTaskRefs().size} 个；发现链由配对后的 Tier2 并入）",
+                    "store 在跑 ${store.runningTaskRefs().size} 个；发现链由配对后的原生承载并入）",
             )
         }
         return out.take(MULTI_WS_COVERAGE_CAP)
@@ -1387,9 +1387,9 @@ object ShellRuntime {
         // 的错位在**判定这一拍**不可能存在——两者用的是同一份读数、同一个函数。
         syncAwayStateToStore()
         if (!userIsAway()) return
-        if (handoff.ownsAwayWindow && Tier2Probe.isRunning()) return
+        if (handoff.ownsAwayWindow && NativeRelayClient.isRunning()) return
         maybeStartHandoffCarrier(handoff.epoch)
-        if (Tier2Probe.isRunning()) return
+        if (NativeRelayClient.isRunning()) return
         if (!carrierEnabled) return
         val age = lastInboundAgeMs() ?: return
         val now = SystemClock.elapsedRealtime()
@@ -1424,10 +1424,10 @@ object ShellRuntime {
         }
 
         if (age < STALL_SILENCE_MS) {
-            // Tier2 可能已经自己停了（配对失败 / 桌面端拒桥 / 桌面端离线），而标志留在 true：
+            // 原生承载可能已经自己停了（配对失败 / 桌面端拒桥 / 桌面端离线），而标志留在 true：
             // 那会让下面"提前接管暂不交还"的分支把一个并不存在的承载一直当成在跑，于是永远不重试。
             // 先把标志与实际对齐——对齐之后 age 仍 <35s，会照常重新走判据/接管。
-            if (carrierStarted && !Tier2Probe.isRunning()) {
+            if (carrierStarted && !NativeRelayClient.isRunning()) {
                 carrierStarted = false
                 carrierStartedEarly = false
                 handbackDeferredLogged = false
@@ -1453,7 +1453,7 @@ object ShellRuntime {
                     "warn",
                     "后台原生承载：页面链路已恢复（最新入站帧 ${age / 1000}s 前），原生交还",
                 )
-                Tier2Probe.stop("页面链路已恢复")
+                NativeRelayClient.stop("页面链路已恢复")
                 stopLiveProgressPolling()
                 releaseCarrierWakeLock()
                 carrierStarted = false
@@ -1530,7 +1530,7 @@ object ShellRuntime {
         } else {
             earlyTakeoverSince = 0L
         }
-        if (carrierStarted || Tier2Probe.isRunning()) return
+        if (carrierStarted || NativeRelayClient.isRunning()) return
         val creds = relayCreds
         if (creds == null) {
             Diagnostics.log("warn", "后台原生承载：等待页面移交 relay 凭证")
@@ -1688,17 +1688,17 @@ object ShellRuntime {
             return true
         }
         when (cmd) {
-            // Tier2 原生直连实验（保留原语义）。
-            "tier2_test" -> {
-                startTier2Probe(60_000L)
+            // 原生承载原生直连实验（保留原语义）。
+            "carrier_test" -> {
+                startNativeRelayClient(60_000L)
                 return true
             }
-            "tier2_stop" -> {
-                stopTier2Probe()
+            "carrier_stop" -> {
+                stopNativeRelayClient()
                 return true
             }
-            "tier2_takeover" -> {
-                startTier2TakeoverForTest(90_000L)
+            "carrier_takeover" -> {
+                startCarrierTakeoverForTest(90_000L)
                 return true
             }
             // 后台原生承载的开关与手动触发。
@@ -1740,7 +1740,7 @@ object ShellRuntime {
                     )
                     carrierStarted = true
                     acquireCarrierWakeLock()
-                    Tier2Probe.start(
+                    NativeRelayClient.start(
                         creds,
                         durationMs = 0L,
                         onlyWorkspace = pageWorkspaceKey,
@@ -1796,7 +1796,7 @@ object ShellRuntime {
                 Diagnostics.log(
                     "info",
                     "后台承载状态：开关=$carrierEnabled 已接管=$carrierStarted " +
-                        "Tier2在跑=${Tier2Probe.isRunning()} " +
+                        "承载在跑=${NativeRelayClient.isRunning()} " +
                         "多工作区=$multiWorkspaceCoverage 覆盖=${carrierCoverageTargets().joinToString()} " +
                         "入站帧=${if (age == null) "未知" else "${age / 1000}s 前"}",
                 )
@@ -1869,7 +1869,7 @@ object ShellRuntime {
 
     private fun maybeStartHandoffCarrier(epoch: Long) {
         if (!handoff.isCurrent(epoch, true) || !userIsAway() || !carrierEnabled) return
-        if (Tier2Probe.isRunning()) return
+        if (NativeRelayClient.isRunning()) return
         if (store.runningTaskRefs().isEmpty() && !store.staleGateHold().holds) return
         val creds = relayCreds ?: return
         if (!handoff.claimCarrier(epoch)) return
@@ -1884,7 +1884,7 @@ object ShellRuntime {
         carrierRanThisStint = true
         handbackDeferredLogged = false
         acquireCarrierWakeLock()
-        Tier2Probe.start(
+        NativeRelayClient.start(
             creds,
             durationMs = 0L,
             onlyWorkspace = pageWorkspaceKey,
@@ -1893,7 +1893,7 @@ object ShellRuntime {
             coverageIsDiagnostic = coverageOverride.isNotEmpty(),
             onPaired = {
                 mainHandler.post {
-                    if (!handoff.isCurrent(carrierEpoch, true) || !userIsAway() || !Tier2Probe.isRunning()) return@post
+                    if (!handoff.isCurrent(carrierEpoch, true) || !userIsAway() || !NativeRelayClient.isRunning()) return@post
                     if (handoffCover.carrierMatched(carrierEpoch, true, pageDocumentId)) {
                         notifyHandoffCover("本轮后台原生配对确认，显示 logo")
                     }
@@ -1914,7 +1914,7 @@ object ShellRuntime {
         jsEvaluator = evaluator
     }
 
-    /** Tier2 原生直连 relay 的凭证（注入层移交，仅内存，不落日志）。 */
+    /** 原生承载原生直连 relay 的凭证（注入层移交，仅内存，不落日志）。 */
     @Volatile
     private var relayCreds: RelayCreds? = null
 
@@ -1949,7 +1949,7 @@ object ShellRuntime {
         store.setBackgrounded(userIsAway())
     }
 
-    /** Tier1 静默看门狗：每 5s 一跳，前台/后台/熄屏都在岗。 */
+    /** 页面链路静默看门狗：每 5s 一跳，前台/后台/熄屏都在岗。 */
     private val tier1Watchdog = object : Runnable {
         override fun run() {
             try {
@@ -1961,54 +1961,54 @@ object ShellRuntime {
                 store.setBackgrounded(away)
                 onUserPresenceChanged()
             } catch (e: Exception) {
-                Diagnostics.log("warn", "Tier1 看门狗异常: ${e.message}")
+                Diagnostics.log("warn", "页面链路看门狗异常: ${e.message}")
             }
             mainHandler.postDelayed(this, 5_000L)
         }
     }
 
-    fun startTier1Watchdog() {
+    fun startPageLinkWatchdog() {
         mainHandler.removeCallbacks(tier1Watchdog)
         mainHandler.postDelayed(tier1Watchdog, 5_000L)
     }
 
-    /** 诊断指令 tier2_test：原生直连探针跑一轮（默认 60s 自动关闭）。 */
-    fun startTier2Probe(durationMs: Long = 60_000L) {
+    /** 诊断指令 carrier_test：原生直连探针跑一轮（默认 60s 自动关闭）。 */
+    fun startNativeRelayClient(durationMs: Long = 60_000L) {
         val c = relayCreds
         if (c == null) {
-            Diagnostics.log("warn", "Tier2: 凭证未就绪（页面还没移交 relaycreds），稍后重试")
+            Diagnostics.log("warn", "承载: 凭证未就绪（页面还没移交 relaycreds），稍后重试")
             return
         }
         carrierRanThisStint = true
-        Tier2Probe.start(c, durationMs)
+        NativeRelayClient.start(c, durationMs)
     }
 
-    fun stopTier2Probe() {
-        Tier2Probe.stop("手动停止")
+    fun stopNativeRelayClient() {
+        NativeRelayClient.stop("手动停止")
     }
 
     /**
-     * 诊断指令 tier2_takeover：接管语义（桥覆盖 + 会话事件）跑固定时长后自动交还。
+     * 诊断指令 carrier_takeover：接管语义（桥覆盖 + 会话事件）跑固定时长后自动交还。
      * 诊断命令会伴随页面重载，凭证由页面重新移交——等它到达再启动（最多 5 次）。
      */
-    fun startTier2TakeoverForTest(autoStopMs: Long = 90_000L, attempt: Int = 1) {
+    fun startCarrierTakeoverForTest(autoStopMs: Long = 90_000L, attempt: Int = 1) {
         if (relayCreds == null) {
-            Diagnostics.log("info", "Tier2: 等待凭证重发（第 $attempt 次，页面重载中）")
+            Diagnostics.log("info", "承载: 等待凭证重发（第 $attempt 次，页面重载中）")
             if (attempt > 5) {
-                Diagnostics.log("warn", "Tier2: 凭证始终未到，放弃启动接管验证")
+                Diagnostics.log("warn", "承载: 凭证始终未到，放弃启动接管验证")
                 return
             }
             mainHandler.postDelayed({
-                startTier2TakeoverForTest(autoStopMs, attempt + 1)
+                startCarrierTakeoverForTest(autoStopMs, attempt + 1)
             }, 2_000L)
             return
         }
         val c = relayCreds ?: run {
-            Diagnostics.log("warn", "Tier2: 凭证未就绪，无法启动接管验证")
+            Diagnostics.log("warn", "承载: 凭证未就绪，无法启动接管验证")
             return
         }
         carrierRanThisStint = true
-        Tier2Probe.startTakeoverForTest(c, autoStopMs)
+        NativeRelayClient.startTakeoverForTest(c, autoStopMs)
     }
 
     fun evaluateJs(script: String) {
@@ -2139,7 +2139,7 @@ object ShellRuntime {
         prefs = Prefs(appContext)
         notifier = Notifier(appContext)
         notifier.ensureChannels()
-        startTier1Watchdog()
+        startPageLinkWatchdog()
     }
 
     fun prefs(): Prefs = prefs
@@ -2235,18 +2235,18 @@ object ShellRuntime {
                     )
                 }
                 "relaycreds" -> {
-                    // Tier2（原生直连 relay）凭证：注入层移交，仅驻内存。
+                    // 原生承载（原生直连 relay）凭证：注入层移交，仅驻内存。
                     // 任何日志路径都不得打印这些字段（sid/hash/mid 红线）。
                     val data = root.optJSONObject("data") ?: return
                     val wsUrl = data.optString("url")
                     val deviceSid = data.optString("deviceSid")
                     val passHash = data.optString("passHash")
                     if (wsUrl.isEmpty() || deviceSid.isEmpty() || passHash.isEmpty()) {
-                        Diagnostics.log("warn", "Tier2: relaycreds 字段不全，忽略")
+                        Diagnostics.log("warn", "承载: relaycreds 字段不全，忽略")
                         return
                     }
-                    if (Tier2Probe.isRunning()) {
-                        Diagnostics.log("debug", "Tier2: 接管期间忽略页面凭证刷新")
+                    if (NativeRelayClient.isRunning()) {
+                        Diagnostics.log("debug", "承载: 接管期间忽略页面凭证刷新")
                         return
                     }
                     relayCreds = RelayCreds(
@@ -2255,9 +2255,9 @@ object ShellRuntime {
                         passHash = passHash,
                         deviceMid = data.optString("deviceMid").ifBlank { null },
                     )
-                    Tier2Probe.sessionsSink = { update -> acceptNativeSessions(update) }
+                    NativeRelayClient.sessionsSink = { update -> acceptNativeSessions(update) }
                     mainHandler.post { maybeStartHandoffCarrier(handoff.epoch) }
-                    Diagnostics.log("info", "Tier2: relay 凭证已接收（仅内存）")
+                    Diagnostics.log("info", "承载: relay 凭证已接收（仅内存）")
                 }
                 "pagestate" -> {
                     // Which visual state the page is in, and which theme it
@@ -2275,7 +2275,7 @@ object ShellRuntime {
                         if (document != pageDocumentId) return@post
                         var unownedConflict = false
                         if (failureEpoch == handoff.epoch && data.optString("kind") == "kicked" &&
-                            !carrierStarted && !Tier2Probe.isRunning()) {
+                            !carrierStarted && !NativeRelayClient.isRunning()) {
                             // A conflict known before our own attempt is not ours to mask.
                             unownedConflict = handoffCover.carrierKicked(handoff.epoch)
                         }
@@ -2303,7 +2303,7 @@ object ShellRuntime {
         }
     }
 
-    /** Tier2 原生任务事件入口（M3c）：更新形状与注入层 post('sessions') 同构。 */
+    /** 原生承载原生任务事件入口（M3c）：更新形状与注入层 post('sessions') 同构。 */
     fun acceptNativeSessions(update: JSONObject) {
         onSessions(update)
     }
@@ -2312,7 +2312,7 @@ object ShellRuntime {
      * 页面自己订的 `controller/tasks-index`（第三条源，2026-09-18）。
      *
      * 状态机用的是 [ControllerTasksState]（snapshot / deltas / 缺口判定都有单测；
-     * 原先 Tier2 侧那份**壳自己订**的订阅已于 4a 轮删除，这个状态机现在只服务本页路径），
+     * 原先原生承载侧那份**壳自己订**的订阅已于 4a 轮删除，这个状态机现在只服务本页路径），
      * 所以这里只做三件事：喂帧、把整表投影交给 [TaskStore.applyLiveTasks]、发布。
      *
      * **不设 `userIsAway()` 门槛**：前台的页面本来就在收这条流，而"用户正在别的客户端上

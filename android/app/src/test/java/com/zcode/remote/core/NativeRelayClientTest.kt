@@ -8,7 +8,7 @@ import org.junit.Test
  * `base64url(HMAC-SHA256(key=passHash, msg=nonce|role|deviceSid))`，无填充。
  * 向量由 node crypto 以同一算法离线生成（2026-09-13）。
  */
-class Tier2ProofTest {
+class NativeRelayClientTest {
 
     @Test
     fun proofMatchesThePageAlgorithm() {

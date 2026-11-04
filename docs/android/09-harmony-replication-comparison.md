@@ -8,7 +8,7 @@
 > **来源**：① `android-shell/README.md`（文末「交接文本区」= 现状锚点）、
 > `android-shell/docs/15-后台原生承载-独立设计.md`、`16-后台60秒墙-根因取证与原生承载.md`、
 > `17-多工作区多任务订阅-理论推导.md`（只读）；② 关键代码只读阅读
-> `ShellRuntime.kt` / `core/RelayBridge.kt` / `core/Tier2Probe.kt` / `core/TaskStore.kt` /
+> `ShellRuntime.kt` / `core/RelayBridge.kt` / `core/NativeRelayClient.kt` / `core/TaskStore.kt` /
 > `core/PromotionPolicy.kt` / `notify/Notifier.kt` / `notify/LiveUpdate.kt` / `KeepAliveService.kt` /
 > `WebAppBridge.kt` / `MainActivity.kt`（只看关键函数）；③ 鸿蒙侧：
 > 本机 DevEco 离线官方文档库（`hms_docs`，devecocli 本地索引）、本机 HarmonyOS SDK **API 24** 的
@@ -51,7 +51,7 @@
      └─ 应用层协议：pair_status_query → pair_status_ack（"有没有 ack"就是判活信号）
 
 [步骤 2] 原生接管（换承载层）
-  动作：Tier2Probe.start(creds, durationMs = 0) 持久模式
+  动作：NativeRelayClient.start(creds, durationMs = 0) 持久模式
      ├─ 平台能力：前台服务（进程活着）+ PARTIAL_WAKE_LOCK（熄屏 CPU 醒着）+ OkHttp WebSocket
      └─ 应用层协议：auth proof（relayProof）→ 配对 → 补三帧
         mobile-diagnostic(state-transition:paired) / mobile-view-state-update(activeWorkspaceKey) /
@@ -89,7 +89,7 @@
         点击通知 = EXTRA_TASK_TITLE 原文（未装饰）做查找键 → 页面 DOM 定位（最脆弱的一环）
 
 [步骤 7] 回前台交还
-  动作：tier2 disposed → 页面可见性恢复后 Chromium 网络栈复活 → 页面自己的 recoverConnection 重拨（0.9s）
+  动作：carrier disposed → 页面可见性恢复后 Chromium 网络栈复活 → 页面自己的 recoverConnection 重拨（0.9s）
      ├─ 平台能力：释放 wake lock / 停止前台服务承载；可见性恢复是 Chromium 自己的行为
      └─ 应用层协议：交还兜底 `__zcodeShellAfterCarrierReturn`（8s、无 OPEN socket、零入站帧才重载一次，5 分钟限流）
 ```
@@ -190,7 +190,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 安卓壳 | **Tier2 判死 = 入站帧静默 ≥35s**（3 泵周期 + 余量）+ 两条护栏（页面刚动过 socket 等它 20s；空 ack 不算健康）；另有"活进展是否推进"与"流体云 when 是否前进"的双信号交叉核对（README 交接区"两次误报"纪律） |
+| 安卓壳 | **原生承载判死 = 入站帧静默 ≥35s**（3 泵周期 + 余量）+ 两条护栏（页面刚动过 socket 等它 20s；空 ack 不算健康）；另有"活进展是否推进"与"流体云 when 是否前进"的双信号交叉核对（README 交接区"两次误报"纪律） |
 | 鸿蒙能力（可用信号，全为本机 SDK 直读） | ① **`onRenderProcessNotResponding` / `onRenderProcessResponding`**（Web 组件属性，API 12）：*"If the Web component can't handle the input event, or can't navigate to the new URL within a reasonable time range, the Web page process is considered unresponsive"*；② **`onRenderExited`**（渲染进程退出及原因：OOM / crash / 正常）；③ **`backgroundTaskManager.on('continuousTaskCancel')`**（API 15，带 `ContinuousTaskCancelInfo.id/reason`）与 **`on('continuousTaskSuspend')`**（API 20，被系统标记暂停态）；④ **`getAllContinuousTasks()`**（API 20，**含暂停态**，可用于"重启后自查有没有残留任务"）；⑤ `UIAbility.onBackground/onForeground` + `windowStage` 事件（前后台切换）；⑥ 自建探针：`@ohos.net.webSocket` 心跳 ack 的静默时长（与安卓同构，但门槛量级要改） |
 | 官方文档 | 本机 SDK `component/web.d.ts:10801/10811`、`api/@ohos.web.webview.d.ts`、`api/@ohos.resourceschedule.backgroundTaskManager.d.ts` |
 | 差异与风险 | ① **判据量级必须重定**：安卓 35s 是因为 Chromium 在 60–70s 才死；鸿蒙官方给的冻结线是 **2s / 12s**，继续用 35s 会在"早就断了"的窗口里误判为健康【推断；行为差异见 [06](06-ArkWeb后台行为-节流冻结与网络管控.md)】；② **鸿蒙多了两个系统级信号**（`onRenderProcessNotResponding`、`onRenderExited`）——安卓侧只能靠计时推断"卡死"（还要排除 Choreographer 同步屏障等一堆假象），鸿蒙有官方回调，**优先用回调，计时只做兜底**【推断】；③ "卡死"与"被挂起"要分开：`continuousTaskCancel/Suspend` 是**系统告诉你任务没了**，renderer 回调是**页面自己卡了**，两者判据与处置不同；④ 安卓"只信原生侧 delta、不信页面侧绝对值"这条纪律**在任何平台都成立**，建议保留 |
@@ -360,7 +360,7 @@
 | 2 | `android-shell/docs/15-后台原生承载-独立设计.md` | 协议契约与原生承载的选型（§4 已被推翻，仅参考协议部分） |
 | 3 | `android-shell/docs/16-后台60秒墙-根因取证与原生承载.md` | 判死/接管/交还的现行形态与触发条件 |
 | 4 | `android-shell/docs/17-多工作区多任务订阅-理论推导.md` | 多工作区/多任务的 N 元能力与桌面端未知 |
-| 5 | `ShellRuntime.kt` / `RelayBridge.kt` / `Tier2Probe.kt` / `TaskStore.kt` / `PromotionPolicy.kt` / `Notifier.kt` / `LiveUpdate.kt` / `KeepAliveService.kt` / `WebAppBridge.kt` / `MainActivity.kt` | 关键函数与常量（只看关键函数/类） |
+| 5 | `ShellRuntime.kt` / `RelayBridge.kt` / `NativeRelayClient.kt` / `TaskStore.kt` / `PromotionPolicy.kt` / `Notifier.kt` / `LiveUpdate.kt` / `KeepAliveService.kt` / `WebAppBridge.kt` / `MainActivity.kt` | 关键函数与常量（只看关键函数/类） |
 
 ### 7.2 鸿蒙侧（官方文档 / SDK / 官方镜像）
 

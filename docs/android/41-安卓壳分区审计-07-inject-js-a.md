@@ -54,7 +54,7 @@ fields and branches*, not dead functions.
   comments at `:294`, `:945`, `:867` "gives up quietly"); the neighbouring behaviours are pinned
   independently by `:666` ("our own injected frames are not re-observed") for `injecting` and `:1062`
   ("只读壳：前台心跳一帧都不写") for the probe. Same shape as the already-accepted
-  `Tier2Probe.sendBusinessPayload(payload, quiet)` finding (CONSOLIDATION-NOTES §tier2-diag #2).
+  `NativeRelayClient.sendBusinessPayload(payload, quiet)` finding (CONSOLIDATION-NOTES §carrier-diag #2).
 
 ### F2. `__zcodeShellWrapped` is written on both prototype wrappers and never read [WRITE-ONLY]
 - **Location**: `app/src/main/assets/inject.js:341` (`wrappedSend.__zcodeShellWrapped = true;`),

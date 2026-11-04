@@ -4,12 +4,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * sessions-index 快照/增量的本地状态（Tier2 原生侧，M3c 数据面）。
+ * sessions-index 快照/增量的本地状态（原生承载原生侧，M3c 数据面）。
  *
  * 逐条对照 zcode-protocol.js 的 SessionsIndexState（快照重建、`deltas` 增量、
  * `fromSeq !== seq` 缺口判重同步、logical frame 分片重组），输出的任务条目
  * 字段与壳原生侧 `ShellRuntime.onSessions` 的消费形状完全一致——
- * Tier2 接管期间的任务事件因此能直接进 TaskStore/通知链路。
+ * 原生承载接管期间的任务事件因此能直接进 TaskStore/通知链路。
  */
 data class SessionEntry(
     val sessionId: String,

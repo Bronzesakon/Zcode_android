@@ -8,6 +8,12 @@
 > 自撰报告按新编号在 `../docs/android/`（旧 `docs/12`→`12-*`、`docs/15`→`25-*`、`docs/18`→`26-*`）。
 > **网页基线已上移到 3.17.1**（`../Reference_web/3.17.1`）：正文里 3.15.3 的结论属历史，注入锚点须按 3.17.1 复核；
 > `RemoteHistoryPatch`（写死 3.15.3）已删除，首屏 60 行历史窗口那句不再有效。
+>
+> **2026-11-04 术语更名（代码与本文已全量替换）**：`Tier2` → **原生承载（Native Carrier）**，实现类是
+> `core/NativeRelayClient.kt`；`Tier1` → **页面侧／页面链路**（看门狗 `startPageLinkWatchdog`）。
+> 诊断指令随之改为 `carrier_test` / `carrier_stop` / `carrier_takeover`（原 `tier2_*`），日志前缀由 `Tier2:` 改为 `承载:`。
+> 升级前的老版本装机日志里仍是旧字样，考古时按此对照。
+> 语言方向（同日拍板）**统一到 Kotlin**：Rust 协议核心留在 `archive/native-compose/rust` 当规格与测试基准，不进构建。
 
 > **2026-10-15 前台 KICK / 长历史更新**：断线等待重连仍视作原生承载持有；回前台取消整个承载生命周期，旧重连、延迟开桥和旧连接清理不能复活或串入新连接。连接及认证前检查前台状态。已确认原生配对竞态时保留一次恢复；普通外部 KICK 沿用网页出口。网页 3.15.3 的首屏 60 行历史窗口补丁已随 3.17.1 迁移删除；本文相关补丁段落仅作历史记录。详细证据和边界见[快速交接说明](../docs/android/安卓壳-快速交接与性能收窄.md)。
 
@@ -265,7 +271,7 @@ hook 挂在 `WebSocket.prototype` 上、对补注前已存在的页面连接同�
 | `prerelease` | 仅 `pre` 分支：把最新 APK **覆写**到滚动预发布 Release（固定下载链接） | ~20 s | ~20 s |
 | `release` | 仅 `v*` tag：用 CHANGELOG 段落发正式 Release | ~20 s | ~20 s |
 
-测试构成：JS **82 项**（`tools/protocol.test.js` 37 + `tools/inject.test.js` 45，含手算黄金字节；其中 6 项钉「对话流 → 卡片正文」的帧契约：snapshot 取最后一段 `assistantText`、`row.delta` 只拼同一行、工具/子代理/reasoning 不覆盖正文、原生种子优先且上限 `CONVERSATION_MAX`；5 项钉**只读壳契约**（含 2026-09-17 新增的"默认配置零写入"）：前台心跳零写入、回前台零写入、进对话卡住不重载、卡住不连刷、默认即被动不主动开桥；**另 4 项钉后台承载**（2026-09-16 加）：交还兜底「有线/有帧就不重载」与「零 socket 零帧才重载一次」、推动函数 event 档只派发合成 `online`、close 档真关线）；Kotlin **122 项 / 12 个测试类**（`@Test` 实数：`NotifyStateTest` 40 + `RelayWireTest` 21 + `ControllerTasksStateTest` 12（2026-09-18 加：运行态三源时效、凭空长出工作区、中断不被会话流降级）+ `PromotionPolicyTest` 8（2026-09-18 重写：在跑的任务全部提升、完成卡只留最新 3 张）+ `UploadMimeTest` 8 + `CarrierHandbackTest` 7（2026-09-17 加：提前接管那条路的交还判据）+ `PageBarColorTest` 6 + `SurvivalVerdictTest` 5 + `RelayBridgeTest` 5 + `PreviewSettleTest` 4（2026-09-18 加：正文静默窗，防"半截词"上卡片）+ `InjectionReadinessTest` 4（2026-09-18 加：注入就绪位的复位语义——"一次页面加载必须能把它清掉"，防"复位点零调用者"再回归）+ `Tier2ProofTest` 2）。数字以实测为准（`node --test` 报 tests 行；Kotlin 数 `@Test`），**改测试后请同步这一行**。**这些是唯一能在无设备条件下验证的东西**，真机行为一律以设备为准。
+测试构成：JS **82 项**（`tools/protocol.test.js` 37 + `tools/inject.test.js` 45，含手算黄金字节；其中 6 项钉「对话流 → 卡片正文」的帧契约：snapshot 取最后一段 `assistantText`、`row.delta` 只拼同一行、工具/子代理/reasoning 不覆盖正文、原生种子优先且上限 `CONVERSATION_MAX`；5 项钉**只读壳契约**（含 2026-09-17 新增的"默认配置零写入"）：前台心跳零写入、回前台零写入、进对话卡住不重载、卡住不连刷、默认即被动不主动开桥；**另 4 项钉后台承载**（2026-09-16 加）：交还兜底「有线/有帧就不重载」与「零 socket 零帧才重载一次」、推动函数 event 档只派发合成 `online`、close 档真关线）；Kotlin **122 项 / 12 个测试类**（`@Test` 实数：`NotifyStateTest` 40 + `RelayWireTest` 21 + `ControllerTasksStateTest` 12（2026-09-18 加：运行态三源时效、凭空长出工作区、中断不被会话流降级）+ `PromotionPolicyTest` 8（2026-09-18 重写：在跑的任务全部提升、完成卡只留最新 3 张）+ `UploadMimeTest` 8 + `CarrierHandbackTest` 7（2026-09-17 加：提前接管那条路的交还判据）+ `PageBarColorTest` 6 + `SurvivalVerdictTest` 5 + `RelayBridgeTest` 5 + `PreviewSettleTest` 4（2026-09-18 加：正文静默窗，防"半截词"上卡片）+ `InjectionReadinessTest` 4（2026-09-18 加：注入就绪位的复位语义——"一次页面加载必须能把它清掉"，防"复位点零调用者"再回归）+ `NativeRelayClientTest` 2）。数字以实测为准（`node --test` 报 tests 行；Kotlin 数 `@Test`），**改测试后请同步这一行**。**这些是唯一能在无设备条件下验证的东西**，真机行为一律以设备为准。
 
 省时间的几个点：`js` 不与 Android 构建串行；`testReleaseUnitTest` 与 `assembleRelease` 放在**同一次 Gradle 调用**里（共享 `compileReleaseKotlin`，源码只编译一次、Gradle 只启动一次）；`fetch-depth: 1`；`actions/setup-java` 的 `cache: gradle` 会恢复 `~/.gradle`（依赖缓存 + 本地 build cache）；`org.gradle.configuration-cache=true` 且 `problems=warn`，所以配置缓存只可能加速、不会让构建失败。
 
@@ -495,7 +501,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
     修法：先把它封死（`RelayBridge.controllerStreamEnabled = false`）——**该能力已于本轮（审计 4a）
     随订阅实现一起整体删除**：`RelayBridge` 的 `subscribeControllerTasks` / `onControllerWire` /
     `resyncController` / `unsubscribeController` + 开关、`BridgeSession.onLiveTasks`、
-    `BridgeManager.liveTaskSink`、`Tier2Probe.liveTaskSink` 与 `ShellRuntime.stopLiveProgressPolling`
+    `BridgeManager.liveTaskSink`、`NativeRelayClient.liveTaskSink` 与 `ShellRuntime.stopLiveProgressPolling`
     的交还臂全部拔掉（打开必崩桌面端 host，所以"重开"= 重新实现订阅并先复验桌面端，不是改开关——
     开关已不存在）。取证记在 `docs/18` §4。运行态**不靠"优先级"**——**两条现存源各记报到时刻、谁后到谁算数**
     （`TaskStore.phaseOverlay`，2026-09-18 由"固定优先级 controller > 会话流 > SI"改成现在这样，
@@ -506,7 +512,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
     **`t=` token / window 控制面那条路因此作废，不用走了。**
     配套两条同轮定案：① 只开**页面自己正在显示**的那个工作区的桥（`pageWorkspaceKey`，注入层从页面自己的
     `workspace-bridge-open` 帧里取；扫全部工作区会让桌面端每次新建再拆 host）；② 配对后照页面顺序补
-    `mobile-diagnostic` / `mobile-view-state-update` / `bootstrap-request` 三帧（`Tier2Probe.sendBootstrapThenCoverage`）。
+    `mobile-diagnostic` / `mobile-view-state-update` / `bootstrap-request` 三帧（`NativeRelayClient.sendBootstrapThenCoverage`）。
     **验收（01:43–01:50，App 在后台、Chromium 网络已死）**：`subscribed conversation for sess_…` →
     `会话运行态：在跑` → `活进展 E:\Zcode_harmony：## 第N节…`（第二/三/四/五节按时间推进）；
     手机同刻 `id=175654 title=运行中 · 有线ADB连接继续调试` + 正文=正在写的那一节 + `shortCriticalText=运行中`；
@@ -516,7 +522,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
     熄屏后 CPU 一睡，原生 12s 心跳与上游帧读取都会停，桌面端约 60s 就判死（docs/15 §7.1 的官方
     基线里就有这条：`PARTIAL_WAKE_LOCK`「even after the user presses the power button」）。
     实现：`ShellRuntime.acquireCarrierWakeLock()` / `releaseCarrierWakeLock()`，**只在
-    "应用在后台或熄屏 且 原生承载在跑"时持有**，前台/交还/停止一律释放；manifest 加 `WAKE_LOCK`
+    "应用在后台或熄屏 且原生承载在跑"时持有**，前台/交还/停止一律释放；manifest 加 `WAKE_LOCK`
     权限，申请失败只记一行（承载照跑，只是熄屏可能被挂起）。
 18. **造流通道：`tools/cdp.mjs`（CDP over adb forward）**。`adb input tap` + `input text`
     **进不了 WebView 输入框**（README 早记过，2026-09-16 又复现一次：截图里输入框始终是占位符、
@@ -538,7 +544,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
     诊断判据：`提升集合变化: [#a #b]（运行 N 个：…）`——**任务在跑期间不应出现 `[]（运行 0 个）`**；
     `卡片撤回 id=…（撤回后运行集 N 个）` 只在任务真正结束时出现。
 20. **多工作区：桥数上限是"成本取舍"（现行 5），轮换与 N 无关；卡片不设上限（2026-09-18 用户否决硬上限）。**
-    - **上限 5**（`Tier2Probe.DEFAULT_MAX_COVERAGE` 与 `ShellRuntime.MULTI_WS_COVERAGE_CAP`
+    - **上限 5**（`NativeRelayClient.DEFAULT_MAX_COVERAGE` 与 `ShellRuntime.MULTI_WS_COVERAGE_CAP`
       **必须同步改**；引擎侧 `RelayBridge.BridgeManager.maxWorkspaces` 的构造默认值是 12，
       是这两处把 5 传了进去）。**这不是平台/协议限制**——每座桥 = 桌面端一条常驻会话 + 每轮一次
       回收握手，所以它是成本取舍；协议与桌面端侧没有明文上限，**真机实测过的最大并发是 2 座（158）**。
@@ -567,7 +573,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 21. **定向接管（发现链）：承载自己读"哪些工作区在跑"，不再要求你先打开每个工作区。** 数据来自
     **我们已经在收的两条响应**——`bootstrap-response.result.tasks`（schema 必填，真机 24–25 KB）与
     `workspace-list-response.result.tasks`（`.optional()`，真机也带，两条各 82 个任务）——
-    `RelayBridge.RelayTaskDigest` 解析后经 `Tier2Probe.discoveredCoverage()` 并入 `startCoverage()`。
+    `RelayBridge.RelayTaskDigest` 解析后经 `NativeRelayClient.discoveredCoverage()` 并入 `startCoverage()`。
     **四个必须记住的点**：① **并入点在配对之后**（数据那时才有），别像 154 那样在
     `maybeStartNativeCarrier` 里算（日志会写 `发现链 0 个`）；② 报文是**扁平**的 `Ng` 形状
     （`displayStatus` 四值 `idle|running|completed|error` + 扁平 `workspacePath`/`workspaceIdentity`），
@@ -614,10 +620,10 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 
 25. **承载每 60s 自己刷新一次覆盖（2026-09-18，`docs/18` §3.11 G）。** 页面被顶掉之后第三条源就停了
     （见要点 22），而发现链只在**配对那一刻**跑一次 ⇒ 承载期间在"没被覆盖的工作区"里新起任务，壳不知道。
-    `Tier2Probe.startCoverageRefresh`：每 60s 重问 `workspace-list-request`（响应里的 `tasks` 顺带刷新
+    `NativeRelayClient.startCoverageRefresh`：每 60s 重问 `workspace-list-request`（响应里的 `tasks` 顺带刷新
     `discoveredActiveWorkspaces`），把**新出现的活动工作区**补开桥。三条纪律：**只补不拆** ·
     受 10 分钟**失败冷却**约束 · 受**总上限 5** 约束（`BridgeManager.remainingCoverageSlots()`）。
-    每拍一行 debug 供取证：`Tier2: 覆盖刷新：已覆盖 N 座 · 发现链 M 座 · 待补 K 座`。
+    每拍一行 debug 供取证：`承载: 覆盖刷新：已覆盖 N 座 · 发现链 M 座 · 待补 K 座`。
 
 ## 任务通知（这是壳存在的理由）
 
@@ -880,7 +886,7 @@ MSYS_NO_PATHCONV=1 "$ADB" devices -l                 # 确认出现设备
 | **3** | **C14** 两条诊断入口的重复外壳合并（**两条入口一个都不删**）+ 冷启动注册顺序 + 三处连带注释 | 全绿 + **真机 5 步全通过**（冷启动首条命令在被合并后**仍到达**） |
 | **4** | **4a** 删 controller 原生订阅接线 → **4b** 删卡死看门狗决策机器（体征改挂心跳）→ **4c** 删桥路由子系统 + 对话自订阅簇 | 全绿 + **三项各自独立真机回归通过** + **两个自查缺陷已修** |
 
-**删掉的代码行数**（当时的权威实测，行号会漂，只作量级参考）：`core/RelayBridge.kt` 1514 → **1342**（4a）、`core/Tier2Probe.kt` 940 → **927**、
+**删掉的代码行数**（当时的权威实测，行号会漂，只作量级参考）：`core/RelayBridge.kt` 1514 → **1342**（4a）、`core/NativeRelayClient.kt` 940 → **927**、
 `ShellRuntime.kt` 1892 → **1897**、`assets/inject.js` 3714 → **3558**（4b，`git diff --numstat` 口径 **+137/−293**，**这是权威值**；
 ⚠️ 4b 落地记录里另写的"3577"与它对不上，**以 `--numstat` 为准**）、`assets/zcode-protocol.js` 桥路由子系统 **≈280 行**、
 注入层看门狗 **≈267 行核心 + 7 处伴生 ≈ 295 行**、Kotlin 侧 `pagevitals` 分支 8 行。
@@ -894,8 +900,8 @@ JS 项数下降是**删掉压在已死桥路由表面上的用例**并**把混�
 **182**（4a+4b）、**183**（全部）；隔离之所以只需回退两个 JS 资产，是因为 4c 的 Kotlin 侧改动**可证惰性**（`TaskStore.guardStaleDowngrade` 的入口条件依赖只由带 `stale` 字段的帧填充的 `staleSince`）。
 回归中撞出并当场修掉：
 
-- **缺陷 A**：承载若在**应用处于后台时**被停掉（`tier2_stop`/`carrier_off`/探针自停，任何非"回前台交还"的路径），而页面此时已被 KICK，
-  则**回前台后页面永远不会恢复**（用户看到"App 打开是死的"，只能 `force-stop`）。根因：兜底重载只写在"回前台那一刻 `Tier2Probe.isRunning()` 仍为真"那一条路上，
+- **缺陷 A**：承载若在**应用处于后台时**被停掉（`carrier_stop`/`carrier_off`/探针自停，任何非"回前台交还"的路径），而页面此时已被 KICK，
+  则**回前台后页面永远不会恢复**（用户看到"App 打开是死的"，只能 `force-stop`）。根因：兜底重载只写在"回前台那一刻 `NativeRelayClient.isRunning()` 仍为真"那一条路上，
   且页面在接管前就 `dispose` 掉 socket 时它**永远收不到 `KICKED` 帧**、注入层那条自愈也不会触发。
   修法：新增 `carrierRanThisStint`（自上次回前台以来壳是否启动过承载）+ 一条**关键分支判据日志** `后台原生承载：回前台安排兜底检查…——来路=…`。
   真机决定性验证：`20:45:46 … 来路=承载已在后台停掉` → `20:45:48.290 网页加载完成(第 1 次回调)，用时 432 ms` → `relay socket open (#1)`（旧代码此刻什么都不做）。
@@ -931,19 +937,19 @@ JS 项数下降是**删掉压在已死桥路由表面上的用例**并**把混�
 体征上报**改挂在后台心跳上**（卡态边沿立即一帧 `why=stalled`、其余每 **60s** 一帧 `why=periodic`，**绝不每跳一帧**）；
 ③ §5b「进对话铁判准」及其三行"只读壳：不轻推/不重载"日志**保留不动**。**一眼认错**：日志里若再出现 `卡死看门狗布防（…）`/`撤防`/`跳过轻推`/`第 N/2 次刷新页面`，就是有人把它装回来了。
 
-**(b) 页面内桥路由与"对话自订阅"（`assets/zcode-protocol.js` 的 Tier1 遗骸）**
+**(b) 页面内桥路由与"对话自订阅"（`assets/zcode-protocol.js` 的页面侧遗骸）**
 删掉的是"壳在**页面自己那条 socket** 上给每个工作区开桥、自己订阅会话清单与对话流"这一整套：`RemoteClient.acceptPayload`（每帧被调用却**恒为空转**）、
 五张路由表（`_bridges`/`_bridgesById`/`_pendingBridgePayloads`/`_inflightOpens`/`_pending`）、故障/冷却/重开机制（`_handleDegraded`/`_noteFault`/`_inCooldown`/`_scheduleReopen`/`_forgetBridge`）、
 候选挑选器 `_conversationCandidates`、开关 `CONVERSATION_SUBSCRIBE_ENABLED`、诊断行里的 `bridges=` **假指标**（结构性恒 0），以及压在这些表面上的死测试。
 **为什么它是死的**：那五张表**只由 `openBridge`/`_request` 写**，而只读壳下 `start()/openBridge` **永不调用**（源码级 grep 零生产命中）；
 且这条路**不是"没人接线"，是 2026-09-15 真机 A/B 定罪后由另一套实现取代**——重复订阅把页面的接收流挤掉，用户看到"只有工作中 + 转圈、内容全程不更新"；
-现行唯一在跑的实现是**原生 Tier2 承载 + 发现链**（`RelayBridge` + `Tier2Probe`）。
+现行唯一在跑的实现是**原生承载 + 发现链**（`RelayBridge` + `NativeRelayClient`）。
 **别再加回来**：D7「订阅所有工作区」开关整条已于 2026-09-17 删除，`core/Prefs.kt` 留了墓碑注释「**永远不要**把这条链接回来」；
 **一眼认错**：页面日志/grep 里再出现 `对话流候选`（该行在守卫之后）就说明有人把开关打开了。
 
 **(c) controller 流的"原生自己去订阅"接线（`core/RelayBridge.kt`，4a）**
 删掉的是承载桥握手的最后一步及其到货处理：`controllerStreamEnabled`（恒 `false` 的闸刀）、`subscribeControllerTasks` / `onControllerWire` / `resyncController` / `unsubscribeController`、
-`BridgeSession.onLiveTasks`、`Tier2Probe.liveTaskSink`、`ShellRuntime` 里那条早已失效的回调链，以及 4 段**永不触发**的 controller 测试脚本。
+`BridgeSession.onLiveTasks`、`NativeRelayClient.liveTaskSink`、`ShellRuntime` 里那条早已失效的回调链，以及 4 段**永不触发**的 controller 测试脚本。
 **为什么它是死的**：闸刀打开会让**桌面端 host 进程当场崩掉**（`[rpc:listen] zcode-agent.onDynamicControllerFrame FAIL` → `uncaughtException` → `host process exited with code 1`，配对到崩固定 4.3 秒），
 所以它是被**政策永久封死**的；`RelayBridgeTest` 里那几段脚本准备的假任务 id（`s-live`/`s-ctl`）**在整个测试文件里没有任何断言引用**——连"假装验证"都没做到。
 **别再加回来**：⛔ **仍然不许发任何 `listen`**（`on*`/`onDynamic*`）——当年那次崩还叠着一个错：`onDynamicControllerFrame` 属于 `window-controller` topic，我们发的是 `zcode-agent`。
@@ -989,23 +995,23 @@ B 级 4 条（**删需同批改断言**，改动时"改断言而不是删断言"
 | `UploadMime.WILDCARD` 的**拼接写法** | 「实现要点」10：写成单个字面量会让 `compileReleaseKotlin` 报语法错（连续三轮 CI 复现、报错逐字节相同） |
 | `appVersion = "3.6.5"`（握手里） | **参考/页面客户端**的版本（与 `zcode-protocol.js` 逐字一致），**不是本应用版本**；我们的版本由 `ShellLog` 从 `PackageManager` 读。**不要"修正"成 `versionName`** |
 | `WebAppBridge.config()` 的 `runningSessions` 播种循环 | 它是 2026-09-15 真机教训的实现机制（**空数组也要给**，否则"0 个在跑的任务"与"接线断了"无法区分），且该载荷**零测试覆盖**（不会被任何门禁拦住）。⚠️ 本文实测（2026-09-18 之后的树）：它的**消费者**（`zcode-protocol.js` 的对话自订阅簇）已在 4c-B 删除 ⇒ `inject.js:794/798` 那两个**客户机选项**（`nativeRunningSessions` / `nativeRunningSessionsProvider`）今天**只写不读**——`zcode-protocol.js` 里 `runningSessions` **零命中**（该层只逐个读 `options.send`/`options.log`/… 之类，没有泛化转存）。**⟹ 这两个选项是可删的孤儿，已于 2026-09-18 删除**（提交 `2c89b88`；原位留了墓碑注释说明删的是什么、以及为什么它不等于那条自证）。⚠️ **但别把两件事混起来**：① 那行**接线自证日志**（`原生运行集种子：N 个工作区`）读的是 `cfg.runningSessions`（`inject.js:784`），**不是这两个选项**——删选项**不影响**这条自证；② 下面那条"原生→原生"的 `runningSessionsProvider` 链是**另一股数据流、且承重**。**要保的是这个播种载荷本身（含"空数组也要给"那条 2026-09-15 教训），不是那两个已死的选项。** |
-| ⚠️ **`runningSessionsProvider` 这条"原生→原生"链**（`ShellRuntime.kt` 的 `Tier2Probe.runningSessionsProvider` → `Tier2Probe` → `BridgeManager(runningSessions=…)` → `RelayBridge` 的 `runHandshake(runningSessions(key))`；以及"**有在跑任务的工作区排最前**"那处） | 4c-B 的清点一度把它当成"只写不读"、准备删掉，**硬门拦下了**。它**活着且承重**：① `runHandshake(runningSessions(key))` 承担顺序约束——`Tier2Probe` 的 KDoc 明写"**对话订阅必须抢在索引订阅之前，顺序错了桌面端就永远不回包**"；② "有在跑任务的工作区排最前"是 2026-09-15 真机定案。<br>⚠️ **它与上一条"原生→JS"的 `runningSessions` 载荷是两股独立数据流**，别再把它们混成一条链 |
+| ⚠️ **`runningSessionsProvider` 这条"原生→原生"链**（`ShellRuntime.kt` 的 `NativeRelayClient.runningSessionsProvider` → `NativeRelayClient` → `BridgeManager(runningSessions=…)` → `RelayBridge` 的 `runHandshake(runningSessions(key))`；以及"**有在跑任务的工作区排最前**"那处） | 4c-B 的清点一度把它当成"只写不读"、准备删掉，**硬门拦下了**。它**活着且承重**：① `runHandshake(runningSessions(key))` 承担顺序约束——`NativeRelayClient` 的 KDoc 明写"**对话订阅必须抢在索引订阅之前，顺序错了桌面端就永远不回包**"；② "有在跑任务的工作区排最前"是 2026-09-15 真机定案。<br>⚠️ **它与上一条"原生→JS"的 `runningSessions` 载荷是两股独立数据流**，别再把它们混成一条链 |
 | `core/ControllerTasksState.kt` + `TaskStore.applyLiveTasks` / 三份时刻表 / `phaseOverlay` | **运行态第三条源的本体，活**（页面自己订的 `controller/tasks-index` 纯被动转发进来）；真机取证 + JS 单测（"the page controller stream is forwarded to native as a passive frame"）+ 12 项 Kotlin 单测三重钉着。⚠️ 曾有一份文档写它"恒空、永不写入"——**那句今天为假，照它删会直接删掉功能**（见第 4 小节） |
 | `core/RelayWire.kt` 的 4 个 controller 常量、三个传输类（`RpcFrameSender`/`RpcFrameAssembler`/`ChannelClient`） | 前者是**协议名册**（描述网页端自己的订阅行为）；后者**已不在生产路径**（类头注释已写明），但按用户裁定保留为**参照实现 + 测试夹具**（压在其上的 7 项测试仍在用）。⚠️ 生产里真正在跑的帧重组器 `RemoteClient._tryAssemble` **至今零单测**（欠账） |
 | `TaskStore.removeWorkspace()`（仅测试调用） | 见第 2 小节 (e)：它是**多工作区功能里唯一缺失的那一步接线**，删了就得从零再写；要删必须连 `NotifyState.forget()` 与那条单测一起删，**不能只删函数** |
-| ~~`Tier2Probe.liveTaskSink`（交还块那一臂）~~ **⛔ 已退役，别去"恢复"它** | 原保留理由（"对称交还块的四个臂构成所有权契约、`controllerStreamEnabled` 是翻回来的护栏"）随闸刀与订阅机器一并删除而消失；且实测该臂**改动前就已是空操作**（全仓唯一写入是 `= null`）。顺带一个**意外收获**：那个"四臂交还块"改前本就**不对称（3 挂 / 4 清）**，退役这一臂后变成 **3 挂 / 3 清、逐一对齐** |
+| ~~`NativeRelayClient.liveTaskSink`（交还块那一臂）~~ **⛔ 已退役，别去"恢复"它** | 原保留理由（"对称交还块的四个臂构成所有权契约、`controllerStreamEnabled` 是翻回来的护栏"）随闸刀与订阅机器一并删除而消失；且实测该臂**改动前就已是空操作**（全仓唯一写入是 `= null`）。顺带一个**意外收获**：那个"四臂交还块"改前本就**不对称（3 挂 / 4 清）**，退役这一臂后变成 **3 挂 / 3 清、逐一对齐** |
 
 ### 4. ⚠️ 改代码前必读的陷阱清单（**都是本轮实测踩到的**）
 
 1. **`git HEAD` 不是"某一批开始前"的状态，别拿它当基准。** 本工作区的 `HEAD` 比某批开始时**更旧**（`HEAD` 的 `inject.js` 带 `startHeartbeat`/`RECONNECT_MIN_GAP_MS`）⇒ `git diff` 会混入并非本批所做的改动（4b 实测混进 75+/110−）。
    **做隔离回归或改动审计，以"批次前逐文件快照"为基准**；快照已删，但第 4 批结果已提交为 `b627610`，**现在用 git 历史即可**（`b627610^` = 第 1–3 批后的状态）。
-   **两条自保**：拍快照要覆盖"本批**可能**触及的全部文件"（本轮只拍了 8 个，`ShellRuntime.kt`/`TaskStore.kt`/`Tier2Probe.kt` 都没进去，差点做不成隔离回归）；**改动落地、跑真机回归之前**先给"改完的完整树"拍快照。数字口径以 `git diff --numstat` 为准（自报 diff 本轮少算 4+/2− ⟹ **不要用 diff 拼回退，用快照文件整体回退**）。
+   **两条自保**：拍快照要覆盖"本批**可能**触及的全部文件"（本轮只拍了 8 个，`ShellRuntime.kt`/`TaskStore.kt`/`NativeRelayClient.kt` 都没进去，差点做不成隔离回归）；**改动落地、跑真机回归之前**先给"改完的完整树"拍快照。数字口径以 `git diff --numstat` 为准（自报 diff 本轮少算 4+/2− ⟹ **不要用 diff 拼回退，用快照文件整体回退**）。
 2. **文档里出现"看门狗/心跳/重连"时，先看主语是壳还是页面。** 有一条待订正的注释主语是「**页面自己的**看门狗」，照抄会**把页面自己的机制记到壳的账上**。
 3. **删除类改动不能用"grep = 0"当验收判据。** 本轮对 8 个"已删"符号 grep 得到非 0 命中，逐行看**10 处全是注释**（形如"已一并删除：它唯一的读者……随看门狗决策机器消失"）——
    这些墓碑注释**比 0 命中更好**：后人 grep 到会立刻知道"它存在过、已被删除"。**判据是"残留命中是否都在注释里"**；后续批次统一采用**写字面名**的墓碑写法（可被 grep 到）。
-4. **在"日常使用的真机"上跑侵入式诊断，必须先想清"跑完谁来收拾"。** 4a 回归用了 `tier2_takeover`（**故意把页面连接顶掉**），结果页面被 KICK、90s 窗口内回不来 ⇒ 测试结束后常规判死逻辑**立刻真的接管** ⇒
+4. **在"日常使用的真机"上跑侵入式诊断，必须先想清"跑完谁来收拾"。** 4a 回归用了 `carrier_takeover`（**故意把页面连接顶掉**），结果页面被 KICK、90s 窗口内回不来 ⇒ 测试结束后常规判死逻辑**立刻真的接管** ⇒
    "原生持连接 ↔ 页面反复重连被 KICK"的循环，**用户看到界面一直在闪**，期间一个在跑的任务以 `completedInterrupted` 结束（不能排除与反复开多工作区桥有关）。
-   **纪律**：先评估后果与恢复步骤；**跑完把开关类状态还回原值**（本次 `carrier_off` → `carrier_on`）；出事后先恢复设备、再解释、再继续；恢复优先序 = `tier2_stop` + `carrier_off` → 仍不行则 `force-stop` + `am start`（页面重新加载）。
+   **纪律**：先评估后果与恢复步骤；**跑完把开关类状态还回原值**（本次 `carrier_off` → `carrier_on`）；出事后先恢复设备、再解释、再继续；恢复优先序 = `carrier_stop` + `carrier_off` → 仍不行则 `force-stop` + `am start`（页面重新加载）。
 5. **子代理中途失败后，第一件事是"查树的一致性"，不是重派。** 本轮两个子代理接连在完成前失败，其中 4c-B 的失败点恰好在"改 `inject.js` 之前"，
    于是树**一度破损**：`zcode-protocol.js` 已删 `acceptPayload`，而 `inject.js` 仍在 `try { … acceptPayload(…); acceptObservedPayload(…); }` 里调用它——
    **那一行与被动观察同在一个 `try` 里**，抛异常会**连带跳过被动观察**（实测 `inject.test.js` 由 45/45 掉到 42/45）。
@@ -1042,7 +1048,7 @@ B 级 4 条（**删需同批改断言**，改动时"改断言而不是删断言"
 | 流体云 = Android 16 Live Updates（`POST_PROMOTED_NOTIFICATIONS` + 在常驻通知上写 extras `android.requestPromotedOngoing` / `android.shortCriticalText`） | Live View Kit：`liveViewManager.startLiveView / updateLiveView / stopLiveView`（+ Push 端云通道） | **复刻更重**：① 安卓是"在已有常驻通知上请求提升"，**零申请**；鸿蒙是**独立服务 + 两道权益门**（调试门约 5 工作日；正式门要求已上架且月活 ≥1000、逐场景评审）；② **场景准入对不上**：官方把"后台自动"的进度类场景列为**不适用**、`TIMER` 明确排除"AI 对话时长"；③ 生命周期更硬：**单个实况窗最长 8 小时，>2h 未更新降级、>4h 清除**；应用级流控创建 10 次/秒、更新 20 次/秒（超出静默丢弃）；④ **本地创建依赖应用进程运行**（进程死了没人更新）——与安卓"卡片由系统渲染、进程死了也还在"是本质差异 |
 | `SharedPreferences`（`Prefs`） | `@ohos.data.preferences`（父工程已在用）；需要关系型用 `relationalStore` | **`put` 之后必须 `flush()` 才持久化** |
 | 通知点击后在页面 DOM 里定位任务（D11，"最脆弱的功能"） | 同样脆弱：`WantAgent` 只能把参数带进应用，定位仍要 `runJavaScript` 打 DOM | 建议保持既有的"**优雅降级为仅打开应用**"设计 |
-| **点通知/流体云卡片 → 进任务详情页**（2026-09-18 新增，**替代上面那条"点 DOM"**；4 个文件，**尚未提交**） | 鸿蒙侧同样应做成"**预设 + 重载**"而不是点 DOM：`WantAgent` 只负责把 `workspaceKey`/`sessionId` 带进应用，真正的跳转复用**页面自己**的"重载后回到上次任务"能力 | **机制**：① `notify/Notifier.kt` 补 `EXTRA_WORKSPACE_KEY`（参数本来就在，只是从没放进 intent——"按任务精确跳"一直缺这一半）；② `MainActivity.kt` 收到 `ACTION_LOCATE_TASK` 先走 `maybeReloadForKickedPage(...)`（**预设任务 + 交还承载 + 重载**），并加 `presetLocatePending` 闸门让"预设期间让路"（否则 `onPageFinished` 里那次 `tryLocate()` 会抢先打假警报）；③ `ShellRuntime.kt` 的 `carrierMayHaveKickedPage()` / `handBackCarrierForLocate()` —— **必须先交还原生承载**，否则页面重载后又被 KICK 一次（单控制端互斥，CDP 实测）；④ `assets/inject.js` 的 `__zcodeShellPresetTask(workspaceKey, sessionId)` 写 `localStorage['zcode-v4-last-session:v1:<ws>']` + 把 `history.state.zcodeMobilePage` 钉成 `chat`。<br>**为什么"重载"就等于"跳转"**：页面**自己**实现了"重载后回到上次任务"——那个 `localStorage` 槽位在**每个 renderer 首次挂载**时、且满足 `rendererReload && activeSessionId===null && draftFocusVersion===0` 时被读出并 `selectSession(...)`（出处：bundle `index` 的 `@2430013` 一带）。<br>**真机判据**（`HANDOVER.md` §3.6，`1.0.0-local.190`）：投递前屏上 = `已被其他设备接管`；之后依次 `Tier2: 关闭（通知点击定位：先交还）` → `已预设下次加载要打开的任务: <工作区> / sess_…` → `定位：页面疑似被顶掉，已重载` → `进对话 3s 已就绪（…时间线 29 行、对话流有新帧）`；**屏上 = 任务详情页**。<br>⚠️ **副作用登记**：这是壳对页面的**第六处**写入（写 `localStorage` + 钉 `history.state`）——「实现要点」14 里那份"只允许五处"的清单**尚未同步**（本条只登记，不改那一条） |
+| **点通知/流体云卡片 → 进任务详情页**（2026-09-18 新增，**替代上面那条"点 DOM"**；4 个文件，**尚未提交**） | 鸿蒙侧同样应做成"**预设 + 重载**"而不是点 DOM：`WantAgent` 只负责把 `workspaceKey`/`sessionId` 带进应用，真正的跳转复用**页面自己**的"重载后回到上次任务"能力 | **机制**：① `notify/Notifier.kt` 补 `EXTRA_WORKSPACE_KEY`（参数本来就在，只是从没放进 intent——"按任务精确跳"一直缺这一半）；② `MainActivity.kt` 收到 `ACTION_LOCATE_TASK` 先走 `maybeReloadForKickedPage(...)`（**预设任务 + 交还承载 + 重载**），并加 `presetLocatePending` 闸门让"预设期间让路"（否则 `onPageFinished` 里那次 `tryLocate()` 会抢先打假警报）；③ `ShellRuntime.kt` 的 `carrierMayHaveKickedPage()` / `handBackCarrierForLocate()` —— **必须先交还原生承载**，否则页面重载后又被 KICK 一次（单控制端互斥，CDP 实测）；④ `assets/inject.js` 的 `__zcodeShellPresetTask(workspaceKey, sessionId)` 写 `localStorage['zcode-v4-last-session:v1:<ws>']` + 把 `history.state.zcodeMobilePage` 钉成 `chat`。<br>**为什么"重载"就等于"跳转"**：页面**自己**实现了"重载后回到上次任务"——那个 `localStorage` 槽位在**每个 renderer 首次挂载**时、且满足 `rendererReload && activeSessionId===null && draftFocusVersion===0` 时被读出并 `selectSession(...)`（出处：bundle `index` 的 `@2430013` 一带）。<br>**真机判据**（`HANDOVER.md` §3.6，`1.0.0-local.190`）：投递前屏上 = `已被其他设备接管`；之后依次 `承载: 关闭（通知点击定位：先交还）` → `已预设下次加载要打开的任务: <工作区> / sess_…` → `定位：页面疑似被顶掉，已重载` → `进对话 3s 已就绪（…时间线 29 行、对话流有新帧）`；**屏上 = 任务详情页**。<br>⚠️ **副作用登记**：这是壳对页面的**第六处**写入（写 `localStorage` + 钉 `history.state`）——「实现要点」14 里那份"只允许五处"的清单**尚未同步**（本条只登记，不改那一条） |
 | **应用层不变式（与平台无关，可原样搬运）** | 同构（ArkTS 里就是纯 class / 纯函数） | ① **"空 Update = 什么都没变，不是'运行集为空'"**（`TaskStore` 的 `Update` 四列表全空表示无变化；任何 `Update` **先判空再发布**，否则会把已发布的运行集抹成 0 让卡片被系统收回）；② 运行态判定必须"**谁后到谁算数**"（各源记报到时刻），不能固定优先级；③ 状态词只有两个（`运行中`/`等待确认`）；④ "结束"要**持续停 3 秒**才算；⑤ 卡片正文**安静 250ms 再推、距上次推送不超过 900ms**；⑥ 多工作区**每轮只服务一座桥、只轮换最饿的一座**（一轮 ≤ ~9s，与桥数无关），失败路径**只回收一座**；⑦ **只信原生侧 delta，不信页面侧绝对值**（任何平台都成立） |
 
 **判不出的（不要凭这张表下结论，需真机或官方确认）**：① ArkWeb 里"网页自带 14px 滚动条占宽"的实际表现与最优处理（安卓侧是归零轨道 + 自绘 overlay，鸿蒙是否有同款把手**未查证**）；
@@ -1082,7 +1088,7 @@ cd E:\Zcode_harmony\android; .\gradlew.bat --console=plain :app:assembleRelease
 
 | 项 | 步骤 | 通过判据 | ⛔ 反面证据（出现即失败） |
 | --- | --- | --- | --- |
-| **4a** controller 订阅接线 | 冷启动 + `diag_cmd vitals`；回前台等凭证就绪后投 `diag_cmd tier2_takeover`；等 ~90s 自动交还；`stall_state` | `★接管配对成功（matched）`、桥覆盖行、`页面运行态：N 个任务 · 在跑 M 个`、`提升集合变化: […]`、`流体云: 可用 · 样式=BigText ✓`；90s 到点 `Tier2: 关闭（接管验证到点）` + `tier2 bridges disposed`；**回前台交还路径完整跑通**（`tier2 bridges disposed (回前台交还)`） | 任何 `liveTaskSink` / NPE / `Exception` / `FAIL` 字样；卡在 `已接管=true` |
+| **4a** controller 订阅接线 | 冷启动 + `diag_cmd vitals`；回前台等凭证就绪后投 `diag_cmd carrier_takeover`；等 ~90s 自动交还；`stall_state` | `★接管配对成功（matched）`、桥覆盖行、`页面运行态：N 个任务 · 在跑 M 个`、`提升集合变化: […]`、`流体云: 可用 · 样式=BigText ✓`；90s 到点 `承载: 关闭（接管验证到点）` + `carrier bridges disposed`；**回前台交还路径完整跑通**（`carrier bridges disposed (回前台交还)`） | 任何 `liveTaskSink` / NPE / `Exception` / `FAIL` 字样；卡在 `已接管=true` |
 | **4b** 看门狗决策机器 | 退后台 ≥155s（让原生泵驱动心跳） | 9 个看门狗关键词**全 0**（`卡死看门狗`/`布防`/`撤防`/`不轻推页面 socket`/`不自动重载页面`/`心跳巡检`/`跳过轻推`/`放弃态`/`僵尸`）；**不布防也有周期性体征**：`页面体征(periodic)` **正好每 60s**（泵 10s 一跳 ⟹ 6 跳一帧）；`后台心跳泵已启动（首拍 3s，之后每 10s）` | 任一关键词非 0；体征每跳一帧或断档 |
 | **4c** 桥路由 + 防降级前置 | 冷启动 / 后台 / 回前台三态 | 无缺口时保护**完全惰性**（`陈旧读数`/`因陈旧而放行`/`stale`/`陈旧工作区` 全 0）；`passive: following sessions-index of …`、`订阅状态 passive=1`；冷启动 `注入脚本已就绪` → `网页加载完成(第 1 次回调)，用时 ~400 ms`；**7 项反面证据全 0**（`inbound 处理失败`/`outbound 处理失败`/`订阅状态 bridges=`/`acceptPayload is not a function`/`TypeError`/`ReferenceError`/`Exception`） | 同上任一项非 0 |
 
@@ -1224,7 +1230,7 @@ if ($obj.result -and $obj.result.result) {
 > **本节其余内容全部是 2026-09-20 前的壳内历史口径。** 2026-11-04 迁移后的现行口径只有三句：
 > ① 版本源是 `gradle.properties: zcodeBaseVersion`（现 `1.0.0`，`versionCode` 取构建时间），真机装机号 `1.0.0-local.*` 属历史；
 > ② 网页基线 3.17.1——**37 条注入锚点尚未按 3.17.1 复核**，「已验收」表里所有 3.15.3 结论待重跑；
-> ③ **Tier2 在 3.17.1 上不启动**（legacy HMAC 需要 `hash`，3.16.1+ 链接没有），后台原生接管当前不可用，替代方案见 `../docs/TODO.md` §2；`RemoteHistoryPatch` 已删。
+> ③ **原生承载在 3.17.1 上不启动**（legacy HMAC 需要 `hash`，3.16.1+ 链接没有），后台原生接管当前不可用，替代方案见 `../docs/TODO.md` §2；`RemoteHistoryPatch` 已删。
 > 仓库级待办与验收判据以 [`../docs/TODO.md`](../docs/TODO.md) 为准。
 
 ### 先读这几份（本轮沉淀，不在交接区里重复）
@@ -1286,7 +1292,7 @@ if ($obj.result -and $obj.result.result) {
 | --- | --- |
 | 后台承载端到端 | `★接管配对成功` → `bridge ready` → `subscribed conversation` → `活进展 <key>：正文`；卡片正文与日志**同刻**（`android.text` + `when` + 系统时间三方核对） |
 | 提前接管（+提速） | 概览页 + 有在跑任务 + HOME ⇒ `候选提前接管` → `**提前接管**` → 桥就绪；提速后 ≈ **HOME+7s**（旧路径 45s：10:47:37 HOME → 10:48:22 正文） |
-| 回前台交还 | `Tier2: 关闭（回前台交还）` → `KICKED 自愈：1.5s 后重载页面（第 1/2 次）` → `relay socket open (#1)`；**只重载一次**，无第 2 次 |
+| 回前台交还 | `承载: 关闭（回前台交还）` → `KICKED 自愈：1.5s 后重载页面（第 1/2 次）` → `relay socket open (#1)`；**只重载一次**，无第 2 次 |
 | 卡片生命周期 | `完成卡原地改状态 id=…（已中断 · 任务名 · 相位 completedInterrupted）——不撤卡、不换 id`；新一轮同 id 覆盖回「运行中」；完成后留到用户点「知道了」（让位时降级成可滑除通知） |
 | 收尾状态词 | 已完成 / 已中断 / 已失败（`NotifyState.finishedStatusOf`）；可听记录仍分「任务完成 / 任务已结束」 |
 | 运行态三源 | `页面运行态：90 个任务 · 在跑 N 个（工作区…）`（第三条源）；三源各记报到时刻，"谁后到谁算数" |
@@ -1336,7 +1342,7 @@ if ($obj.result -and $obj.result.result) {
 3. `resync*` 的 `base` **必填可空**：无基线要显式传 `null`，省略整个字段会被 zod 拒收。
 4. 网页端**不做**周期性 resync / forceSnapshot：我们的 12s 重锚是**自造**的保险。
 5. `window.zcode.log` 是页面在 PROD 下**唯一**的日志出口（console 全短路，只有 `lifecycle.*` 走这条路）；
-   它是 Tier1-only —— 接管期间 renderer 被顶掉，这条通道按构造就是死的。
+   它是页面侧-only —— 接管期间 renderer 被顶掉，这条通道按构造就是死的。
 6. `desktop-disconnected` 的 `reason` + `error` 现在读得到：桌面端拒桥时会把原因码与文案一起给出来。
 
 ### 写给自己：两次误报的教训（别重复）
@@ -1393,7 +1399,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
   顶部避让/底部沉浸、MiuiX 设置页、长按快捷方式、通知标题与完成卡片、fault 收敛。
 - **第十轮**：页面日志汇（`window.zcode.log` 是 PROD 下页面唯一出口）、卡死看门狗、沉默检测、滚动条 gutter 保险。
   ⚠️ 该看门狗**已在 4b（2026-09-18 审计）里整块拆除**——决策机器（布防／判定／撤防／1s 巡检／僵尸订阅指纹／页面日志布防）一行不留，只留量具（`readVitals` / `vitalsStalled` / `postPageVitals` / `nudgeReconnect` / `notePageLogEvent`）；体征上报改挂在后台心跳上（卡态边沿立即一帧、其余每 60s 一帧）。见 `docs/18` §2.6。
-- **第十一/十二轮**：Tier2 原生直连（M1 探针 → M3c 事件解码）落地、真机端到端跑通一次；
+- **第十一/十二轮**：原生承载原生直连（M1 探针 → M3c 事件解码）落地、真机端到端跑通一次；
   定案「桌面端推送稀疏」⇒ **主动重锚**成为"跟手"的来源。
 - **第十三/十四轮**：换方法——**先把契约从 bundle 里读穷，再动代码**；本机可编译（`E:\AndroidSdk` +
   `E:\AndroidSdk\jdk-17`）；页面日志接入；滚动条定案（那条 14px 条是网页自己写的）；
@@ -1422,7 +1428,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
   ② 失败路径 `return@Thread`，守"**一轮最多一次握手**"不变式（旧写法一轮会连回收两座 ≈14s）；
   ③ `coverage_ws:` 诊断清单**豁免失败冷却**（与注释对齐，否则 E1 会静默打不通）；
   ④ 覆盖清单 `.take(上限)`，日志不再虚报座数；⑤ 上限改**单源常量**（`ShellRuntime` 直接引用
-  `Tier2Probe.DEFAULT_MAX_COVERAGE`，编译器兜底"两处必须同步"）；⑥ `keyOf` 去掉 `workspaceLabel` 兜底、
+  `NativeRelayClient.DEFAULT_MAX_COVERAGE`，编译器兜底"两处必须同步"）；⑥ `keyOf` 去掉 `workspaceLabel` 兜底、
   删掉 `carrierCoverageTargets()` 里的死调用。README 同步精简（1486 → ~1130 行）、删掉过时的阶段性报告。
 - **2026-09-17**：多工作区收口——E1 真机跑通（能开多桥，**同一时刻只服务一座**，服务权归"最近订阅成功"者）；
   两次修法往返（① 串行保留、② "三轮才回收"**已回退**）；**修掉"流体云卡片消失重建"**（空更新被当成
@@ -1448,7 +1454,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
 | `kick_test` / `degrade_test` | 第二条 WS 观察 KICK / 降级实验 |
 | `deadlink_test` | 伪造"观测静默 120s"后走一次回前台死链判定 |
 | `passive_off` / `passive_on` | 注入层观测层总开关（会重载页面，**只能走前台通道**） |
-| `stall_state` | 承载现场：开关 / 是否已接管 / Tier2 在跑 / 多工作区 / **覆盖清单** / 入站帧多久没来 |
+| `stall_state` | 承载现场：开关 / 是否已接管 / 原生承载在跑 / 多工作区 / **覆盖清单** / 入站帧多久没来 |
 | `carrier_on` / `carrier_off` / `carrier_now` | 承载总开关与手动接管 |
 | `multi_ws_on` / `multi_ws_off` | 多工作区覆盖开关（**内存态，进程重启即丢**；上限 5） |
 | `coverage_ws:<k1>,<k2>` / `coverage_ws_clear` | 显式覆盖清单（E1 用；**豁免失败冷却**） |
@@ -1456,7 +1462,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
 | `bg_state` | 链路现场：`socket` readyState / `sockets[]` / `paired` / `inboundAgo` / `ackAgo` / `vis` / `fg` |
 | `bg_http` [\|url] | **Chromium 侧**新建连接判据（墙内会挂住） |
 | `bg_redial` [:close] | 合成 `online` / 关页面 socket（**仅取证**，生产逻辑不用） |
-| `tier2_test` / `tier2_stop` / `tier2_takeover` | 原生配对 + 覆盖 60s / 停止 / 90s 自动交还 |
+| `carrier_test` / `carrier_stop` / `carrier_takeover` | 原生配对 + 覆盖 60s / 停止 / 90s 自动交还 |
 | `wvdebug_on` / `wvdebug_off` / `probe_composer` / `compose\|<文本>` | 造流三件：CDP 开关与输入框探测（`compose` 对 Lexical 编辑器无效，**能用的是 `tools/cdp.mjs`**） |
 
 真机取数：`MSYS_NO_PATHCONV=1 "$ADB" -s <serial> exec-out cat …/zcode-shell.log > x.log`（设备端 grep 中文会碎）；

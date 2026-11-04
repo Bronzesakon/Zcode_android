@@ -6,7 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Tier2 桥协议引擎（M3b）：ChannelClient 状态机 + 桥开启流程。
+ * 原生承载桥协议引擎（M3b）：ChannelClient 状态机 + 桥开启流程。
  *
  * 逐条对照 zcode-protocol.js：ChannelClient（Initialize 门控、promise 配对、
  * 事件监听）、Bridge（rpc-frame 收发 + ack）、subscribeSessionsIndex 四步握手
@@ -874,7 +874,7 @@ internal object RelayTaskDigest {
 /**
  * 桥管理器（对应 JS RemoteClient.start 的主动订阅面）：workspace-list →
  * 逐工作区 open+subscribe（失败跳过不拖垮其它）→ 会话更新回调。
- * Tier2 接管模式下页面已死，无需页面覆盖判断。
+ * 原生承载接管模式下页面已死，无需页面覆盖判断。
  */
 class BridgeManager(
     private val sendPayloadOut: (JSONObject) -> Unit,
@@ -886,7 +886,7 @@ class BridgeManager(
     private val runningSessions: (String) -> List<String> = { emptyList() },
     /** 会话流运行态回调（工作区键、会话 id、是否在跑）——两条运行态源之一，**不是"兜底"**。 */
     private val turnStateSink: ((String, String, Boolean) -> Unit)? = null,
-    /** 每座桥的开启结果（工作区键、是否成功）：供上层做失败退避（见 Tier2Probe）。 */
+    /** 每座桥的开启结果（工作区键、是否成功）：供上层做失败退避（见 NativeRelayClient）。 */
     private val onBridgeResult: ((String, Boolean) -> Unit)? = null,
     private val maxWorkspaces: Int = 12,
 ) {
@@ -901,7 +901,7 @@ class BridgeManager(
 
     /**
      * 发现链落点：`workspace-list-response.result.tasks` 里"有活动任务"的工作区键。
-     * 供 [Tier2Probe.discoveredCoverage] 与 `ShellRuntime.carrierCoverageTargets()` 做定向覆盖。
+     * 供 [NativeRelayClient.discoveredCoverage] 与 `ShellRuntime.carrierCoverageTargets()` 做定向覆盖。
      */
     @Volatile
     var discoveredActiveWorkspaces: List<String> = emptyList()
@@ -988,7 +988,7 @@ class BridgeManager(
                     return@Thread
                 }
             }
-            onLogLine("tier2 active coverage: $opened workspace(s)")
+            onLogLine("carrier active coverage: $opened workspace(s)")
         }.start()
     }
 
@@ -1030,7 +1030,7 @@ class BridgeManager(
      * ```
      *
      * 每座桥因此按顺序轮流拿到服务窗（N 座 → 每座服务 1 轮、静默 N-1 轮）。
-     * 桥数上限见 [Tier2Probe.DEFAULT_MAX_COVERAGE]（现行 5，成本取舍；**提升卡没有总数上限**——
+     * 桥数上限见 [NativeRelayClient.DEFAULT_MAX_COVERAGE]（现行 5，成本取舍；**提升卡没有总数上限**——
      * 2026-09-18 用户否决硬上限，只有"留到用户清掉"的完成卡有界限 `PromotionPolicy.MAX_FINISHED_PROMOTED`）。
      *
      * ⚠️ **不变式：一轮最多一次握手**（2026-09-17）。被服务那座 resync 失败时这一轮**立刻
@@ -1121,7 +1121,7 @@ class BridgeManager(
         Thread {
             try {
                 if (disposed) {
-                    onLogLine("tier2 bridge recycle skipped for $key (manager disposed)")
+                    onLogLine("carrier bridge recycle skipped for $key (manager disposed)")
                     return@Thread
                 }
                 val old = bridges[key]
@@ -1145,9 +1145,9 @@ class BridgeManager(
                     progressSink?.invoke(reopened.workspaceKey, sessionId, text)
                 }
                 reopened.runHandshake(sessions)
-                onLogLine("tier2 bridge recycled for $key (${sessions.size} session(s) restored)")
+                onLogLine("carrier bridge recycled for $key (${sessions.size} session(s) restored)")
             } catch (e: Exception) {
-                onLogLine("tier2 bridge recycle failed for $key: ${e.message}")
+                onLogLine("carrier bridge recycle failed for $key: ${e.message}")
                 // 旧桥已从 bridges 摘除：下一拍 reanchorProgress 找不到桥、也不会再
                 // 触发回收——活进展会永久停更。15s 后补一次重试（一次性）。
                 if (!disposed) {
@@ -1158,7 +1158,7 @@ class BridgeManager(
                             return@Thread
                         }
                         if (!disposed && bridges[key] == null && !recycleInFlight.contains(key)) {
-                            onLogLine("tier2 bridge recycle retrying for $key")
+                            onLogLine("carrier bridge recycle retrying for $key")
                             recycleBridge(key, scope, sessions)
                         }
                     }.start()
@@ -1325,7 +1325,7 @@ class BridgeManager(
         bridges.clear()
         bridgesById.clear()
         relayPending.clear()
-        onLogLine("tier2 bridges disposed ($reason)")
+        onLogLine("carrier bridges disposed ($reason)")
     }
 }
 

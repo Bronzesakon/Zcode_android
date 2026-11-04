@@ -24,7 +24,7 @@ internal fun relayProof(passHash: String, nonce: String, role: String, deviceSid
     return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
 }
 
-/** Tier2 的连接凭证。只驻内存；任何日志路径都不得打印这些字段。 */
+/** 原生承载的连接凭证。只驻内存；任何日志路径都不得打印这些字段。 */
 data class RelayCreds(
     val wsUrl: String,
     val deviceSid: String,
@@ -33,12 +33,12 @@ data class RelayCreds(
 )
 
 /**
- * Tier2 — 原生直连 relay 客户端，完全不经过 WebView/renderer。
+ * 原生承载— 原生直连 relay 客户端，完全不经过 WebView/renderer。
  *
  * 两种模式（2026-09-13 拍板的后台独占形态）：
- *   * 实验模式（durationMs>0，诊断指令 tier2_test）：配对跑一轮自动关闭，
+ *   * 实验模式（durationMs>0，诊断指令 carrier_test）：配对跑一轮自动关闭，
  *     用于 KICK/takeover 语义观测——已定案：配对层面单控制端互斥。
- *   * 接管模式（durationMs<=0）：后台 Tier1 判死时由 ShellRuntime 启动；
+ *   * 接管模式（durationMs<=0）：后台页面链路判死时由 ShellRuntime 启动；
  *     配对成功后启动 BridgeManager 覆盖（M3b/c：workspace-list → 每工作区
  *     4-RPC 握手 + sessions-index 订阅），任务事件经 [sessionsSink] 直接进
  *     原生 TaskStore/通知链路。断线自动重连（退避 10s），直到 [stop]（回前台
@@ -52,7 +52,7 @@ data class RelayCreds(
  *
  * 日志只打阶段与 pair_status——凭证、URL、sid/hash/mid 一律不落日志。
  */
-object Tier2Probe {
+object NativeRelayClient {
 
     // Protect publication/cancellation, never blocking bridge cleanup or RPC waits.
     private val lifecycleLock = Any()
@@ -249,7 +249,7 @@ object Tier2Probe {
         try {
             manager.subscribeProgress(workspaceKey, sessionId)
         } catch (e: Exception) {
-            Diagnostics.log("debug", "Tier2: 订阅对话详情失败（$workspaceKey）: ${e.message}")
+            Diagnostics.log("debug", "承载: 订阅对话详情失败（$workspaceKey）: ${e.message}")
         }
     }
 
@@ -259,7 +259,7 @@ object Tier2Probe {
         try {
             manager.reanchorProgress()
         } catch (e: Exception) {
-            Diagnostics.log("debug", "Tier2: 重挂对话订阅失败: ${e.message}")
+            Diagnostics.log("debug", "承载: 重挂对话订阅失败: ${e.message}")
         }
     }
 
@@ -298,7 +298,7 @@ object Tier2Probe {
 
     /**
      * 真机验证用：接管语义（开覆盖 + 重连）跑固定时长后自动交还，
-     * 让 `tier2_takeover` 诊断指令能在不依赖"后台判死"的情况下验证 M3b/c。
+     * 让 `carrier_takeover` 诊断指令能在不依赖"后台判死"的情况下验证 M3b/c。
      */
     fun startTakeoverForTest(newCreds: RelayCreds, autoStopMs: Long) {
         startInternal(
@@ -322,7 +322,7 @@ object Tier2Probe {
         onKicked: (() -> Unit)? = null,
     ) = synchronized(lifecycleLock) {
         if (isRunning()) {
-            Diagnostics.log("warn", "Tier2: 已在运行（phase=$phase），忽略重复启动")
+            Diagnostics.log("warn", "承载: 已在运行（phase=$phase），忽略重复启动")
             return@synchronized
         }
         foregroundRestricted = durationMs <= 0 && takeoverOverride == null
@@ -345,7 +345,7 @@ object Tier2Probe {
         startedAtMs = System.currentTimeMillis()
         Diagnostics.log(
             "info",
-            "Tier2: 启动原生直连探针（${if (persistent) "接管模式" else "duration=${durationMs / 1000}s"}，凭证仅内存）",
+            "承载: 启动原生直连探针（${if (persistent) "接管模式" else "duration=${durationMs / 1000}s"}，凭证仅内存）",
         )
         bootstrapActiveWorkspaces = emptyList()
         connectNow(token)
@@ -440,20 +440,20 @@ object Tier2Probe {
             val lasted = (System.currentTimeMillis() - startedAtMs) / 1000
             Diagnostics.log(
                 "warn",
-                "Tier2: 关闭（$reason）存活=${lasted}s 心跳=$heartbeatCount ack=$ackCount",
+                "承载: 关闭（$reason）存活=${lasted}s 心跳=$heartbeatCount ack=$ackCount",
             )
             try {
                 // A graceful close may still flush a queued authentication proof and kick the page.
                 s?.cancel()
             } catch (e: Exception) {
-                Diagnostics.log("warn", "Tier2: close 异常 ${e.message}")
+                Diagnostics.log("warn", "承载: close 异常 ${e.message}")
             }
             if (manager != null) {
                 Thread {
                     try {
                         manager.disposeEverything(reason)
                     } catch (e: Exception) {
-                        Diagnostics.log("debug", "Tier2: 后台清理桥失败 ${e.message}")
+                        Diagnostics.log("debug", "承载: 后台清理桥失败 ${e.message}")
                     }
                 }.start()
             }
@@ -523,7 +523,7 @@ object Tier2Probe {
             )
             Diagnostics.log(
                 "info",
-                "Tier2: 已发 mobile-view-state-update（工作区 $onlyWorkspace" +
+                "承载: 已发 mobile-view-state-update（工作区 $onlyWorkspace" +
                     (if (onlyTaskId.isEmpty()) "" else " · 任务 $onlyTaskId") + "）",
             )
         }
@@ -534,7 +534,7 @@ object Tier2Probe {
                 .put("requestId", "zcshell-bootstrap-" + java.util.UUID.randomUUID()),
             token, webSocket,
         )
-        Diagnostics.log("warn", "Tier2: 已发 bootstrap-request（补上页面配对后的第一步，1.2s 后开桥）")
+        Diagnostics.log("warn", "承载: 已发 bootstrap-request（补上页面配对后的第一步，1.2s 后开桥）")
         bootstrapTimer?.cancel()
         val timer = java.util.Timer(true)
         bootstrapTimer = timer
@@ -563,7 +563,7 @@ object Tier2Probe {
                             if (isCurrent(token, webSocket)) sessionsSink?.invoke(update)
                         }
                     } catch (e: Exception) {
-                        Diagnostics.log("warn", "Tier2: sessions 回调失败 ${e.message}")
+                        Diagnostics.log("warn", "承载: sessions 回调失败 ${e.message}")
                     }
                 },
                 onLogLine = { line -> Diagnostics.log("debug", line) },
@@ -573,7 +573,7 @@ object Tier2Probe {
                             if (isCurrent(token, webSocket)) progressSink?.invoke(key, sessionId, text)
                         }
                     } catch (e: Exception) {
-                        Diagnostics.log("warn", "Tier2: 活进展回调失败 ${e.message}")
+                        Diagnostics.log("warn", "承载: 活进展回调失败 ${e.message}")
                     }
                 },
                 runningSessions = { key ->
@@ -585,7 +585,7 @@ object Tier2Probe {
                             if (isCurrent(token, webSocket)) turnStateSink?.invoke(key, sessionId, running)
                         }
                     } catch (e: Exception) {
-                        Diagnostics.log("warn", "Tier2: 会话运行态回调失败 ${e.message}")
+                        Diagnostics.log("warn", "承载: 会话运行态回调失败 ${e.message}")
                     }
                 },
                 onBridgeResult = { key, ok ->
@@ -604,7 +604,7 @@ object Tier2Probe {
                 val workspaces = manager.listWorkspacesBlocking()
                 if (!isCurrent(token, webSocket) || bridgeManager !== manager) return@Thread
                 if (workspaces.isEmpty()) {
-                    Diagnostics.log("warn", "Tier2: 接管模式拿到空工作区列表")
+                    Diagnostics.log("warn", "承载: 接管模式拿到空工作区列表")
                     return@Thread
                 }
                 // **有在跑任务的工作区排最前**：真机 2026-09-15 定案——桌面端对
@@ -638,7 +638,7 @@ object Tier2Probe {
                 if (discovered.isNotEmpty()) {
                     Diagnostics.log(
                         "info",
-                        "Tier2: 发现链给出 ${discovered.size} 个有活动任务的工作区：${discovered.joinToString()}",
+                        "承载: 发现链给出 ${discovered.size} 个有活动任务的工作区：${discovered.joinToString()}",
                     )
                 }
                 // **截断要在进"覆盖清单"这一档之前做**（2026-09-17，鸿蒙侧审计 4 号）：
@@ -652,7 +652,7 @@ object Tier2Probe {
                 if (explicit.size < wanted.size) {
                     Diagnostics.log(
                         "info",
-                        "Tier2: 覆盖清单 ${wanted.size} 座超过上限 $DEFAULT_MAX_COVERAGE" +
+                        "承载: 覆盖清单 ${wanted.size} 座超过上限 $DEFAULT_MAX_COVERAGE" +
                             "（显式清单/发现链优先、其余按在跑任务数排序），取前 $DEFAULT_MAX_COVERAGE：" +
                             explicit.joinToString(),
                     )
@@ -675,7 +675,7 @@ object Tier2Probe {
                             if (cooledCount > 0) {
                                 Diagnostics.log(
                                     "info",
-                                    "Tier2: 诊断覆盖清单豁免失败冷却——其中 $cooledCount 座在冷却中，本轮照开",
+                                    "承载: 诊断覆盖清单豁免失败冷却——其中 $cooledCount 座在冷却中，本轮照开",
                                 )
                             }
                             hit
@@ -683,7 +683,7 @@ object Tier2Probe {
                             if (cooledCount > 0) {
                                 Diagnostics.log(
                                     "info",
-                                    "Tier2: 覆盖清单里 $cooledCount 座在冷却中，本轮跳过",
+                                    "承载: 覆盖清单里 $cooledCount 座在冷却中，本轮跳过",
                                 )
                             }
                             hit.filterNot { cooledDown(workspaceKeyOf(it)) }
@@ -691,13 +691,13 @@ object Tier2Probe {
                         if (live.isEmpty()) {
                             Diagnostics.log(
                                 "warn",
-                                "Tier2: 覆盖清单（${explicit.joinToString()}）在桌面端列表里没有可用项，本轮不开桥",
+                                "承载: 覆盖清单（${explicit.joinToString()}）在桌面端列表里没有可用项，本轮不开桥",
                             )
                             emptyList()
                         } else {
                             Diagnostics.log(
                                 "info",
-                                "Tier2: 多工作区覆盖 ${live.size} 座（上限 $DEFAULT_MAX_COVERAGE）：" +
+                                "承载: 多工作区覆盖 ${live.size} 座（上限 $DEFAULT_MAX_COVERAGE）：" +
                                     live.mapNotNull { workspaceKeyOf(it) }.joinToString(),
                             )
                             live
@@ -706,12 +706,12 @@ object Tier2Probe {
                     only.isNotEmpty() -> {
                         val hit = ordered.filter { workspaceKeyOf(it) == only }
                         if (hit.isNotEmpty()) {
-                            Diagnostics.log("info", "Tier2: 只开页面当前工作区的桥：$only")
+                            Diagnostics.log("info", "承载: 只开页面当前工作区的桥：$only")
                             hit
                         } else {
                             Diagnostics.log(
                                 "warn",
-                                "Tier2: 页面工作区 $only 不在桌面端列表里（${ordered.size} 个），" +
+                                "承载: 页面工作区 $only 不在桌面端列表里（${ordered.size} 个），" +
                                     "退回按在跑任务排序的前 $DEFAULT_MAX_COVERAGE 个",
                             )
                             ordered.take(DEFAULT_MAX_COVERAGE)
@@ -720,7 +720,7 @@ object Tier2Probe {
                     else -> {
                         Diagnostics.log(
                             "warn",
-                            "Tier2: 注入层还没上报页面工作区，按在跑任务排序开前 $DEFAULT_MAX_COVERAGE 个",
+                            "承载: 注入层还没上报页面工作区，按在跑任务排序开前 $DEFAULT_MAX_COVERAGE 个",
                         )
                         ordered.take(DEFAULT_MAX_COVERAGE)
                     }
@@ -732,7 +732,7 @@ object Tier2Probe {
                     startCoverageRefresh(manager, token, webSocket)
                 }
             } catch (e: Exception) {
-                Diagnostics.log("warn", "Tier2: 覆盖启动失败 ${e.message}")
+                Diagnostics.log("warn", "承载: 覆盖启动失败 ${e.message}")
             }
         }.start()
     }
@@ -753,7 +753,7 @@ object Tier2Probe {
      */
     private fun startCoverageRefresh(manager: BridgeManager, token: Long, webSocket: WebSocket) {
         stopCoverageRefresh()
-        val timer = java.util.Timer("tier2-coverage-refresh", true)
+        val timer = java.util.Timer("carrier-coverage-refresh", true)
         coverageTimer = timer
         timer.schedule(
             object : java.util.TimerTask() {
@@ -770,7 +770,7 @@ object Tier2Probe {
                         // 而"它到底有没有在跑"必须能从日志里回答（60s 一行，不吵）。
                         Diagnostics.log(
                             "debug",
-                            "Tier2: 覆盖刷新：已覆盖 ${covered.size} 座 · 发现链 ${discovered.size} 座 · " +
+                            "承载: 覆盖刷新：已覆盖 ${covered.size} 座 · 发现链 ${discovered.size} 座 · " +
                                 "待补 ${missing.size} 座",
                         )
                         if (missing.isEmpty()) return
@@ -778,7 +778,7 @@ object Tier2Probe {
                         if (slots <= 0) {
                             Diagnostics.log(
                                 "debug",
-                                "Tier2: 覆盖刷新——${missing.size} 座有活动任务的工作区没被覆盖，" +
+                                "承载: 覆盖刷新——${missing.size} 座有活动任务的工作区没被覆盖，" +
                                     "但桥数已到上限 $DEFAULT_MAX_COVERAGE",
                             )
                             return
@@ -792,14 +792,14 @@ object Tier2Probe {
                         if (targets.isEmpty()) {
                             Diagnostics.log(
                                 "info",
-                                "Tier2: 覆盖刷新——发现 ${missing.size} 座有活动任务的工作区" +
+                                "承载: 覆盖刷新——发现 ${missing.size} 座有活动任务的工作区" +
                                     "（${missing.joinToString()}），但桌面端列表里没有可用项",
                             )
                             return
                         }
                         Diagnostics.log(
                             "info",
-                            "Tier2: 覆盖刷新——新发现 ${targets.size} 座有活动任务的工作区，" +
+                            "承载: 覆盖刷新——新发现 ${targets.size} 座有活动任务的工作区，" +
                                 "补开桥（已覆盖 ${covered.size} 座 · 上限 $DEFAULT_MAX_COVERAGE）：" +
                                 targets.mapNotNull { workspaceKeyOf(it) }.joinToString(),
                         )
@@ -808,7 +808,7 @@ object Tier2Probe {
                             manager.beginCoverage(targets)
                         }
                     } catch (e: Exception) {
-                        Diagnostics.log("debug", "Tier2: 覆盖刷新失败 ${e.message}")
+                        Diagnostics.log("debug", "承载: 覆盖刷新失败 ${e.message}")
                     }
                 }
             },
@@ -847,7 +847,7 @@ object Tier2Probe {
             bridgeCooldownUntil[key] = System.currentTimeMillis() + BRIDGE_FAIL_COOLDOWN_MS
             Diagnostics.log(
                 "warn",
-                "Tier2: 工作区 $key 连续 $n 次开桥失败，冷却 ${BRIDGE_FAIL_COOLDOWN_MS / 60_000} 分钟",
+                "承载: 工作区 $key 连续 $n 次开桥失败，冷却 ${BRIDGE_FAIL_COOLDOWN_MS / 60_000} 分钟",
             )
         }
     }
@@ -861,7 +861,7 @@ object Tier2Probe {
         reconnectAttempt += 1
         val delayMs = 10_000L
         if (reconnectAttempt % 6 == 1) {
-            Diagnostics.log("warn", "Tier2: 断线，${delayMs / 1000}s 后重连（第 $reconnectAttempt 次）")
+            Diagnostics.log("warn", "承载: 断线，${delayMs / 1000}s 后重连（第 $reconnectAttempt 次）")
         }
         val timer = java.util.Timer(true)
         reconnectTimer = timer
@@ -880,7 +880,7 @@ object Tier2Probe {
                     try {
                         manager?.disposeEverything("重连重建")
                     } catch (e: Exception) {
-                        Diagnostics.log("debug", "Tier2: 重连清理桥失败 ${e.message}")
+                        Diagnostics.log("debug", "承载: 重连清理桥失败 ${e.message}")
                     }
                     // Cleanup can block for seconds; stop/new start may have happened meanwhile.
                     synchronized(lifecycleLock) {
@@ -913,7 +913,7 @@ object Tier2Probe {
                     put("client_ts", System.currentTimeMillis())
                 }
                 webSocket.send(init.toString())
-                Diagnostics.log("warn", "Tier2: 已连接，auth_init 已发（等待质询）")
+                Diagnostics.log("warn", "承载: 已连接，auth_init 已发（等待质询）")
             }
         }
 
@@ -938,7 +938,7 @@ object Tier2Probe {
                             put("client_ts", System.currentTimeMillis())
                         }
                         webSocket.send(response.toString())
-                        Diagnostics.log("warn", "Tier2: 质询已应答（HMAC proof），等待配对判定")
+                        Diagnostics.log("warn", "承载: 质询已应答（HMAC proof），等待配对判定")
                     }
                 }
                 "auth_ack", "pair_status_ack" -> {
@@ -951,7 +951,7 @@ object Tier2Probe {
                             if (foregroundRestricted && isForegroundNow?.invoke() == true) {
                                 Diagnostics.log(
                                     "warn",
-                                    "Tier2: 配对成功但应用已回前台——立即交还并重载页面" +
+                                    "承载: 配对成功但应用已回前台——立即交还并重载页面" +
                                         "（接管判定做出后用户才回来的竞态）",
                                 )
                                 stop("配对成功但已回前台——立即交还")
@@ -963,12 +963,12 @@ object Tier2Probe {
                             if (persistent) {
                                 Diagnostics.log(
                                     "warn",
-                                    "Tier2: ★接管配对成功（matched）——页面连接已被顶掉，开始桥覆盖",
+                                    "承载: ★接管配对成功（matched）——页面连接已被顶掉，开始桥覆盖",
                                 )
                             } else {
                                 Diagnostics.log(
                                     "warn",
-                                    "Tier2: ★配对成功（matched）——实验模式，同时开桥覆盖（验证 M3b/c 解码）",
+                                    "承载: ★配对成功（matched）——实验模式，同时开桥覆盖（验证 M3b/c 解码）",
                                 )
                             }
                             sendBootstrapThenCoverage(token, webSocket)
@@ -983,7 +983,7 @@ object Tier2Probe {
                         if (!isCurrent(token, webSocket)) return
                         if (kind.startsWith("bootstrap")) {
                             // Bootstrap can contain credentials; never log the raw response.
-                            Diagnostics.log("info", "Tier2: 收到 $kind（${text.length} 字符）")
+                            Diagnostics.log("info", "承载: 收到 $kind（${text.length} 字符）")
                             if (kind == "bootstrap-response") {
                                 val result = payload.optJSONObject("result")
                                 Diagnostics.log("info", RelayTaskDigest.describe(result, "bootstrap"))
@@ -1001,7 +1001,7 @@ object Tier2Probe {
                         if (frame.optString("code") == "KICKED") onKicked?.invoke()
                         Diagnostics.log(
                             "warn",
-                            "Tier2: 服务端 error code=${frame.optString("code")} " +
+                            "承载: 服务端 error code=${frame.optString("code")} " +
                                 "msg=${frame.optString("message").take(80)}",
                         )
                     }
@@ -1014,7 +1014,7 @@ object Tier2Probe {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED
                 socket = null
-                Diagnostics.log("warn", "Tier2: 连接失败 ${t.javaClass.simpleName}: ${t.message?.take(120)}")
+                Diagnostics.log("warn", "承载: 连接失败 ${t.javaClass.simpleName}: ${t.message?.take(120)}")
                 scheduleReconnect(token)
             }
         }
@@ -1024,7 +1024,7 @@ object Tier2Probe {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED
                 socket = null
-                Diagnostics.log("warn", "Tier2: 对端关闭 code=$code reason=${reason.take(60)}")
+                Diagnostics.log("warn", "承载: 对端关闭 code=$code reason=${reason.take(60)}")
                 scheduleReconnect(token)
             }
         }
@@ -1032,7 +1032,7 @@ object Tier2Probe {
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             if (!isCurrent(token, webSocket)) return
             // relay 终端协议是 JSON 文本帧；二进制帧出现即记录不处理。
-            Diagnostics.log("debug", "Tier2: 收到二进制帧 ${bytes.size}B（忽略）")
+            Diagnostics.log("debug", "承载: 收到二进制帧 ${bytes.size}B（忽略）")
         }
     }
 
@@ -1046,7 +1046,7 @@ object Tier2Probe {
             try {
                 webSocket.send(envelope.toString())
             } catch (e: Exception) {
-                Diagnostics.log("warn", "Tier2: 业务帧发送失败 ${e.message}")
+                Diagnostics.log("warn", "承载: 业务帧发送失败 ${e.message}")
             }
         }
     }
@@ -1066,7 +1066,7 @@ object Tier2Probe {
             try {
                 s.send(q.toString())
             } catch (e: Exception) {
-                Diagnostics.log("warn", "Tier2: 心跳发送失败 ${e.message}")
+                Diagnostics.log("warn", "承载: 心跳发送失败 ${e.message}")
             }
         }
     }

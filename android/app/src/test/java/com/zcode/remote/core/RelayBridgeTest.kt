@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Tier2 桥协议引擎（RelayBridge）与 sessions-index 状态机的集成测试。
+ * 原生承载桥协议引擎（RelayBridge）与 sessions-index 状态机的集成测试。
  * 桌面端用脚本模拟（语义对照 tools/fake-desktop.js），覆盖 JS 测试里
  * 同名场景：握手四步、Initialize-先于-ready 竞态、快照/增量、失败不拖垮其它。
  */

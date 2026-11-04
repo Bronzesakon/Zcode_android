@@ -29,7 +29,7 @@ class Prefs(context: Context) {
      *
      * 它让注入层在**页面自己那条 socket** 上给每个工作区开桥 + 订索引，2026-09-15 真机
      * A/B 定罪：与页面自己的订阅争用 → 页面卡"工作中"+转圈、内容全程不来。那既是纯重复，
-     * 也违反只读壳契约（前台一帧都不写页面 socket）。功能由 Tier2（原生自开 socket）+
+     * 也违反只读壳契约（前台一帧都不写页面 socket）。功能由原生承载（原生自开 socket）+
      * 发现链承载，所以整条（pref / 设置页 / bridge 字段 / 注入层主动开桥）一起删掉。
      *
      * 旧键 `subscribe_all_workspaces` 不再读写：留一条已死的 SharedPreferences 对壳无害，

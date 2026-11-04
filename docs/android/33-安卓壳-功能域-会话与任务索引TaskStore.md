@@ -35,7 +35,7 @@
 卡片上的一切文字与去留，都由这本记账本说了算。**记账本算错，用户就直接看到错卡片**
 （历史现场：卡片宣布"已完成"而用户刚点的其实是"中断"；卡片宣布"运行中"而任务早停了）。
 
-第二个入口：**原生承载（Tier2）**。手机退到后台、网页被系统冻结时，注入层死了、清单断了，
+第二个入口：**原生承载（Native Carrier）**。手机退到后台、网页被系统冻结时，注入层死了、清单断了，
 这时壳自己开一条连接顶上。为了让两条路喂给记账本的**东西长得一模一样**，
 壳里还放了一份 `core/SessionsIndexState.kt`——它是网页那份解码器的**镜像**，
 连输出的字段名都逐字对齐。这就是本域"为什么有很多看起来没人读的字段"的根源。
@@ -45,7 +45,7 @@
 | 模块 | 职责 | 性质 |
 | --- | --- | --- |
 | `assets/zcode-protocol.js` 的 `SessionsIndexState` | 真正拆包/重组分片/判"丢了一帧要重同步" | 功能本体（网页侧） |
-| `core/SessionsIndexState.kt` | 上者的 Kotlin 镜像，**只给 Tier2 接管期间用**（M3c 数据面）；`buildUpdate()`（`:198-224`）手工拼出与网页同形的帧 | 功能本体（原生侧） |
+| `core/SessionsIndexState.kt` | 上者的 Kotlin 镜像，**只给原生承载接管期间用**（M3c 数据面）；`buildUpdate()`（`:198-224`）手工拼出与网页同形的帧 | 功能本体（原生侧） |
 | `core/TaskStore.kt` | **手机侧的记账本**：把快照折进来，算出"哪个在跑 / 哪个刚结束 / 哪个要用户确认 / 哪些卡该撤" | **功能本体**（本域核心） |
 | `core/NotifyState.kt` | 相位转移判定与完成观察窗（3 秒静默才算结束），被 TaskStore 调用 | 功能本体 |
 | `notify/Notifier`、`notify/PromotionPolicy` 等 | 按 TaskStore 的结论渲染卡片、决定哪几张被提升（不参与相位语义判定） | 渲染层 |
@@ -105,7 +105,7 @@
 - **功能归属**：运行态判定（三源）＋会话与任务索引——它就是 "此刻有没有活干" 的查询口。
 - **这个功能是干什么的**：判断"某任务此刻是否在跑"有三条信息来源（controller 流 / sessions-index 持久态 / 会话流），
   取最新报到的那条；`TaskStore` 把这个结论摊成两个查询口。用户感知到的是
-  **"有没有在跑的任务"这件事决定了卡片、以及承载（Tier2）该覆盖到哪座工作区**。
+  **"有没有在跑的任务"这件事决定了卡片、以及承载（原生承载）该覆盖到哪座工作区**。
 - **这条代码的角色**：`runningTaskRefs()`（返回"工作区键 + 会话 id"的清单）的**布尔简写**。
   数据来源与它完全一致（都走 `runningIn()`，含 3 秒完成观察窗语义）。
   它预言的那个生产决策今天确实存在、只是由清单形式承担：承载覆盖目标 `carrierCoverageTargets()`
@@ -132,11 +132,11 @@
   `source` 这份快照从哪来）是**帧里原样带着**的。用户只在卡片第一行看到 `title`，看不到这三个。
 - **这条代码的角色**：**wire 形状记账**，不是功能本体。数据由 `ShellRuntime.onSessions` 喂入
   （`ShellRuntime.kt:2082-2084` path/identity/source，三者都是 `data.optString(...)` 直取），
-  再由 Tier2 那条路补齐（`SessionsIndexState.buildUpdate()` `TaskStore` 之外的 `core/SessionsIndexState.kt:220-222` 亲手把 `workspacePath`/`workspaceIdentity`/`source` 写进帧）。
+  再由原生承载那条路补齐（`SessionsIndexState.buildUpdate()` `TaskStore` 之外的 `core/SessionsIndexState.kt:220-222` 亲手把 `workspacePath`/`workspaceIdentity`/`source` 写进帧）。
   **它不给任何人数据**。
 - **为什么当初会有它们（这是判断能不能删的关键）**：因为**网页那份清单里本来就有这三个字段**，
   而壳里的 `core/SessionsIndexState.kt` 是网页解码器的**逐字段镜像**（类文档 `:7-13` 明说：输出字段形状要与
-  `ShellRuntime.onSessions` 的消费形状完全一致，Tier2 接管期间的任务事件因此能直接进同一条通知链路）。
+  `ShellRuntime.onSessions` 的消费形状完全一致，原生承载接管期间的任务事件因此能直接进同一条通知链路）。
   也就是说，它们不是"为了某个功能加的、后来功能没了"，而是**"照抄一个更大的信封"带进来的多余维度**。
   另外要讲清一条常被误读的因果链：**工作区键确实是 `workspaceIdentity?.trim() || workspacePath` 算出来的**
   （页面 `GD`/`Co`；壳侧同规则的实现是 `RelayBridge.kt:814-838` 的 `keyOf`，注释 `:762`/`:815` 同口径；
@@ -147,12 +147,12 @@
   真正成立的保留理由是另一条：**同名字段在一层之外确实是承重的**（承载发现链靠
   `workspaceIdentity?.trim() || workspacePath` 认出在跑的工作区），说明它们不是"作废数据"，只是"这一层暂时用不上"。
   再补一条关于 `source` 的事实（**2026-09-19 按当前源码更新取值枚举**）：它不是占位字符串，而是**真值的枚举**——
-  `'active'`＝"这份清单是我们主动订阅来的"（**今天只剩 Tier2 一处**：`RelayBridge.kt:251` 的 `onSessionsWire`；
+  `'active'`＝"这份清单是我们主动订阅来的"（**今天只剩原生承载一处**：`RelayBridge.kt:251` 的 `onSessionsWire`；
   网页桥那路 `'active'` 已随 D7（2026-09-17）/第 4 批 4c 的主动开桥删除而不复存在），
   `'passive'`＝"页面自己已经订了，我们只是旁听"（`zcode-protocol.js:1616` `_emitSessions(..., 'passive')` 与
   `:1236` `_emitSessionsStale`）、`'controller'`＝`TaskStore.applyLiveTasks` 为在跑任务凭空补出的工作区（`TaskStore.kt:597`，2026-09-19 复核新增枚举）。
   也就是说它记的是**这份快照的来路（主动性）**，而"来自哪条路"恰好是判断卡片新鲜度时最想问的问题；
-  它在**协议层是被测试钉住的**（`RelayBridgeTest.kt:37` 断言 Tier2 帧里 `source == "active"`），只是壳收到之后没人再看。
+  它在**协议层是被测试钉住的**（`RelayBridgeTest.kt:37` 断言原生承载帧里 `source == "active"`），只是壳收到之后没人再看。
 - **功能现状**：sessions-index 本身`活`（真机出卡、多工作区真机验收）；
   这三个字段本身**零消费**（2026-09-19 核实仍然成立）——证据：Kotlin 侧 `grep "\.source\b"` 生产代码零命中；
   `path`/`identity` 唯一的"读取"是 `TaskStore.kt:306-307` 把它们**回写给自己**
@@ -174,7 +174,7 @@
     `applyLiveTasks` 里给新工作区凭空建记录的那处（`:591-599`，现在写 `path=""`、`identity=""`、`source="controller"`）、
     `NotifyStateTest.kt` 与
     `ControllerTasksStateTest.kt`（`source` 参数现位于 `:146/:184/:221/:233/:250/:262/:278/:285` 等处，全部是位置参数或具名参数）；
-    协议侧**一个字都不用改**（去掉的只是 Kotlin 侧的接收维度，网页与 Tier2 帧照样带这三个键，
+    协议侧**一个字都不用改**（去掉的只是 Kotlin 侧的接收维度，网页与原生承载帧照样带这三个键，
     `RelayBridgeTest.kt:37` 对 `source` 的协议断言照旧通过）。编译无风险，测试改完即绿。
   - **只删两个、留下第三个**的后果：`source` 会变成一个**没有同伴的孤例**——上一轮保留它的理由
     （"与 wire 同构"）恰好要靠 `path`/`identity` 一起成立；留下它、删掉另两个，等于把"这是形状字段"的证据删掉一半，
@@ -210,7 +210,7 @@
    `某对象.source` / `某记录.path` / `某记录.identity` 形式的读取表达式；`path`/`identity` 只被 `:306-307` 回写给自己），
    决策粒度应按"**一组三个字段**"走——这一条已被源码注释（`TaskStore.kt:19-35`"要留一起留、要删一起删"）固化。
    `source` 的真实语义已随 4c 扩为三枚举：`'passive'`（网页旁听，现在网页侧**只有**这一个取值）、
-   `'active'`（Tier2 主动订阅）、`'controller'`（store 为在跑任务凭空补出的工作区）。
+   `'active'`（原生承载主动订阅）、`'controller'`（store 为在跑任务凭空补出的工作区）。
 3. **不推翻**任何 README 结论。特别地：README 关于工作区键
    `workspaceIdentity?.trim() || workspacePath` 的结论**仍然成立且必须遵守**（2026-09-19 核实：实现与注释在 `RelayBridge.kt:814-838`）——
    但要注意它约束的是 `RelayBridge` 与页面，**不是** `TaskStore`；`TaskStore` 收到的是算好的 `key`。

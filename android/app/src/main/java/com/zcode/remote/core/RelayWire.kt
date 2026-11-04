@@ -4,20 +4,20 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * relay 桥线上协议的 Kotlin 移植（Tier2 原生任务事件解码的数据面）。
+ * relay 桥线上协议的 Kotlin 移植（原生承载原生任务事件解码的数据面）。
  *
  * 参照实现：`app/src/main/assets/zcode-protocol.js`（壳注入层的同一份代码，
  * 32 项 Node 测试守护），golden vectors 由该实现离线生成并固化在
  * `RelayWireTest`——两层字节必须逐字一致，任何一边改动都要过向量。
  *
  * 三层结构：
- *   relay 信封 `{type:'data', payload:…}`（Tier2Probe/注入层负责）
+ *   relay 信封 `{type:'data', payload:…}`（NativeRelayClient/注入层负责）
  *   └ payload = rpc-frame（本文件的分片/重组，CRC32-IEEE 校验）
  *      └ 重组后 = ChannelClient body：`[REQ_*, id, channel, method] + args`
  *         值编解码 tag：0 null | 1 string | 2/3 bytes | 4 array | 5 JSON | 6 int
  *
- * 不移植的部分：页面 RPC 镜像/统计（那是 Tier1 观测用途）、覆盖/冷却策略
- * （Tier1 专属）。这里只做 Tier2 解码任务事件所必需的数据面。
+ * 不移植的部分：页面 RPC 镜像/统计（那是页面侧观测用途）、覆盖/冷却策略
+ * （页面侧专属）。这里只做原生承载解码任务事件所必需的数据面。
  */
 object RelayWire {
 
@@ -681,7 +681,7 @@ object RelayWire {
         /**
          * 会话尾窗里的**运行态**：最后一条 `turnHeader` 的 `state`。
          *
-         * 这是 Tier2 后台跟踪的可靠运行态来源——`sessions-index` 的 `phase` 只在
+         * 这是原生承载后台跟踪的可靠运行态来源——`sessions-index` 的 `phase` 只在
          * 轮次边界变，`controller/tasks-index` 又拿不到（真机 `subscribeControllerV4
          * timed out`，那条流看来由桌面端窗口进程提供，而接管恰好顶掉页面），而
          * 会话流本身一直跟着最新状态：`turnHeader.state == 'running'` 就是"在跑"

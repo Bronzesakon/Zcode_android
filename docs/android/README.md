@@ -14,7 +14,7 @@
 | 后台承载 | `25-android-shell-后台原生承载-独立设计.md`（与壳内 `docs/15` 同文） |
 | 全仓审计 | `26-android-shell-全仓审计-错误路线残留与清理.md`（与壳内 `docs/18` 同文） |
 | 功能域 | `29`–`34`（通知/诊断/多工作区/运行态/TaskStore/看门狗） |
-| 分区审计 | `35`–`47`（relay-core、shell-runtime、tier2、activities、notify、core-state、inject-js a–d、protocol-js、resources、tests） |
+| 分区审计 | `35`–`47`（relay-core、shell-runtime、carrier、activities、notify、core-state、inject-js a–d、protocol-js、resources、tests） |
 | 性能 | `安卓壳-快速交接与性能收窄.md` |
 | 鸿蒙对照（移出鸿蒙） | `09-harmony-replication-comparison.md` |
 | 迁移文档（移出鸿蒙） | `harmony-migration.md`（原 `安卓薄壳迁移文档.md`） |
@@ -34,3 +34,13 @@
 
 remote-v4 的 13 篇网页/协议文档已在 `archive/pre-3.16.1-auth/docs/remote-v4/`；
 3.17.1 的逆向规格在 `docs/web-reverse/`。本目录只放 Android 宿主侧材料。
+
+## 术语（2026-11-04 更名，代码与文档已全量替换）
+
+| 现行 | 旧称 | 指什么 |
+| --- | --- | --- |
+| **原生承载（Native Carrier）** | `Tier2` | 页面链路判死后，由原生态持唯一 relay 连接替页面承载（接管 → 交还）。实现类 `core/NativeRelayClient.kt`；语言方向已定**统一到 Kotlin**，Rust 核心转规格 |
+| **页面侧／页面链路** | `Tier1` | 页面自己持连接、原生只读观测的那一层；看门狗 `startPageLinkWatchdog` |
+
+诊断指令跟着改名：`tier2_test|tier2_stop|tier2_takeover` → `carrier_test|carrier_stop|carrier_takeover`；
+日志前缀 `Tier2:` → `承载:`。旧装机日志仍为旧字样，按此对照。
