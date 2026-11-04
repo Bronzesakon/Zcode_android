@@ -39,8 +39,10 @@
 - **已暂存/已导入**：壳源码 + 本地文档 + ColorOS + keystore 已从 `scratch/android-shell-import/` 导入
   `android/`（快照导入，commit `1231133`）；原生 Compose/Rust 已归档到 `archive/native-compose/`
   （commit `c37349e`，tag `native-compose-final`）；Android 文档在 `docs/android/`（commit `6d239bb`）。
-- **已验证**：本地 JDK 17 下 Kotlin 单测通过；JS 测试 106 项通过；`app-debug.apk` 构建成功（7.1 MB）。
-- **未执行**：GitHub Secrets 换成壳 keystore、首次 CI 验证、3.17.1 锚点回归、Rust carrier 评估。
+- **已验证**：本地 JDK 17 下 Kotlin debug/release 单测通过；JS 测试 106 项通过；
+  debug APK 7.1 MB、release APK 5.8 MB 构建成功，release 签名证书 `CN=ZCode Remote`（壳 keystore）。
+- **已执行**：4 个 `ANDROID_*` GitHub Secrets 已换成壳 keystore（2026-11-04）。
+- **未执行**：推送 `main` 后的首次 CI 验证、3.17.1 锚点回归、Rust carrier 评估。
 
 ---
 

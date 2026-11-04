@@ -65,8 +65,10 @@
 | Android 文档迁入 `docs/android/` | ✅ commit `6d239bb` |
 | CI 换成壳的 workflow / release-notes | ✅ 已适配路径，待首次 CI 验证 |
 | history patch 删除 | ✅ 代码 + CI 拉取步骤均已删除 |
-| 本地构建/单测 | ✅ JS 106 项通过；Kotlin 单测通过；`app-debug.apk` 7.1 MB |
-| GitHub Secrets 换成壳 keystore | ⏳ 迁移提交后、首次 CI 前 |
+| 本地构建/单测 | ✅ JS 106 项通过；Kotlin debug/release 单测通过；debug APK 7.1 MB、release APK 5.8 MB |
+| release 签名 | ✅ 壳 keystore，证书 `CN=ZCode Remote` |
+| GitHub Secrets 换成壳 keystore | ✅ 4 个 `ANDROID_*` 已更新（2026-11-04） |
+| 首次 CI 运行 | ⏳ 需要推送 `main` 后验证 |
 | 根 README 重写 | ✅ |
 | 3.17.1 锚点回归 | ⏳ 待做 |
 
