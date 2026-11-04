@@ -110,7 +110,20 @@ class HandoffCoverState {
      * [expire] with -1 is the timeout path.
      */
     fun rendererGone(): Boolean {
-        if (visible) return false
+        if (visible) {
+            // 已有罩（多半是 returning=false 的承载罩，审查 Kotlin P2-8）：转成"可由
+            // 新文档首帧撤销"的形态，否则重建后的释放路径全被 !returning 短路、罩永挂。
+            // epoch 一并钉回 -1（渲染恢复没有承载代次可等，expire(-1) 才能兜底）。
+            returning = true
+            carrierEpoch = -1L
+            sourceDocument = ""
+            activeDocument = ""
+            candidateDocument = ""
+            loadStarted = false
+            retiredDocuments.clear()
+            revision += 1
+            return true
+        }
         visible = true
         returning = true
         carrierEpoch = -1L

@@ -116,13 +116,27 @@ class HandoffCoverStateTest {
         val state = HandoffCoverState()
         assertTrue(state.rendererGone())
         assertTrue(state.visible)
-        assertFalse("the cover is already up", state.rendererGone())
-        // 新 WebView 加载：pageStarted/pageReady/presented 与交还同一条释放路径。
+        // 已有罩时再死一次渲染器（审查 Kotlin P2-8）：必须转成可撤形态并返回 true，
+        // 否则重建后的释放路径全被 !returning 短路（与 P0-1 同机理）。
+        assertTrue("已有罩也要接管释放", state.rendererGone())
         state.pageStarted()
         state.pageReady("rebuilt")
         val ticket = state.renderedCandidate("rebuilt")!!
         assertTrue(state.pagePresented("rebuilt", ticket))
         assertFalse(state.visible)
+    }
+
+    @Test
+    fun `a stale carrier cover converts to a renderer cover and can time out`() {
+        val state = returning() // returning=false 的承载罩形态
+        // beginReturn 之后的形态是 returning=true；再造一个 returning=false 的：
+        val covered = HandoffCoverState().apply { carrierMatched(1L, true, "old") }
+        assertTrue(covered.visible)
+        assertFalse(covered.returning)
+        assertTrue(covered.rendererGone())
+        assertTrue("rendererGone 必须把 returning 置真", covered.returning)
+        assertTrue("expire(-1) 必须能兜底", covered.expire(-1L))
+        assertFalse(covered.visible)
     }
 
     @Test

@@ -264,8 +264,9 @@
     // 原生知道离开时在聊天页：在网页 bootstrap 之前恢复路由，省去加载后的二次重载。
     if (config().restoreChat === true && config().foreground !== false) {
         try {
-            storeSet(PIN_CHAT_KEY, '1');
             pinChatRoute();
+            // 先钉再记：replaceState 抛错时不留标记（否则下一个文档会拿旧标记重钉）。
+            storeSet(PIN_CHAT_KEY, '1');
             diag('info', '快速交接：网页启动前已恢复聊天路由');
         } catch (e) {
             diag('warn', '启动前聊天路由恢复失败: ' + e);
@@ -273,9 +274,14 @@
     } else if (pinnedBefore()) {
         // 闸门①：`location.replace()` 之后的新文档（state 已被清空），按上一次的
         // 决定重钉一次。幂等、成本就是一次 replaceState。
+        //
+        // **用完即焚**（2026-11-05）：标记只服务"上一次文档的闸门 replace"。
+        // 不焚掉的话，登出→重新登录回到 /remote（同一标签页、sessionStorage 存活）
+        // 会把用户直接拽进旧对话；换工作区同理。
         try {
             pinChatRoute();
-            diag('info', '版本闸门导航后重钉聊天路由（history.state 已被 replace 清空）');
+            storeSet(PIN_CHAT_KEY, '');
+            diag('info', '版本闸门导航后重钉聊天路由（history.state 已被 replace 清空，标记已消费）');
         } catch (e) {
             diag('warn', '闸门导航后重钉聊天路由失败: ' + e);
         }
@@ -853,6 +859,8 @@
      * 来源是页面自己发的 `workspace-bridge-open` 帧；变化时才上报一次（见 observeText）。
      */
     var lastPageWorkspace = '';
+    /** 最近一次上报给原生的 desktopAppVersion（去重用，审查注入层 P2-4）。 */
+    var lastReportedDesktopVersion = '';
 
     var pageCoverage = {
         passive: {},
@@ -1158,13 +1166,15 @@
         // 闸门②（TODO §3.1）：页面自己的 `bootstrap-response` 里就带着
         // `desktopAppVersion`。学到它，原生下次加载/重载时拼进 URL，闸门就根本不会触发。
         // 只上报、不猜：拿不到就不发（原生那边照样留闸门①/③兜底）。
+        // 去重（审查注入层 P2-4）：重连/刷新 bootstrap 会反复带同一版本，值不变就不发帧。
         if (frame.payload.zcode_type === 'bootstrap-response') {
             try {
                 var bootResult = frame.payload.result;
                 var desktopVersion = bootResult && typeof bootResult.desktopAppVersion === 'string'
                     ? bootResult.desktopAppVersion
                     : '';
-                if (desktopVersion) {
+                if (desktopVersion && desktopVersion !== lastReportedDesktopVersion) {
+                    lastReportedDesktopVersion = desktopVersion;
                     post('desktopversion', {version: desktopVersion});
                 }
             } catch (e) {
@@ -1310,7 +1320,9 @@
      *  关窗，这里只是进程被杀/异常时的兜底。 */
     var CARRIER_WINDOW_MAX_MS = 60000;
 
-    /** 原生在启动承载时打开窗口，交还时关闭（at=0）。 */
+    /** 原生在启动承载时打开窗口，交还时关闭（at=0）。
+     *  ⚠️ 这是暴露在页面世界的可观测性字段：页面（或它引入的第三方脚本）改得动它，
+     *  影响的只有注入层自己的归因日志，原生侧判定不受此函数影响（审查注入层 P2-6）。 */
     G.__zcodeShellExpectCarrier = function (at, workspace, session) {
         var stamp = typeof at === 'number' ? at : 0;
         carrierWindow = {
@@ -1327,6 +1339,13 @@
     /** KICKED 是否落在承载窗口内（= 我们自己造成的）。 */
     function kickedByOwnCarrier() {
         if (carrierWindow.at <= 0) {
+            return false;
+        }
+        // 身份匹配（审查注入层 P1-3）：窗口记的 workspace 与页面当前 workspace 对不上
+        // ⇒ 这是别的设备/别的对话在争夺，不是我们。两侧未知（原生没给/页面没报）时
+        // 退回纯时间判据——宁可沿用旧口径，也不在信息缺失时反向误判。
+        if (carrierWindow.workspace && lastPageWorkspace &&
+            carrierWindow.workspace !== lastPageWorkspace) {
             return false;
         }
         // 窗口本身有时间上界：承载拨号造成的 KICK 在几秒内就到，超出这么久还留着窗口
@@ -1840,6 +1859,11 @@
      */
     G.__zcodeShellRecoverConversation = function (reason) {
         try {
+            // 闸门③（2026-11-05）：阻断式 modal 挡着时，重载只会让同一个对话框再来一次。
+            if (versionGateBlocked()) {
+                diag('warn', '对话恢复：版本闸门阻断中，跳过重载');
+                return false;
+            }
             var detail = String(reason || '');
             // 钉路由状态：保留原有字段（页面可能往 state 里放别的东西），
             // 只把 zcodeMobilePage 置成 chat。幂等——已是 chat 就不动。
@@ -2736,62 +2760,6 @@
         }
     };
 
-    /**
-     * 原生承载交还后的兜底（回前台时由原生调用一次）。
-     *
-     * 正常路径：可见性恢复 → 页面自己的 `T('visible')` → `recoverConnection()` →
-     * `reconnectNow()`，页面重拨回来，**不重载**。
-     *
-     * 但页面若已经掉进**失败态**（`i4t.dispose` 之后 `intentionallyClosed=true`、
-     * socket 关掉、`paired=false`），它自己回不来——真机 00:12:57 交还后 37 秒
-     * 仍是 `socket=-1 paired=false`，只有手动重载才回来（同 docs 里 KICKED 终态的
-     * 性质）。所以这里给一个**极窄**的兜底：8s 后若既没有一条 OPEN 的 socket、
-     * 这段窗口里又零入站帧，才重载一次；沿用死链兜底那条 5 分钟限流。
-     */
-    G.__zcodeShellAfterCarrierReturn = function (graceMs) {
-        try {
-            if (appForeground !== true) {
-                diag('info', '交还兜底：此刻不在前台，跳过');
-                return false;
-            }
-            var framesAtStart = liveness.inboundFrames;
-            var epoch = foregroundEpoch;
-            var waitMs = graceMs && graceMs > 0 ? Math.min(graceMs, 500) : 500;
-            G.setTimeout(function () {
-                try {
-                    if (appForeground !== true || foregroundEpoch !== epoch) return;
-                    var open = false;
-                    for (var i = 0; i < sockets.length; i++) {
-                        if (sockets[i].readyState === 1) {
-                            open = true;
-                        }
-                    }
-                    var gotFrames = liveness.inboundFrames !== framesAtStart;
-                    if (open || gotFrames) {
-                        diag('info', '交还后页面已自行恢复（open=' + open + ' 新入站帧=' + gotFrames +
-                            '）· ' + describeRelay());
-                        return;
-                    }
-                    if (lastResumeHealAt && Date.now() - lastResumeHealAt <= RESUME_HEAL_MIN_GAP_MS) {
-                        diag('warn', '交还兜底：页面仍未开线，但距上次兜底重载不足 ' +
-                            Math.round(RESUME_HEAL_MIN_GAP_MS / 60000) + ' 分钟，限流跳过');
-                        return;
-                    }
-                    lastResumeHealAt = Date.now();
-                    diag('warn', '交还兜底：' + Math.round(waitMs / 1000) +
-                        's 后页面既没有 OPEN 的 socket 也没有新入站帧（失败态自己回不来）——重载一次 · ' +
-                        describeRelay());
-                    G.location.reload();
-                } catch (e) {
-                    diag('warn', '交还兜底收尾失败: ' + e);
-                }
-            }, waitMs);
-            return true;
-        } catch (e) {
-            diag('warn', '交还兜底发起失败: ' + e);
-            return false;
-        }
-    };
 
     // -----------------------------------------------------------------------
     // 诊断：往会话输入框里发一条消息（**只为造流做端到端验收**，不参与生产逻辑）
@@ -3372,8 +3340,11 @@
      */
     function versionGateBlocked() {
         try {
+            // `[open]`（审查 P2-1）：`showModal()` 会不会把 `<dialog>` 留在 DOM 里关闭态，
+            // 快照无法证明；`open` 属性只有真弹出时才在。判据收紧后不会漏报
+            // （阻断态必然 open），却不会再被"常驻挂载的关闭 dialog"永久误判。
             return !!(document.querySelector &&
-                document.querySelector('dialog[aria-labelledby="remote-version-title"]'));
+                document.querySelector('dialog[aria-labelledby="remote-version-title"][open]'));
         } catch (e) {
             return false;
         }

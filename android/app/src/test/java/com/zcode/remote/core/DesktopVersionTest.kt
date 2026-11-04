@@ -64,4 +64,19 @@ class DesktopVersionTest {
         DesktopVersion.learn("not a version")
         assertEquals("3.17.1", DesktopVersion.current())
     }
+
+    @Test
+    fun `plus in the version is percent-encoded so the page reads it back verbatim`() {
+        // 审查 Kotlin P2-6：query 里的裸 `+` 会被解码成空格，`3.17.1+build` 会变成
+        // `3.17.1 build`，闸门随即判不等。
+        assertEquals(
+            "https://zcode.z.ai/remote/v4?app_version=3.17.1%2Bbuild",
+            DesktopVersion.withAppVersion("https://zcode.z.ai/remote/v4", "3.17.1+build"),
+        )
+        // 已存在的参数同样要编码替换。
+        assertEquals(
+            "https://zcode.z.ai/remote/v4?sid=<SID>&app_version=3.17.1%2Bb2",
+            DesktopVersion.withAppVersion("https://zcode.z.ai/remote/v4?sid=<SID>&app_version=3.16.1", "3.17.1+b2"),
+        )
+    }
 }

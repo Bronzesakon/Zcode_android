@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
      * The live WebView. It is normally the one inflated from the layout, but
      * `onRenderProcessGone` **destroys** that instance (a WebView whose renderer
      * died cannot be reused) and puts a fresh one in its place, so every use
-     * site has to read this field rather than `binding.webView`.
+     * site has to read this field rather than `binding.webview`.
      */
     private lateinit var webView: WebView
 
@@ -332,10 +332,22 @@ class MainActivity : AppCompatActivity() {
                     // OAuth 页面（chat.z.ai 授权、bigmodel.cn 登录、zcode.z.ai 回调）
                     // 必须留在本 WebView：网页把登录 nonce 存在 sessionStorage，回调页
                     // 只有共用同一存储上下文才能校验通过。桥只给远程页，登录页不暴露。
-                    setBridgeAttached(RemoteUrl.isAllowed(uri))
+                    val allowed = RemoteUrl.isAllowed(uri)
+                    if (!allowed) {
+                        // 离开远程页前焚掉 pin 标记（审查注入层 P2-3）：登录/回调不该把
+                        // "上次在对话页"带进下一轮。best-effort——JS 一般赶在导航提交前跑完；
+                        // 就算没赶上，document-start 的"用完即焚"也兜底。
+                        webView.evaluateJavascript(
+                            "try{sessionStorage.removeItem('zcodeShellPinChat')}catch(e){}", null,
+                        )
+                    }
+                    setBridgeAttached(allowed)
                     return false
                 }
-                // 其余外部链接仍交给系统浏览器。
+                // 其余外部链接仍交给系统浏览器（同样先焚 pin，理由同上）。
+                webView.evaluateJavascript(
+                    "try{sessionStorage.removeItem('zcodeShellPinChat')}catch(e){}", null,
+                )
                 Diagnostics.info("外部链接交给系统浏览器: ${uri.host}")
                 return try {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
@@ -385,6 +397,9 @@ class MainActivity : AppCompatActivity() {
                 if (handoffCoverVisible) view.evaluateJavascript(
                     "window.__zcodeShellReportPageState && window.__zcodeShellReportPageState();", null,
                 )
+                // 登录面之间的 SPA 跳转不会再触发 onPageStarted（审查 Kotlin P2-4）：
+                // 首帧可见时按落地 URL 再对一次状态栏档位（幂等；远程页随后被页面回推纠正）。
+                onPageStartedSurface(Uri.parse(url))
             }
 
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
@@ -907,6 +922,14 @@ class MainActivity : AppCompatActivity() {
         // Intentionally NOT calling webView.onPause(): it would suspend the
         // page's timers (including its relay heartbeat).
         super.onPause()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // `uiMode` 在 manifest 里声明为不重建（保活窗口），系统深浅切换不会走
+        // Activity 重建：登录面又没有注入层回推，条带/图标会停在旧值（审查 Kotlin P2-2）。
+        // 这里按当前状态重算一次（幂等；auth 面是 fixedDark，远程页由页面回推纠正）。
+        applyStatusBarSurface()
     }
 
     private fun installBackHandling() {

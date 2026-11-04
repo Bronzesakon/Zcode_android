@@ -167,6 +167,9 @@ object NativeRelayClient {
      * 真机若量出常态确认 >100ms，再回来调，并以 §2.6 实测为准。
      */
     private const val CLOSE_CONFIRM_TIMEOUT_MS = 100L
+
+    /** 关闭确认的兜底计时器：共享一个 daemon 线程，成功路径会取消任务（审查 Kotlin P2-1）。 */
+    private val closeConfirmTimer = java.util.Timer("carrier-close-confirm", true)
     private var startedAtMs = 0L
     private var persistent = false
     private var carrierPaired: (() -> Unit)? = null
@@ -534,21 +537,24 @@ object NativeRelayClient {
             return
         }
         val pending = java.util.concurrent.atomic.AtomicInteger(remaining)
-        val oneDone = { if (pending.decrementAndGet() == 0) deliver(true) }
         val watchedSocket = watched
+        val timeoutTask = object : java.util.TimerTask() {
+            override fun run() {
+                if (watchedSocket != null) closeWatchers.remove(watchedSocket)
+                deliver(false)
+            }
+        }
+        closeConfirmTimer.schedule(timeoutTask, timeoutMs)
+        val oneDone = {
+            if (pending.decrementAndGet() == 0) {
+                timeoutTask.cancel()
+                deliver(true)
+            }
+        }
         if (watchedSocket != null) {
             synchronized(lifecycleLock) { closeWatchers[watchedSocket] = { oneDone() } }
         }
         stop(reason, onBridgesDisposed = if (hadBridges) ({ oneDone() }) else null)
-        java.util.Timer(true).schedule(
-            object : java.util.TimerTask() {
-                override fun run() {
-                    if (watchedSocket != null) closeWatchers.remove(watchedSocket)
-                    deliver(false)
-                }
-            },
-            timeoutMs,
-        )
     }
 
     /** 关闭确认：listener 在**任何**早退判断之前调它，见 [stopAndAwaitClose]。 */

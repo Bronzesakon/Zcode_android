@@ -288,10 +288,31 @@
 - [x] **注入层 P1**：版本闸门探测限频（未阻断 1s/次，已阻断每拍——那时 DOM 不动、扫描很便宜）；
       pin 标记在**失败态**（KICKED/error）不再清除；承载窗口上限 5min→60s（原生停后 5s 主动关窗）。
 
-### 留档未修（P2 / 需真机）
+### 留档未修 → 已修（2026-11-05 第二轮）
 
-- 注入层 KICKED 窗口只比时间、不比 workspace/session；`__zcodeShellAfterCarrierReturn` 无调用点；
-  `desktopversion` 每帧重复上报；pin 可能跨登出/换工作区残留；`__zcodeShellExpectCarrier` 暴露在页面世界。
-- 原生 `Diagnostics` 曾把含 sid 的 href 打进日志（**预存在**，非本轮引入）——建议单独一轮做脱敏。
-- `NARROW_QUERY` 对 <3.17.1 页面偏宽（回退版本才会遇到）。
-- 真机待量：close 确认常态耗时（现已含桥）、前台自我接管罩的时序、`blur/logo` 首帧撤罩。
+- [x] KICKED 归因补**身份匹配**：窗口 workspace ≠ 页面当前 workspace ⇒ 外部抢占（两侧未知时退回时间判据）；
+  承载**自己被踢**（`onKicked`）时立刻关窗并记"失去控制权"，10s 内的页面 KICK 一律归外部，
+  且取消已排定的重载（避免"反顶接管方"）。
+- [x] 删除死代码 `__zcodeShellAfterCarrierReturn`（零调用点；职责被 close-confirm 后的必然重载覆盖；
+  `android/README.md` 对它的描述属历史口径）——连带删除其 4 条测试，注入层不再有绕过闸门③的 reload 入口。
+- [x] `__zcodeShellRecoverConversation` 补闸门③守卫（阻断时不重载、不碰 history.state）。
+- [x] `desktopversion` 去重（同值不发帧）。
+- [x] pin 标记**用完即焚**（重钉后立即清；写入移到 `pinChatRoute()` 之后）+ 原生在离开远程页的
+  导航（auth/外域）上 best-effort `removeItem`——登出重登不再被拽回旧对话。
+- [x] 凭证脱敏：`ready` 日志只落 path（原样 href 可能带 sid，预存在问题就此了结）。
+- [x] 闸门③判据收紧 `[open]`（关闭态常驻 dialog 不再永久误判）+ 探测限频（未阻断 1s/次、已阻断每拍）。
+- [x] `DesktopVersion` 把 `+` 编码为 `%2B`（否则页面读到空格、闸门判不等）。
+- [x] `rendererGone()` 在已有罩时转可撤形态并允许 `expire(-1)` 兜底；交还确认计时器共享化并在成功路径取消。
+- [x] `onConfigurationChanged`（uiMode 不重建 ⇒ 登录面条带重算）+ `onPageCommitVisible` 复用（登录面 SPA 跳转对档）。
+
+### 仍然留档（需真机/产品决策）
+
+- 下载判定仍按"后缀表留在 WebView"实现：**无后缀 + Content-Disposition: attachment 的外域下载仍会外抛**
+  （交给系统浏览器下载）。要根治需放弃外抛、让 DownloadListener 当权威——涉及 D2 语义，待拍板。
+- 登录面 dark 位用系统夜景代替"网页主题"（无纠正路径）：需真机核对 chat.z.ai 登录页是否严格跟随
+  `prefers-color-scheme`，否则要另找信号源。
+- bfcache 返回远程页时凭证缺失（已加诊断日志）：真正的补发机制待真机验证 bfcache 行为后定。
+- `__zcodeShellExpectCarrier` 暴露页面世界（自伤型，已在注释显式承认）；`NARROW_QUERY` 对 <3.17.1 页面偏宽
+  （回退版本才遇到）。
+- 真机待量：close 确认常态耗时（现已含桥）、前台自我接管罩的时序、`blur/logo` 首帧撤罩、
+  承载被外部踢掉后的整链表现（新逻辑）。

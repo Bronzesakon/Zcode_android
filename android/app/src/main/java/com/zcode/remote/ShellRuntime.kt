@@ -1299,14 +1299,25 @@ object ShellRuntime {
     @Volatile
     private var carrierStoppedAtMs = 0L
 
+    /** 承载**自己被踢**（= 外部接管拿走了控制权）的时刻；10s 内的页面 KICK 归外部。 */
+    @Volatile
+    private var carrierLostControlAtMs = 0L
+
     /**
      * 这次 KICKED 是不是我们自己造成的（**只用于归因**，比 [carrierMayHaveKickedPage] 严）。
      *
      * 区别：那个用于"点通知定位"——几十分钟后仍该成立（"这次后台承载跑过"）；
      * 这个必须在承载停掉 ~5s 后立刻失效，否则用户被别的设备抢走会被当成自我接管
-     * （2026-11-04 审查 P1-1/P1-2）。
+     * （2026-11-04 审查 P1-1/P1-2）。另外：承载**自己也被踢**时（[carrierLostControlAtMs]），
+     * 那之后的页面 KICK 一定来自外部——双方同时被踢正是外部接管的形状
+     * （2026-11-05 审查注入层 P1-3）。
      */
     private fun kickedIsSelfAttributed(): Boolean {
+        if (carrierLostControlAtMs > 0L &&
+            SystemClock.elapsedRealtime() - carrierLostControlAtMs <= 10_000L
+        ) {
+            return false
+        }
         if (NativeRelayClient.isRunning()) return true
         if (carrierStoppedAtMs <= 0L) return false
         return SystemClock.elapsedRealtime() - carrierStoppedAtMs <= KICK_ATTRIBUTION_GRACE_MS
@@ -1940,6 +1951,14 @@ object ShellRuntime {
         // 不加延时；让同一生命周期事务内的新 Intent 有机会提供通知定位目标。
         mainHandler.post {
             if (!handoff.isCurrent(epoch, false) || userIsAway()) return@post
+            // 承载刚被外部踢掉（10s 内）⇒ 页面那次 KICK 是外部抢占，此刻重载会把
+            // 刚接管的那台设备又顶掉（注入层审查 P1-3 的行为链）。让官方冲突页呆着。
+            if (carrierLostControlAtMs > 0L &&
+                SystemClock.elapsedRealtime() - carrierLostControlAtMs <= 10_000L
+            ) {
+                Diagnostics.log("warn", "快速交接：承载刚被外部踢出，取消重载（避免反顶接管方）")
+                return@post
+            }
             val reloader = pageReloader ?: return@post
             Diagnostics.info("快速交接：开始网页重载（切换后 ${SystemClock.elapsedRealtime() - handoffChangedAt}ms）· $reason")
             reloader()
@@ -1988,6 +2007,13 @@ object ShellRuntime {
             },
             onKicked = {
                 mainHandler.post {
+                    // 承载自己也被踢 ⇒ 控制权被外部拿走（我们不可能踢自己）。
+                    // ①立刻关归因窗口（页面侧不再把之后的 KICK 记到我们头上）；
+                    // ②记"失去控制权"时刻，10s 内的页面 KICK 一律归外部
+                    //   （2026-11-05 审查注入层 P1-3：否则外部接管会被判成自我接管，
+                    //   盖罩重载后反把刚接管的那台设备顶掉）。
+                    carrierLostControlAtMs = SystemClock.elapsedRealtime()
+                    closeCarrierWindowAfter(0L)
                     if (handoffCover.carrierKicked(carrierEpoch)) {
                         notifyHandoffCover("原生连接也被踢出，保留网页冲突提示")
                     }
@@ -2514,10 +2540,20 @@ object ShellRuntime {
                     mainHandler.post { handoffCover.pageReady(document) }
                     onPageReloaded()
                     injectionReadiness.markReady()
-                    Diagnostics.log(
-                        "info",
-                        "注入脚本已就绪 (href=${data.optString("href").ifEmpty { "?" }})",
-                    )
+                    if (relayCreds == null) {
+                        // bfcache 返回的远程文档不会重发凭证（relayCredsPosted 是文档级一次性），
+                        // 而离开远程页时凭证已被清（D7）。这里至少把状态说破，别让"后台不拨号"
+                        // 变成一桩悬案（审查 Kotlin P2-7；真正的补发机制待真机验证 bfcache 行为后定）。
+                        Diagnostics.log(
+                            "warn",
+                            "注入就绪但承载凭证缺失（离开远程页时已清）——" +
+                                "bfcache 恢复的文档不会重发，后台承载在下次整页加载前不可用",
+                        )
+                    }
+                    // href 可能带 sid（审查注入层 P2-5）：日志只落到 path，query 一律不进日志。
+                    val href = data.optString("href")
+                    val safePage = href.substringBefore('?').substringBefore('#').ifEmpty { "?" }
+                    Diagnostics.log("info", "注入脚本已就绪 (page=$safePage)")
                 }
                 else -> Unit
             }

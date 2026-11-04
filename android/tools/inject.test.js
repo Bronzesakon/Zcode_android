@@ -1989,17 +1989,62 @@ test('KICKED 归因：承载窗口关闭（交还）后，迟到的 KICK 归外�
     }
 });
 
-test('KICKED 归因：窗口超过 5 分钟自动失效（原生没来得及关也不误判）', async () => {
+test('KICKED 归因：窗口超过 60s 自动失效（原生没来得及关也不误判）', async () => {
     const page = setupPage();
     const storage = stubSessionStorage();
     try {
         const socket = new globalThis.WebSocket('wss://relay.example');
-        globalThis.__zcodeShellExpectCarrier(Date.now() - 3e5 - 1000, 'ws-key', '');
+        globalThis.__zcodeShellExpectCarrier(Date.now() - 61_000, 'ws-key', '');
         socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
         assert.ok(findPost(page.posts, 'diag', (d) =>
             d.message.includes('外部抢占，壳不动手')).length === 1);
     } finally {
         storage.restore();
+        page.teardown();
+    }
+});
+
+test('KICKED 归因：窗口 workspace 与页面当前 workspace 不符 → 外部抢占（审查注入层 P1-3）', async () => {
+    const page = setupPage();
+    const {reloads, restore} = stubReload();
+    const storage = stubSessionStorage();
+    try {
+        const socket = new globalThis.WebSocket('wss://relay.example');
+        globalThis.__zcodeShellExpectCarrier(Date.now(), 'ws-a', '');
+        // 页面自己正在看的是另一个工作区：这条 KICK 不是我们造成的。
+        socket.send(JSON.stringify({
+            type: 'data', payload: {zcode_type: 'workspace-bridge-open', workspaceKey: 'ws-b'}
+        }));
+        socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
+        assert.ok(findPost(page.posts, 'diag', (d) =>
+            d.message.includes('外部抢占，壳不动手')).length === 1,
+            'workspace mismatch must not be attributed to our carrier');
+        assert.strictEqual(reloads.length, 0);
+    } finally {
+        storage.restore();
+        restore();
+        page.teardown();
+    }
+});
+
+test('KICKED 归因：窗口 workspace 与页面一致 → 仍算自我接管', async () => {
+    const page = setupPage();
+    const {reloads, restore} = stubReload();
+    const storage = stubSessionStorage();
+    try {
+        const socket = new globalThis.WebSocket('wss://relay.example');
+        globalThis.__zcodeShellSetAppForeground(false);
+        globalThis.__zcodeShellExpectCarrier(Date.now(), 'ws-a', '');
+        socket.send(JSON.stringify({
+            type: 'data', payload: {zcode_type: 'workspace-bridge-open', workspaceKey: 'ws-a'}
+        }));
+        socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
+        assert.ok(findPost(page.posts, 'diag', (d) =>
+            d.message.includes('落在承载窗口内（自我接管）')).length === 1,
+            'matching workspace keeps the self-attribution');
+    } finally {
+        storage.restore();
+        restore();
         page.teardown();
     }
 });
@@ -2068,42 +2113,6 @@ function stubSyntheticEvents() {
         }
     };
 }
-
-test('后台承载：交还兜底——页面已自己开线就什么都不做（不重载）', async () => {
-    const page = setupPage();
-    const {reloads, restore} = stubReload();
-    try {
-        const socket = new globalThis.WebSocket('wss://relay.example');
-        socket.dispatchEvent({type: 'open'});
-        assert.strictEqual(globalThis.__zcodeShellAfterCarrierReturn(50), true);
-        await wait(150);
-        assert.strictEqual(reloads.length, 0, '有一条 OPEN 的 socket 时绝不许重载');
-        assert.strictEqual(
-            findPost(page.posts, 'diag', (d) => d.message.includes('交还后页面已自行恢复')).length,
-            1,
-            '恢复与否必须留一行判据');
-    } finally {
-        restore();
-        page.teardown();
-    }
-});
-
-test('后台承载：交还兜底——零 OPEN socket 且零入站帧 → 重载一次', async () => {
-    const page = setupPage();
-    const {reloads, restore} = stubReload();
-    try {
-        // 不建任何 socket：等价于页面已经 dispose（真机 00:12:57 的形状 socket=-1 paired=false）
-        assert.strictEqual(globalThis.__zcodeShellAfterCarrierReturn(50), true);
-        await wait(150);
-        assert.strictEqual(reloads.length, 1, '失败态自己回不来，兜底必须重载一次');
-        assert.strictEqual(
-            findPost(page.posts, 'diag', (d) => d.message.includes('交还兜底')).length,
-            1);
-    } finally {
-        restore();
-        page.teardown();
-    }
-});
 
 test('后台承载：恢复推动 event 档只派发合成 online，并回报推动前现场', async () => {
     const page = setupPage();
@@ -2265,6 +2274,30 @@ test('档3：钉住路由状态并重载一次（两个动作都发生）', asyn
     }
 });
 
+test('档3：版本闸门阻断时不重载（同一个 modal 只会再来一次，审查注入层 P2-2）', async () => {
+    const page = setupPage();
+    const {reloads, restore} = stubReload();
+    try {
+        page.document.querySelector = (sel) =>
+            (sel === 'dialog[aria-labelledby="remote-version-title"][open]'
+                ? new FakeElement('dialog') : null);
+        const replaced = [];
+        globalThis.history = {
+            state: {zcodeMobilePage: 'home'},
+            replaceState: (st) => replaced.push(st)
+        };
+        assert.strictEqual(globalThis.__zcodeShellRecoverConversation('S3 成立但闸门挡路'), false,
+            'blocked gate must refuse the reload');
+        assert.strictEqual(replaced.length, 0, 'refused recovery must not touch history.state');
+        await wait(400);
+        assert.strictEqual(reloads.length, 0, 'and it must not reload');
+    } finally {
+        restore();
+        delete globalThis.history;
+        page.teardown();
+    }
+});
+
 test('档3：已是 chat 时不重复 replaceState，但仍重载（幂等）', async () => {
     const page = setupPage();
     const {reloads, restore} = stubReload();
@@ -2403,32 +2436,6 @@ test('旁观收窄：窗口控制 socket 不改变 relay 状态、不解析也�
     } finally { page.teardown(); }
 });
 
-test('快速交接：交还兜底最多等待 500ms', (t) => {
-    t.mock.timers.enable({apis: ['setTimeout']});
-    const page = setupPage();
-    const {reloads, restore} = stubReload();
-    try {
-        globalThis.__zcodeShellAfterCarrierReturn(8000);
-        t.mock.timers.tick(499);
-        assert.strictEqual(reloads.length, 0);
-        t.mock.timers.tick(1);
-        assert.strictEqual(reloads.length, 1, 'an old 8s caller is clamped to the 500ms budget');
-    } finally { restore(); page.teardown(); t.mock.timers.reset(); }
-});
-
-test('快速交接：旧交还定时器不能干预新的前后台窗口', (t) => {
-    t.mock.timers.enable({apis: ['setTimeout']});
-    const page = setupPage();
-    const {reloads, restore} = stubReload();
-    try {
-        globalThis.__zcodeShellAfterCarrierReturn(500);
-        globalThis.__zcodeShellSetAppForeground(false);
-        globalThis.__zcodeShellSetAppForeground(true);
-        t.mock.timers.tick(500);
-        assert.strictEqual(reloads.length, 0, 'the previous epoch cannot reload a later foreground window');
-    } finally { restore(); page.teardown(); t.mock.timers.reset(); }
-});
-
 // ---------------------------------------------------------------------------
 // 3.17.1 适配（2026-11-04）：版本闸门 ②/③、登录面刷新按钮二判据、闸门① 重钉路由
 // ---------------------------------------------------------------------------
@@ -2456,6 +2463,20 @@ test('版本闸门②：从页面自己的 bootstrap 帧学到 desktopAppVersion
         }});
         assert.strictEqual(findPost(page.posts, 'desktopversion').length, 1,
             'an absent/empty version must not be reported');
+        // 去重（审查注入层 P2-4）：重连/刷新带来的同一版本不再发帧；变了才发。
+        socket.receive({type: 'data', payload: {
+            zcode_type: 'bootstrap-response', result: {desktopAppVersion: '3.17.1'}
+        }});
+        assert.strictEqual(findPost(page.posts, 'desktopversion').length, 1,
+            'an unchanged version must not be reported twice');
+        socket.receive({type: 'data', payload: {
+            zcode_type: 'bootstrap-response', result: {desktopAppVersion: '3.17.2'}
+        }});
+        assert.deepStrictEqual(
+            findPost(page.posts, 'desktopversion').map((p) => p.data.version),
+            ['3.17.1', '3.17.2'],
+            'a changed version must be reported again',
+        );
     } finally {
         page.teardown();
     }
@@ -2467,7 +2488,7 @@ test('版本闸门③：阻断式 modal 出现/消失各上报一次（重载决
         const dialog = new FakeElement('dialog');
         const realQuery = page.document.querySelector;
         page.document.querySelector = (sel) =>
-            sel === 'dialog[aria-labelledby="remote-version-title"]' ? dialog : realQuery(sel);
+            sel === 'dialog[aria-labelledby="remote-version-title"][open]' ? dialog : realQuery(sel);
 
         page.dom.set('bg-background-win-alt', true);
         FakeMutationObserver.fire();
@@ -2483,6 +2504,21 @@ test('版本闸门③：阻断式 modal 出现/消失各上报一次（重载决
         FakeMutationObserver.fire();
         await flush();
         assert.deepStrictEqual(findPost(page.posts, 'versiongate').map((p) => p.data.blocked), [true, false]);
+    } finally {
+        page.teardown();
+    }
+});
+
+test('版本闸门③：关闭态的常驻 <dialog> 不算阻断（[open] 判据，审查注入层 P2-1）', async () => {
+    const page = setupPage({pageState: true});
+    try {
+        // 页面若把 dialog 常驻挂载、只在弹出时写 open：关闭态查不到 [open] ⇒ 判据必须为假。
+        page.document.querySelector = () => null;
+        page.dom.set('bg-background-win-alt', true);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.strictEqual(findPost(page.posts, 'versiongate').length, 0,
+            'a resident closed dialog must not arm the gate');
     } finally {
         page.teardown();
     }
@@ -2525,6 +2561,10 @@ test('闸门①：version-gate 导航后按上一次的决定重钉聊天路由�
     try {
         assert.strictEqual(history.state.zcodeMobilePage, 'chat',
             'the pin must survive the gate navigation, not depend on restoreChat');
+        // 用完即焚（审查注入层 P2-3）：否则登出→重新登录回到 /remote 时，
+        // 旧标记会把用户直接拽进上一轮的对话页。
+        assert.strictEqual(storage.store.get('zcodeShellPinChat'), '',
+            'the pin must be consumed right after it is used');
     } finally {
         storage.restore();
         page.teardown();

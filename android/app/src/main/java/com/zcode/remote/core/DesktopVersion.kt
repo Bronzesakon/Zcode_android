@@ -59,7 +59,9 @@ object DesktopVersion {
         val base = if (queryAt >= 0) withoutFragment.substring(0, queryAt) else withoutFragment
         val query = if (queryAt >= 0) withoutFragment.substring(queryAt + 1) else ""
         val params = if (query.isEmpty()) mutableListOf() else query.split('&').toMutableList()
-        val replacement = "app_version=$value"
+        // `+` 在 query 语义里会被解码成空格（审查 Kotlin P2-6）：`3.17.1+build` 拼成裸 `+`
+        // 会让页面读到 `3.17.1 build`，闸门随即判不等。先编码成 %2B（URLSearchParams 会解回来）。
+        val replacement = "app_version=" + value.replace("+", "%2B")
         val index = params.indexOfFirst { it == "app_version" || it.startsWith("app_version=") }
         if (index >= 0) params[index] = replacement else params.add(replacement)
         return "$base?${params.joinToString("&")}$fragment"
