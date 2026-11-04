@@ -24,6 +24,7 @@
 | 目录 | 内容 | 规模 |
 | --- | --- | --- |
 | `vendor/` | Android 文件选择 / Material 3 / Android 16 M3 Expressive 厂商文档快照（56 篇 + 469 图） | 约 3 MB |
+| `vendor/miuix/` | miuix 组件库源码（Compose Multiplatform，Apache-2.0；已去 `.git`）——App 设置页配色/度量规范的出处，后续界面重写备用 | 约 22 MB |
 | `coloros/` | OPPO/ColorOS 官方文档 149 篇 + Android 官方 6 篇 | 约 88 MB |
 
 版权归原厂商所有，仅供本地离线查阅；已由 `.gitignore` 排除。换机器需手动拷贝，

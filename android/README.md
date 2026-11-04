@@ -1,16 +1,26 @@
 # ZCode 远程（Android 薄壳）
 
+> **2026-11-04 迁移说明**：薄壳已**独享 `Zcode_android`**（壳工程在 `android/`），原父仓库（鸿蒙）不再包含本子项目；
+> 纯原生 Compose + Rust 方案已弃用并归档到 `archive/native-compose/`。**本文从此只作壳实现细节的知识库，
+> 不再是仓库状态来源**——仓库/迁移/待办状态看根 [`README.md`](../README.md)、[`docs/TODO.md`](../docs/TODO.md)、
+> [`docs/MIGRATION-FEASIBILITY.md`](../docs/MIGRATION-FEASIBILITY.md)。
+> **路径口径**（正文多处按迁移前书写）：`docs/` → 现 `../docs/android/vendor/`；`ColorOS_docs/` → 现 `../docs/android/coloros/`；
+> 自撰报告按新编号在 `../docs/android/`（旧 `docs/12`→`12-*`、`docs/15`→`25-*`、`docs/18`→`26-*`）。
+> **网页基线已上移到 3.17.1**（`../Reference_web/3.17.1`）：正文里 3.15.3 的结论属历史，注入锚点须按 3.17.1 复核；
+> `RemoteHistoryPatch`（写死 3.15.3）已删除，首屏 60 行历史窗口那句不再有效。
+
 > **2026-10-15 前台 KICK / 长历史更新**：断线等待重连仍视作原生承载持有；回前台取消整个承载生命周期，旧重连、延迟开桥和旧连接清理不能复活或串入新连接。连接及认证前检查前台状态。已确认原生配对竞态时保留一次恢复；普通外部 KICK 沿用网页出口。网页 3.15.3 的首屏 60 行历史窗口补丁已随 3.17.1 迁移删除；本文相关补丁段落仅作历史记录。详细证据和边界见[快速交接说明](../docs/android/安卓壳-快速交接与性能收窄.md)。
 
-> **网页最新已核实快照（2026-10-15）为 3.15.3**：本机 [Docs/48-remote-v4-网页快照-20261015/README.md](../Reference_web/)。公开 `/remote/v4?app_version=3.15.3` 与设备日志一致；无参数入口仍返回旧 `latest`。主包 SHA-256：`ce2e2fc490d6364d21630e9f510b99f48748958e392724c0c9faf8fb5f9b88fd`。旧 09-11／09-20 快照保留作历史，不再作为当前契约。静态资源只留本机，不随 APK 或仓库分发。
+> **网页最新已核实快照（2026-10-15）为 3.15.3**（历史；现行基线见上方迁移说明 3.17.1）：本机网页快照在 [`../Reference_web/`](../Reference_web/)。公开 `/remote/v4?app_version=3.15.3` 与设备日志一致；无参数入口仍返回旧 `latest`。主包 SHA-256：`ce2e2fc490d6364d21630e9f510b99f48748958e392724c0c9faf8fb5f9b88fd`。旧 09-11／09-20 快照保留作历史，不再作为当前契约。静态资源只留本机，不随 APK 或仓库分发。
 
 > **2026-10-13 快速交接更新**：有运行任务且凭据就绪时，退后台/熄屏后约 200ms 启动原生接管；热返回从 `onRestart()`、API 29+ 的 PreStarted／PreResumed 提前交还，先停止原生连接，再无延时派发 WebView 重载。新建 WebView 复用首次加载。“正在返回”状态阻止正式前台计数更新前重新接管，取消返回或再次熄屏则恢复后台判据。路由在 document-start 恢复；残余死链/丢路由判定压到 500ms。切换代次取消旧回调，通知定位复用已安排的重载。网页加载、配对耗时与系统调度不包含在壳侧等待预算内。性能收窄及验收口径见 [快速交接说明](../docs/android/安卓壳-快速交接与性能收窄.md)。本轮全部校验复用 CI，通过后自动发布滚动 prerelease；后文的 3s/8s/12s 交接描述为历史行为。
 
 > **logo 交接过渡**：后台原生 matched 确认后，用网页同款 logo 覆盖旧页面；后台不重载。回前台提前交还并重载，新文档首个 logo 或页面元素完成绘制就撤罩，接着显示网页自己的 logo／连接工作区方框／认证／配对等待，不等连接成功或主界面出现。logo 只向前填补空档，不向后延长。前台 KICK、未知冲突、原生被踢及加载错误保持可见；返回 15s 仍无首帧则撤罩露出实际页面。没有新增 DOM 轮询、网页跳转或第二个 WebView。
 
 > **新会话接手：先跳到文末[「交接文本区」](#交接文本区新会话从这里开始)**（每次会话收尾时就地改写，非追加）。
-> 本文件是唯一的状态与配置来源：进度与待验证项看「项目现状」与「已知问题」，
-> 迁移清单看「交接清单」，环境、adb 与取日志约定看「本机开发」，发版看「发布流程」。已不再另设交接文档。
+> 本文件是**壳实现细节与历史决策**的唯一来源：进度与待验证项看「项目现状」与「已知问题」，
+> 迁移清单看「交接清单」，环境、adb 与取日志约定看「本机开发」，发版看「发布流程」。
+> **仓库级状态不在本文**（见上方迁移说明）。已不再另设交接文档。
 
 薄壳加载官方远程页（`zcode.z.ai/remote/v4`）并对接原生系统能力，同时提供任务通知与后台保活。
 
@@ -18,28 +28,30 @@
 - 技术栈：原生 Kotlin + AndroidX（不用 Flutter），`minSdk 26` / `targetSdk 35`
 - 编译：**本机可出包**（`E:\AndroidSdk` + `E:\AndroidSdk\jdk-17` + 预置 Gradle 8.9，见「本机开发」；2026-09-15 起不再依赖 CI 编译）；GitHub Actions 仍保留，推 `pre` 会自动出包并覆写滚动预发布
 
-设计与决策记录已并入本文件（见「已敲定的决策」与「决策落点」）；上层 `../安卓薄壳迁移文档.md` 是**未入库的本地归档**，本文件不依赖它。
+设计与决策记录已并入本文件（见「已敲定的决策」与「决策落点」）；原上层 `安卓薄壳迁移文档.md` 已随迁移**移出工作树**
+（现存 `../docs/android/harmony-migration.md` 与 `../scratch/zcode-harmony-android-artifacts-20261104/` 内的旧版备份），本文件不依赖它。
 
 ---
 
 ## 参考库与离线资料索引（本机，不入库）
 
 `docs/` 与 `ColorOS_docs/` 都在 `.gitignore` 里，clone 仓库拿不到，换机器要手动拷贝。
+**迁移后位置**：前者 → `../docs/android/vendor/`，后者 → `../docs/android/coloros/`（仍被 `../docs/android/.gitignore` 排除）。
 
 | 目录 | 内容 | 用途 |
 | --- | --- | --- |
-| `docs/` | Android 官方文档快照（文件/图片选择、M3 与 Android 16 界面规范） | 上传链路与界面规范依据；清单见 `docs/README.md` |
-| **`docs/miuix/`** | **miuix 组件库源码**（Compose Multiplatform，Apache-2.0） | **下次界面重写用**，约束见下 |
-| `ColorOS_docs/` | ColorOS/OPPO 文档 149 篇 + Android 官方 6 篇 | 流体云路线选型依据；清单见 `ColorOS_docs/README.md` |
+| `../docs/android/vendor/` | Android 官方文档快照（文件/图片选择、M3 与 Android 16 界面规范） | 上传链路与界面规范依据；清单见 `../docs/android/vendor/README.md` |
+| **`../docs/android/vendor/miuix/`** | **miuix 组件库源码**（Compose Multiplatform，Apache-2.0，已去 `.git`） | 界面重写备用，约束见下 |
+| `../docs/android/coloros/` | ColorOS/OPPO 文档 149 篇 + Android 官方 6 篇 | 流体云路线选型依据；清单见 `../docs/android/coloros/README.md` |
 
-**本工程自己写的归档报告**（在上面两个目录里，同样不入库）——正文为了可读性把取证流水压成了结论，原始复现过程留在这几份，需要考古时再翻：
+**本工程自己写的归档报告**（同样不入库，已按新编号迁到 `../docs/android/`）——正文为了可读性把取证流水压成了结论，原始复现过程留在这几份，需要考古时再翻：
 
 | 文件 | 内容 |
 | --- | --- |
-| **`docs/18-全仓审计-错误路线残留与清理.md`** | **2026-09-16 全仓审计**：四个子代理并行只读审计 + 本轮落地。已删清单（Kotlin 死代码 / 整文件级死资源 / 注入层自伤代码）、保留但标注的、刻意没做的（需拍板）、多工作区落地与 E1 跑法 |
-| `docs/15-后台原生承载-独立设计.md` | 备份方案：子代理只读 bundle 推导的**协议契约**（逐条 `文件:行:列` 证据）；⚠️ §4 的"必须补 window 控制面"已被推翻 |
-| `../docs/android/48-remote-v4-网页快照-20261015/` | **最新已核实 3.15.3**，入口、递归资源和 SHA 清单；无参数旧入口单独留证 | 当前网页策略与滚动分析基线 |
-| `docs/05-远程网页-remote-v4-20260911/` | **历史**远程网页的静态资源快照（页面自己就是客户端，**代码即规格**）+ 两份分析：注入点/主题/滚动条审计、进对话无内容与左下角转圈 |
+| **`../docs/android/26-android-shell-全仓审计-错误路线残留与清理.md`**（原 `docs/18`） | **2026-09-16 全仓审计**：四个子代理并行只读审计 + 本轮落地。已删清单（Kotlin 死代码 / 整文件级死资源 / 注入层自伤代码）、保留但标注的、刻意没做的（需拍板）、多工作区落地与 E1 跑法 |
+| `../docs/android/25-android-shell-后台原生承载-独立设计.md`（原 `docs/15`） | 备份方案：子代理只读 bundle 推导的**协议契约**（逐条 `文件:行:列` 证据）；⚠️ §4 的"必须补 window 控制面"已被推翻 |
+| `../Reference_web/` | 网页快照：现行 **3.17.1**（历史 3.16.1），入口、递归资源和 SHA 清单——当前网页策略与滚动分析基线 |
+| `../scratch/android-shell-import/docs/05-远程网页-remote-v4-20260911/` | **历史**（未迁入正式目录，仅在迁移暂存内）：20260911 静态资源快照 + 注入点/主题/滚动条审计、进对话无内容分析 |
 
 ### `docs/miuix/`：后续界面重写的组件库
 
@@ -403,10 +415,9 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 
 | 路径 | 大小 | 内容 | 处置 |
 | --- | --- | --- | --- |
-| `android/scratch/` | 13 KB | 签名密钥：`zcode-remote-release.p12`、`keystore-password.txt`、`keystore-base64.txt`；另有一份 `zemote-planB.patch`（已放弃的 zemote CI 改造，仅供回溯，可随时删） | **务必备份密钥那三个**——丢了就无法再给老版本做覆盖安装。CI 从 4 个 Secret 读，本地构建不需要，但要带走 |
-| `android/docs/`、`android/ColorOS_docs/` | 124 MB + 87 MB | 厂商文档离线快照（Android 官方 + ColorOS/OPPO + miuix 源码） | 手动拷贝；内容清单见开头「参考库与离线资料索引」 |
-| `../安卓薄壳迁移文档.md` | 50 KB | 迁移调研与历史回填的**完整归档**（§1–§12：技术事实清单、被推翻的三处假设、决策往返、CI 反馈回路）。耐久结论已全部并入本 README，**本文件不再依赖它**，留作细节出处 | 手动拷贝；不入库。原 `android/` 下的旧快照已删（缺 §12） |
-| `../项目文档.md` | 20 KB | 鸿蒙侧需求与决策历史 | 手动拷贝；不入库 |
+| `android/scratch/` | 13 KB | 签名密钥：`zcode-remote-release.p12`、`keystore-password.txt`、`keystore-base64.txt`（与 CI 的 4 个 Secret 同一把） | **务必备份这三个**——丢了就无法再给老版本做覆盖安装。CI 从 4 个 Secret 读，本地构建用 `android/key.properties`（同样不入库） |
+| `../docs/android/vendor/`、`../docs/android/coloros/` | 约 25 MB + 88 MB | 厂商文档离线快照（Android 官方 + miuix 源码 + ColorOS/OPPO） | 手动拷贝；内容清单见 `../docs/android/MANIFEST.md` 与开头「参考库与离线资料索引」 |
+| 原 `../安卓薄壳迁移文档.md`、`../项目文档.md` | 50 KB + 20 KB | 迁移调研归档（§1–§12）、鸿蒙侧需求与决策历史 | **已移出工作树**：前者现存 `../docs/android/harmony-migration.md`（完整旧版含 §12 在 `../scratch/zcode-harmony-android-artifacts-20261104/`），后者随鸿蒙清理删除 |
 
 > 厂商快照两个目录在 `.gitignore` 里，clone 拿不到——**交接时整目录拷走**。
 
@@ -425,7 +436,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 
 判定一律按**原生侧 delta**，不要相信页面侧绝对值：pre.28/pre.30 两轮误报「心跳未执行」，就是回前台的瞬时抖动把页面侧计数清零、16ms 后读到 0；判据已抽成可单测的 `core/SurvivalVerdict.kt`。若再见 0 次，看 `页面开销` 时间间隔（15s = 泵在驱动，20s+ 或断档 = 真没跑）。诊断行下方还有「保留服务 / 注入脚本 / 工作区数量 / 日志文件路径」；要完整日志点 **分享 / 导出日志文件**（写在外部存储、带崩溃堆栈，进程被杀也留得下，不需要电脑）。
 
-> 步骤与判据出处：`../安卓薄壳迁移文档.md` §8——该文件是**未入库的本地归档**，仓库里没有。
+> 步骤与判据出处：迁移归档 §8（现 [`../docs/android/harmony-migration.md`](../docs/android/harmony-migration.md)；含 §12 的完整旧版在 `../scratch/zcode-harmony-android-artifacts-20261104/`）。
 
 ---
 
@@ -683,7 +694,7 @@ M3 基线的做法（2026-09-11 落地）：
 
 ## 已敲定的决策（D1–D14，勿自行更改）
 
-全部来自用户。右列是当时排除的选项，改回任何一项前先读理由（完整往返记录在本地归档 `../安卓薄壳迁移文档.md` §11，该文件未入库）。
+全部来自用户。右列是当时排除的选项，改回任何一项前先读理由（完整往返记录见迁移归档 §11，现 [`../docs/android/harmony-migration.md`](../docs/android/harmony-migration.md)）。
 
 | # | 决策项 | 结论 | 被否决的选项 |
 | --- | --- | --- | --- |
@@ -999,7 +1010,7 @@ B 级 4 条（**删需同批改断言**，改动时"改断言而不是删断言"
    于是树**一度破损**：`zcode-protocol.js` 已删 `acceptPayload`，而 `inject.js` 仍在 `try { … acceptPayload(…); acceptObservedPayload(…); }` 里调用它——
    **那一行与被动观察同在一个 `try` 里**，抛异常会**连带跳过被动观察**（实测 `inject.test.js` 由 45/45 掉到 42/45）。
    判据：`node --check` 两个 JS + 两套 Node 测试 + `python tools/check_kotlin_structure.py`，尤其看**"删定义"与"删调用点"是否落在同一批里完成**。
-6. **grep 纪律：源码级搜索一律显式限定到 `app/src`（或 `tools/`）。** `android/docs/` 里有 **519 个 Kotlin 文件（20.5 MB，`docs/miuix/` 是小米 MiuiX 库的完整源码副本）**，
+6. **grep 纪律：源码级搜索一律显式限定到 `app/src`（或 `tools/`）。** `../docs/android/vendor/` 里有 **519 个 Kotlin 文件（20.5 MB，`vendor/miuix/` 是小米 MiuiX 库的完整源码副本）**，
    不忽略 gitignore 的搜索（如 `Select-String -Recurse`）会把它们的命中混进来（实测：`resetState` 全目录递归报 16 处，`app/src` 下 **0 处**）。
    ⚠️ 同时记住 **ripgrep 默认跳过 gitignore 的文件** ⟹ 所有"全仓 grep"严格说是"**除 `docs/`、`scratch/` 外**的全仓"；
    **判"某能力不存在"之前，必须显式搜 `docs/` 与 `scratch/`**（本轮父代理关于"页面不支持深链""只能点 DOM"的判断**错了两次**，根因就是不知道 `scratch/audit/` 里那两份前置审计存在）。
@@ -1191,15 +1202,15 @@ if ($obj.result -and $obj.result.result) {
 
 | 知识 | 在哪 | 状态 / 怎么办 |
 | --- | --- | --- |
-| 安卓侧最详细的状态文档 `android/docs/18-全仓审计-错误路线残留与清理.md`（开关史、§3.10 提前接管取证、§3.11 卡片生命周期与运行态三源）及其全部订正 | `android/docs/`（**被 gitignore**，`git ls-files` = 0） | **不进任何提交**，只能手动拷贝。注意 `docs/` 里还有 519 个 Kotlin 文件（`docs/miuix/` 是 MiuiX 库源码副本，20.5 MB） |
-| **`android/scratch/`** —— 含 **`audit/extension-surface.md`（857 行，remote-v4 扩展面/可观测面穷尽盘点）** 与 **`audit/platform-facts.md`（57 KB）**，另有注入层补丁草稿、4 个历史 APK、截图、通知/日志转储 | `android/scratch/`（**被 gitignore**） | ⚠️ **这是本轮最大的盲区**：两份前置审计**全程没被看见**（ripgrep 默认跳过 gitignore 的文件），父代理关于"页面不支持深链""只能点 DOM"的判断**因此错了两次**。**已复制**进父 `docs/`（见下一行），**源文件仍在 `scratch/`** |
+| 安卓侧最详细的状态文档 `../docs/android/26-android-shell-全仓审计-错误路线残留与清理.md`（原 `android/docs/18-…`；开关史、§3.10 提前接管取证、§3.11 卡片生命周期与运行态三源）及其全部订正 | `../docs/android/`（**入库**；原 `android/docs/` 已迁出并删） | 已进提交。原 `docs/` 里的 519 个 Kotlin 文件（`vendor/miuix/` 是 MiuiX 库源码副本，20.5 MB）现于 `../docs/android/vendor/`（本地-only） |
+| **迁移暂存 `../scratch/android-shell-import/scratch/`** —— 含 **`audit/extension-surface.md`（857 行，remote-v4 扩展面/可观测面穷尽盘点）** 与 **`audit/platform-facts.md`（57 KB）**，另有 `PROOF-*.md` 真机取证、注入层补丁草稿、历史 APK、截图、通知/日志转储 | 原 `android/scratch/`（**被 gitignore**），现整体在 `../scratch/android-shell-import/scratch/` | ⚠️ **这是当时最大的盲区**：两份前置审计**全程没被看见**（ripgrep 默认跳过 gitignore 的文件），父代理关于"页面不支持深链""只能点 DOM"的判断**因此错了两次**。耐久结论已进 `../docs/android/`；暂存目录清掉前若要考古先取这里 |
 | remote-v4 网页端与安卓平台事实的两份审计 | `E:\Zcode_harmony\docs\10-remote-v4-网页扩展面与可观测面穷尽盘点.md`、`E:\Zcode_harmony\docs\11-remote-v4-平台事实.md` | ✅ 已迁入（复制），但**父 `docs/` 整个目录被 gitignore** ⇒ 仍需手动拷贝 |
 | 本轮清理的**结论 + 决策台帐 + 禁区 + 配方**；真机回归判据与两个自查缺陷；未完成的调研任务书；CDP 助手 | `E:\Zcode_harmony\docs\12-安卓壳死代码清理-结论与决策档.md`、`13-安卓壳真机回归与两个自查缺陷.md`、`14-待办-remote-v4-bootstrap载荷穷举调研.md`、`docs\tools\cdp.ps1` | ✅ 已迁入（12 为**合并重写**，其余正文未删改）；**全在 gitignore 目录里 ⇒ 必须手动拷贝**。`14` 是**未完成**的调研（`bootstrap-response` 约 28 KB 载荷里还有哪些字段没被解析），**保留待做** |
 | 鸿蒙移植的逐项对照与后台行为 | `E:\Zcode_harmony\docs\09-…`、`06-…`、`07-…`、`08-…`、`01`–`05`（实况窗五篇） | 同上：**本地文件、必须手动拷贝**（本文第 5 小节已把要点抄进来了，细节仍需原篇） |
 | `.dsh-audit/`（本轮全部工作产物）：13 份分区原始审计报告（逐成员调用方分类表）、6 份功能域详情、逐符号活/死判定清单（`BATCH4-INVENTORY-4b.md` / `-4c-phaseB.md`，742 行）、50 KB 执行流水、9 份批次任务书、阶段守则（死代码分类体系、证据标准、跨语言核查清单、功能名词典） | `E:\Zcode_harmony\.dsh-audit\`（**被 gitignore**，**本轮保留、未删**——是否清掉交由后续新对话决定） | **现在仍可查某个具体 `file:line` 证据的原始出处**；主要结论与关键行号也已进 `docs/12` 与本节。其中 13 份分区报告与 6 份功能域详情**已另迁一份**到 `docs/android/`（逐字校验过），所以即便将来清掉该目录，那两层仍在 |
 | 两处真机回归的完整日志 | 设备 `/sdcard/Android/data/com.zcode.remote/files/logs/`（另有 `.1` 轮转） | 仍在设备上；⚠️ **512 KB 轮转**，要留就得先导出 |
 | 签名材料（丢了就无法给老版本做覆盖安装） | `android/scratch/*.p12` / `keystore-password.txt` / `keystore-base64.txt` | 见本文「签名密钥」一节与「交接清单」——**务必备份** |
-| 厂商文档快照 | `android/docs/`（124 MB）、`android/ColorOS_docs/`（87 MB） | 手动拷贝，清单见本文开头「参考库与离线资料索引」 |
+| 厂商文档快照 | `../docs/android/vendor/`（约 25 MB，含 miuix 源码）、`../docs/android/coloros/`（88 MB） | 手动拷贝，清单见 `../docs/android/MANIFEST.md` 与本文开头「参考库与离线资料索引」 |
 
 > **判不出的**（本节明确留白，未查证，不要当结论用）：① 本节第 5 小节末尾列的 5 条鸿蒙侧未验证项；② 本文实跑确认的三条门禁数字（JS 82/82、结构 42、资源 25）**不含 Kotlin 单测与 lint**——后两条沿用收口时的实测记录（122/0 失败、0 error/36 warning），本机 gradle 全量跑一轮耗时较长，**没有在本次文档工作中重跑**；
 > ③ ~~本 README 内部有一处版本号不一致~~ **已解决（父代理收口时统一）**：**清理轮收尾装机是 `1.0.0-local.187`**（历史口径，保留在下方各节的清理记录里），
@@ -1209,8 +1220,12 @@ if ($obj.result -and $obj.result.result) {
 ---
 ## 交接文本区（新会话从这里开始）
 
-> **状态：无待办。** 到 2026-09-18 上午，本文件列过的验收项全部真机跑过（证据在 `docs/18` §3.10／§3.11
-> 与下表的判据列）。下面的「已知边界」是**设计后果、不是待修 bug**，「可选下一步」都不做也不影响使用。
+> **状态：无待办。** 到 2026-09-18 上午，本文件列过的验收项全部真机跑过（证据在 `../docs/android/26-android-shell-全仓审计-错误路线残留与清理.md` §3.10／§3.11 与下表的判据列）。下面的「已知边界」是**设计后果、不是待修 bug**，「可选下一步」都不做也不影响使用。
+> **本节其余内容全部是 2026-09-20 前的壳内历史口径。** 2026-11-04 迁移后的现行口径只有三句：
+> ① 版本源是 `gradle.properties: zcodeBaseVersion`（现 `1.0.0`，`versionCode` 取构建时间），真机装机号 `1.0.0-local.*` 属历史；
+> ② 网页基线 3.17.1——**37 条注入锚点尚未按 3.17.1 复核**，「已验收」表里所有 3.15.3 结论待重跑；
+> ③ **Tier2 在 3.17.1 上不启动**（legacy HMAC 需要 `hash`，3.16.1+ 链接没有），后台原生接管当前不可用，替代方案见 `../docs/TODO.md` §2；`RemoteHistoryPatch` 已删。
+> 仓库级待办与验收判据以 [`../docs/TODO.md`](../docs/TODO.md) 为准。
 
 ### 先读这几份（本轮沉淀，不在交接区里重复）
 
