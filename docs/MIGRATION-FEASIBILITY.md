@@ -30,6 +30,16 @@
 
 **没有架构级阻断。** 这是一次“仓库换主线”的迁移，不是重写。
 
+### 执行进度（2026-11-04）
+
+- **已完成**：鸿蒙侧彻底删除——113 个跟踪文件删除（`android-shell/` 110 + Android CI/发布脚本 + 2 个 Android/迁移文档），
+  根 APK 删除，`README.md` / `Docs/README.md` 重写为纯鸿蒙，`.gitignore` / `.zcodeignore` 清理，
+  `entry/.../Index.ets` 中的 Android 注释已改；本地 `.adb-bridge`（38 MB）与 `.workbuddy-ai`（1.1 MB）移出仓库；
+  鸿蒙记忆已按纯鸿蒙重写（22 个 Android 壳记忆移出记忆目录）。
+- **已暂存**：`E:\Zcode_android\scratch\android-shell-import\`（269 MB，壳源码 + 本地文档 + ColorOS + keystore）；
+  Android 自撰文档与厂商文档在 `E:\Zcode_android\docs\android\`（91 MB）。
+- **未执行**：原生 67 个未提交改动的 commit/tag、壳搬入 `android/`、CI 切换。这些属于 P1。
+
 ---
 
 ## 1. 盘点（本轮实测）
