@@ -31,7 +31,10 @@ import org.json.JSONObject
  */
 object ConversationRecoveryPolicy {
 
-    /** 连续自动恢复的次数上限。与注入层 KICKED 自愈同口径（那边是 `KICKED_HEAL_CAP = 2`）。 */
+    /** 连续自动恢复的次数上限。**独立策略**，只约束壳自己的"对话没回来"恢复重载。
+     *  （历史上曾与注入层 `KICKED_HEAL_CAP=2` 同口径对齐；2026-11-04 注入层 KICKED 已改
+     *  归因语义——承载窗口内不 reload、窗口外不动手——不再存在需要对齐的对象。
+     *  改这个数只回答一个问题：连续几次没回到对话就彻底停手，把决定权交回用户。） */
     const val CAP = 2
 
     /**

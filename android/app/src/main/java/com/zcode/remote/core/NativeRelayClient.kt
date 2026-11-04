@@ -160,10 +160,13 @@ object NativeRelayClient {
     private const val HEARTBEAT_INTERVAL_MS = 5_000L
 
     /**
-     * 关闭确认的等待上限（TODO §2.3 的 300ms 交还预算）。本机 `cancel()` 通常在一个
-     * 事件循环内就回调 `onFailure`；这里只是防"对端不回 FIN"把回前台卡死。
+     * 关闭确认的等待上限（TODO §2.3 的 300ms 交还预算）。**100ms，不是 250ms**：
+     * 常态路径是 close 确认回调（本机 `cancel()` 通常在一个事件循环内就回调
+     * `onFailure`，远早于超时），这个值只是防"对端不回 FIN"把回前台卡死；
+     * 250ms 会让最坏情况（超时 + reload 派发）贴穿 300ms 预算。
+     * 真机若量出常态确认 >100ms，再回来调，并以 §2.6 实测为准。
      */
-    private const val CLOSE_CONFIRM_TIMEOUT_MS = 250L
+    private const val CLOSE_CONFIRM_TIMEOUT_MS = 100L
     private var startedAtMs = 0L
     private var persistent = false
     private var carrierPaired: (() -> Unit)? = null

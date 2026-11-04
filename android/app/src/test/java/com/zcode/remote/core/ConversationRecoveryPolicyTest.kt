@@ -101,9 +101,10 @@ class ConversationRecoveryPolicyTest {
     }
 
     @Test
-    fun `上限是两次——与注入层 KICKED 自愈同口径`() {
+    fun `上限是两次——独立策略，不随注入层 KICKED 语义联动`() {
         assertEquals(
-            "改这个数要同时回答：注入层 KICKED_HEAL_CAP 要不要一起改",
+            "注入层 KICKED 已是归因语义（2026-11-04），本闸门独立：改这里只需回答" +
+                "'连续几次没回到对话就停手'，不要再去注入层找对齐对象",
             2,
             ConversationRecoveryPolicy.CAP,
         )

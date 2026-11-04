@@ -250,7 +250,13 @@
 
 ## 6. 已知风险 / 待办
 
-- [ ] 承载与闸门修复前，3.17.1 上是「页面持有连接」的降级态：后台卡片覆盖依赖页面存活。
+- [ ] 承载与闸门修复后、真机验收前，3.17.1 仍按「页面持有连接」验证：后台卡片覆盖依赖页面存活，
+      承载新语义（0ms/30s/归因遮罩）未经真机检验前不作数。
+- [ ] **批次 2 真机待量**：① 交还路径"close 确认"常态耗时 + 回前台到 reload 总时长 <300ms
+      （超时上限已压到 **100ms**，`NativeRelayClient.CLOSE_CONFIRM_TIMEOUT_MS`，原 250ms——
+      250ms 会让最坏情况贴穿预算；常态走 close 回调远快于超时，若实测常态 >100ms 再回调该值）；
+      ② 下载缺口：`isDownloadUrl` 只把下载链接放行给 WebView（**未接 `DownloadListener`**），
+      非可信域下载会停在空白页——是否接系统下载器待拍板。
 - [ ] Kotlin 客户端的 3.17.1 适配**未实测**（Rust 侧旁证更硬）；token 移植后必须真机验证一次。
 - [ ] `docs/android/vendor`（含 miuix 约 22 MB）、`coloros`（88 MB）本地-only，换机器需手动拷贝；
       清单见 `docs/android/MANIFEST.md`。
