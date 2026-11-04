@@ -1,0 +1,3082 @@
+/* ============================================================================
+ * ZCode 3.17.1 — components.normalized.css
+ *
+ * 由 docs/web-reverse/tools/build_artifacts.py 从 index-BgVjt5KE.css 的规则与
+ * index-Dwhx77cK.js 的 className 字面量交叉生成。语义选择器为本仓库自定义命名，
+ * 注释保留原始 minified class / 选择器 / JS 偏移，便于人工对照。
+ *
+ * 注意：
+ *  - 基础块只合并“精确 .class”规则，按原 CSS 出现顺序去重（后者覆盖前者）。
+ *  - 变体规则保留原始选择器注释；可安全映射为 & 的才写成伪类/属性选择器。
+ *  - group-/peer- 与 :has() 组合变体无法等价改写，仅以注释保留。
+ *  - 未解析 token（JS 语义钩子，CSS 无规则）在各组件注释中列出。
+ * ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+ * 0. Design tokens（从 :root / .theme-zai-light / .theme-zai-dark 提取）
+ * -------------------------------------------------------------------------- */
+:root {
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  --spacing: .25rem;
+  --radius-xs: .125rem;
+  --radius-sm: .25rem;
+  --radius-md: .375rem;
+  --radius-lg: .5rem;
+  --radius-xl: .75rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.5rem;
+  --text-ui-settings-title: calc(var(--ui-font-size) + 10px);
+  --text-ui-settings-title--line-height: calc(4 / 3);
+  --text-ui-settings-title-lg: calc(var(--ui-font-size) + 16px);
+  --text-ui-settings-title-lg--line-height: 1.2;
+  --text-ui-xl: calc(var(--ui-font-size) + 4px);
+  --text-ui-lg: calc(var(--ui-font-size) + 2px);
+  --text-ui-base: var(--ui-font-size);
+  --text-ui-caption: calc(var(--ui-font-size) - 1px);
+  --text-ui-sm: calc(var(--ui-font-size) - 2px);
+  --text-ui-xs: calc(var(--ui-font-size) - 4px);
+  --text-ui-2xs: calc(var(--ui-font-size) - 5px);
+  --animated-gradient-text-strong: #0a0a0a;
+  --animated-gradient-text-soft: #0a0a0a38;
+  --color-background: var(--color-neutral-50);
+  --color-background-alt: color-mix(in oklab, var(--color-neutral-100) 60%, transparent);
+  --color-background-win-alt: var(--color-neutral-200);
+  --color-brand: var(--color-sky-400);
+  --color-resize-handle: var(--color-sky-500);
+  --color-icon-blue: var(--color-terminal-bright-blue);
+  --color-icon-purple: var(--color-terminal-bright-magenta);
+  --color-workflow-rule: color-mix(in oklab, var(--color-neutral-950) 5.5%, transparent);
+  --color-workflow-trace: color-mix(in oklab, var(--color-neutral-950) 30%, transparent);
+  --color-workflow-trace-strong: color-mix(in oklab, var(--color-neutral-950) 55%, transparent);
+  --color-accent: var(--color-sky-50);
+  --color-find-highlight: #fde68a;
+  --color-find-highlight-active: #facc15;
+  --color-border: color-mix(in oklab, var(--color-neutral-950) 10%, transparent);
+  --color-border-hover: color-mix(in oklab, var(--color-neutral-950) 20%, transparent);
+  --color-hover: var(--color-neutral-200);
+  --color-selected: color-mix(in oklab, var(--color-neutral-950) 10%, transparent);
+  --color-header: var(--color-neutral-100);
+  --color-panel: var(--color-neutral-100);
+  --color-sidebar: var(--color-neutral-100);
+  --color-surface: color-mix(in oklab, var(--color-neutral-950) 3%, transparent);
+  --color-user-message-bubble: color-mix(in oklab, var(--color-neutral-950) 5%, transparent);
+  --color-surface-hover: color-mix(in oklab, var(--color-neutral-950) 5%, transparent);
+  --color-card: var(--color-white);
+  --color-card-selected: var(--color-neutral-200);
+  --color-card-border: var(--color-border);
+  --color-popover: var(--color-white);
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-border: var(--color-border);
+  --color-input: var(--color-white);
+  --color-input-focused: var(--color-neutral-50);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-menu: var(--color-white);
+  --color-menu-hover: var(--color-neutral-100);
+  --color-primary: var(--color-neutral-950);
+  --color-primary-foreground: var(--color-neutral-50);
+  --color-secondary: var(--color-neutral-300);
+  --color-success-surface: var(--color-green-50);
+  --color-success-surface-foreground: var(--color-green-700);
+  --color-foreground: var(--color-neutral-700);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-700) 60%, transparent);
+  --color-remote-foreground-muted: #595959;
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-700) 40%, transparent);
+  --color-foreground-inverse: var(--color-white);
+  --color-success: var(--color-green-600);
+  --color-success-foreground: var(--color-foreground-inverse);
+  --color-destructive: var(--color-red-600);
+  --color-destructive-foreground: var(--color-foreground-inverse);
+  --color-warning: var(--color-yellow-600);
+  --color-warning-foreground: var(--color-foreground-inverse);
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  --color-warning-surface-foreground: var(--color-yellow-800);
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  --color-destructive-surface-foreground: var(--color-red-800);
+  --color-diff-added: var(--color-green-600);
+  --color-diff-removed: var(--color-red-600);
+  --color-git-modified: var(--color-amber-600);
+  --color-git-added: var(--color-teal-600);
+  --color-git-deleted: var(--color-red-600);
+  --color-git-renamed: var(--color-sky-600);
+  --color-git-untracked: var(--color-teal-600);
+  --color-git-ignored: var(--color-foreground-subtlest);
+  --color-git-descendant: var(--color-amber-600);
+  --color-tooltip: var(--color-neutral-100);
+  --color-tooltip-foreground: var(--color-neutral-950);
+  --color-tooltip-tag: var(--color-neutral-200);
+  --color-tooltip-tag-foreground: color-mix(in oklab, var(--color-neutral-950) 60%, transparent);
+  --color-tag: var(--color-neutral-200);
+  --color-highspeed-accent: #9e77ed;
+  --color-highspeed-composer-surface: #fff;
+  --color-highspeed-composer-border-idle: #6041ff;
+  --color-highspeed-composer-border-hover: #6041ff;
+  --color-highspeed-composer-border-pre-animation: var(--color-input-border);
+  --color-highspeed-glow-01: #6041ff03;
+  --color-highspeed-glow-04: #6041ff0a;
+  --color-highspeed-glow-15: #6041ff26;
+  --color-highspeed-glow-26: #6041ff42;
+  --color-highspeed-particle: #7453b0c2;
+  --color-highspeed-particle-highlight: #7453b0;
+  --color-highspeed-particle-highlight-glow: #7453b061;
+  --color-highspeed-model-sweep-highlight: #b392ff;
+  --color-highspeed-share-card-view-border: #0000002e;
+  --color-highspeed-share-card-view-start: #ffffff0f;
+  --color-highspeed-share-card-view-end: #9999990f;
+  --color-highspeed-share-foreground: #161518;
+  --color-highspeed-share-foreground-subtle: #000c;
+  --color-highspeed-share-control-hover: #0d0d0d0a;
+  --color-highspeed-share-dialog-surface: #fff;
+  --color-highspeed-share-dialog-border: #0000001a;
+  --color-highspeed-share-dialog-foreground: #161518;
+  --color-highspeed-share-dialog-muted: #00000094;
+  --color-highspeed-share-dialog-noise-dark-opacity: 0;
+  --color-highspeed-share-dialog-noise-light-opacity: .06;
+  --color-highspeed-share-dialog-noise-opacity: 1;
+  --color-highspeed-share-dialog-control-hover: #00000012;
+  --color-highspeed-share-dialog-download-surface: #000;
+  --color-highspeed-share-dialog-download-hover-surface: #1f1f1f;
+  --color-highspeed-share-dialog-download-foreground: #fff;
+  --color-highspeed-share-dialog-stats-border: #0000001a;
+  --color-highspeed-share-dialog-bars-start: #ed6c70;
+  --color-highspeed-share-dialog-bars-mid: #f0c76e;
+  --color-highspeed-share-dialog-bars-end: #80d68d;
+  --color-highspeed-share-dialog-marker-glow: #6bd77d99;
+  --color-highspeed-share-dialog-logo-surface: #2d2d2d;
+  --color-highspeed-share-dialog-logo-border: #ffffff1f;
+  --color-highspeed-share-dialog-benefit-text: #5c5c5c;
+  --color-highspeed-share-dialog-pill-text: #5c5c5c;
+  --color-highspeed-share-dialog-input-border: #0000001a;
+  --color-highspeed-share-dialog-bars-baseline: #0d0d0d0d;
+  --shadow-composer-soft: 0 0 #0000;
+  --ui-font-size: 14px;
+}
+
+.theme-zai-light {
+  --shadow-composer-soft: 0 1px 3px #0000000a, 0 6px 18px #0000000a;
+  --animated-gradient-text-strong: #0d0d0d;
+  --animated-gradient-text-soft: #0d0d0d38;
+  --color-background: #f8f8f8;
+  --color-background-win-alt: #ececee;
+  --color-background-alt: color-mix(in oklab, var(--color-background) 70%, transparent);
+  --color-brand: #000;
+  --color-workflow-rule: #0d0d0d0e;
+  --color-workflow-trace: #0d0d0d4d;
+  --color-workflow-trace-strong: #0d0d0d8c;
+  --color-accent: #ebf4ff;
+  --color-find-highlight: #fff4eb;
+  --color-find-highlight-active: #ffb26b;
+  --color-border: #0d0d0d1a;
+  --color-border-hover: #0d0d0d26;
+  --color-hover: #0d0d0d0d;
+  --color-selected: #0d0d0d0d;
+  --color-header: #fff;
+  --color-panel: #fff;
+  --color-sidebar: #f0f0f0;
+  --color-surface: #0d0d0d08;
+  --color-user-message-bubble: #0d0d0d0d;
+  --color-surface-hover: #0d0d0d0d;
+  --color-card: #fff;
+  --color-card-selected: var(--color-input);
+  --color-card-border: var(--color-border);
+  --color-popover: #fff;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-header: #f8f8f8;
+  --color-popover-border: var(--color-border);
+  --color-input: #fff;
+  --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-border-hover);
+  --color-menu: #fff;
+  --color-menu-hover: #f0f0f0;
+  --color-primary: #000;
+  --color-primary-foreground: #fff;
+  --color-secondary: #e6e6e6;
+  --color-success-surface: #eaf7ee;
+  --color-success-surface-foreground: #166b32;
+  --color-foreground: var(--color-neutral-800);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-800) 60%, transparent);
+  --color-remote-foreground-muted: #595959;
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-800) 40%, transparent);
+  --color-foreground-inverse: #fff;
+  --color-success: #1e8a3e;
+  --color-success-foreground: #fff;
+  --color-destructive: #e03131;
+  --color-destructive-foreground: #fff;
+  --color-warning: #e07b00;
+  --color-warning-foreground: #fff;
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  --color-warning-surface-foreground: #914e00;
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 10%, transparent);
+  --color-destructive-surface-foreground: #b42020;
+  --color-diff-added: #1e8a3e;
+  --color-diff-added-foreground: #fff;
+  --color-diff-removed: #e03131;
+  --color-diff-removed-foreground: #fff;
+  --color-git-none: var(--color-foreground);
+  --color-git-modified: #e07b00;
+  --color-git-added: #1e8a3e;
+  --color-git-deleted: #e03131;
+  --color-git-renamed: #0b7fff;
+  --color-git-untracked: #1e8a3e;
+  --color-git-ignored: var(--color-foreground-subtlest);
+  --color-git-descendant: #e07b00;
+  --color-tooltip: #f0f0f0;
+  --color-tooltip-foreground: #0d0d0d;
+  --color-tooltip-tag: #e6e6e6;
+  --color-tooltip-tag-foreground: #5c5c5c;
+  --color-tag: #e6e6e6;
+}
+
+.theme-zai-dark, .dark {
+  --color-highspeed-accent: #b392ff;
+  --color-highspeed-composer-surface: #151515;
+  --color-highspeed-composer-border-pre-animation: transparent;
+  --color-highspeed-glow-01: #a888f203;
+  --color-highspeed-glow-04: #a888f20a;
+  --color-highspeed-glow-15: #a888f226;
+  --color-highspeed-glow-26: #a888f242;
+  --color-highspeed-particle: #b392ffc2;
+  --color-highspeed-particle-highlight: #b392ff;
+  --color-highspeed-particle-highlight-glow: #b392ffad;
+  --color-highspeed-model-sweep-highlight: #f0e9ff;
+  --color-highspeed-share-card-view-border: #ffffff70;
+  --color-highspeed-share-foreground: #e7e4ed;
+  --color-highspeed-share-foreground-subtle: #c8c2d2;
+  --color-highspeed-share-control-hover: #ffffff1a;
+  --color-highspeed-share-dialog-surface: #101010;
+  --color-highspeed-share-dialog-border: #ffffff1f;
+  --color-highspeed-share-dialog-foreground: #f7f5fa;
+  --color-highspeed-share-dialog-muted: #e7e4eda3;
+  --color-highspeed-share-dialog-noise-dark-opacity: .06;
+  --color-highspeed-share-dialog-noise-light-opacity: 0;
+  --color-highspeed-share-dialog-noise-opacity: 1;
+  --color-highspeed-share-dialog-control-hover: #ffffff1a;
+  --color-highspeed-share-dialog-stats-border: #ffffff1a;
+  --color-highspeed-share-dialog-bars-start: #ef6f72;
+  --color-highspeed-share-dialog-bars-mid: #f1c86f;
+  --color-highspeed-share-dialog-bars-end: #82d990;
+  --color-highspeed-share-dialog-marker-glow: #73dd8499;
+  --color-highspeed-share-dialog-benefit-text: #adadad;
+  --color-highspeed-share-dialog-pill-text: #adadad;
+  --color-highspeed-share-dialog-input-border: #ffffff1a;
+  --color-highspeed-share-dialog-bars-baseline: #ffffff2e;
+  --animated-gradient-text-strong: #fff;
+  --animated-gradient-text-soft: #ffffff38;
+  --color-background: #161616;
+  --color-background-alt: color-mix(in oklab, var(--color-background-win-alt) 60%, transparent);
+  --color-background-win-alt: #2b2b2b;
+  --color-brand: #fff;
+  --color-resize-handle: var(--color-sky-400);
+  --color-workflow-rule: #fff1;
+  --color-workflow-trace: #ffffff59;
+  --color-workflow-trace-strong: #fff9;
+  --color-accent: #001d3d;
+  --color-find-highlight: #542500;
+  --color-find-highlight-active: #ff8a30;
+  --color-border: #ffffff1a;
+  --color-border-hover: #ffffff26;
+  --color-hover: #ffffff0d;
+  --color-selected: #ffffff1a;
+  --color-header: #202020;
+  --color-panel: #202020;
+  --color-sidebar: #161616;
+  --color-surface: #ffffff0d;
+  --color-user-message-bubble: #ffffff14;
+  --color-surface-hover: #ffffff1a;
+  --color-card: #2b2b2b;
+  --color-card-selected: var(--color-input);
+  --color-card-border: var(--color-border);
+  --color-popover: #2b2b2b;
+  --color-popover-foreground: var(--color-foreground);
+  --color-popover-header: #202020;
+  --color-popover-border: var(--color-border);
+  --color-input: #2b2b2b;
+  --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border);
+  --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-border-hover);
+  --color-menu: #2b2b2b;
+  --color-menu-hover: #363636;
+  --color-primary: #fff;
+  --color-primary-foreground: #000;
+  --color-secondary: #363636;
+  --color-success-surface: #46bf7229;
+  --color-success-surface-foreground: #87d9a4;
+  --color-foreground: var(--color-neutral-300);
+  --color-foreground-subtle: color-mix(in oklab, var(--color-neutral-300) 60%, transparent);
+  --color-remote-foreground-muted: #b3b3b3;
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
+  --color-foreground-inverse: #000;
+  --color-success: #46bf72;
+  --color-success-foreground: #000;
+  --color-destructive: #ff5c5c;
+  --color-destructive-foreground: #fff;
+  --color-warning: #ff8a30;
+  --color-warning-foreground: #000;
+  --color-warning-surface: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  --color-warning-surface-foreground: #ffa159;
+  --color-destructive-surface: color-mix(in srgb, var(--color-destructive) 16%, transparent);
+  --color-destructive-surface-foreground: #ff8585;
+  --color-diff-added: #46bf72;
+  --color-diff-added-foreground: #000;
+  --color-diff-removed: #ff5c5c;
+  --color-diff-removed-foreground: #000;
+  --color-git-none: var(--color-foreground);
+  --color-git-modified: #ff8a30;
+  --color-git-added: #46bf72;
+  --color-git-deleted: #ff5c5c;
+  --color-git-renamed: #4099ff;
+  --color-git-untracked: #46bf72;
+  --color-git-ignored: var(--color-foreground-subtlest);
+  --color-git-descendant: #ff8a30;
+  --color-tooltip: #2b2b2b;
+  --color-tooltip-foreground: #f8f8f8;
+  --color-tooltip-tag: #363636;
+  --color-tooltip-tag-foreground: #adadad;
+  --color-tag: #363636;
+}
+
+/* 运行时变量（由 JS 内联 style 设置，CSS 中无定义）：
+ *   --workspace-sidebar-panel-width   : 侧栏面板宽度 px（折叠/展开动画）
+ *   --workspace-sidebar-width         : 侧栏内容宽度 px
+ *   --workspace-panel-radius          : 面板圆角 px
+ *   --workspace-resize-handle-inset   : 拖拽手柄内缩 px
+ *   --v4-draft-greeting-font-size     : 首屏问候字号 px（20–30 动态）
+ *   --v4-floating-composer-dock-height: 浮动输入框高度 px
+ */
+
+/* ============================================================================
+ * 1. Shell（应用壳 / 侧栏 / 面板）
+ * ========================================================================== */
+
+/* ── shell.workspace-root ──────────────────────────────────────────────
+ * component : WorkspaceShell (sbn / Ti)
+ * original  : relative flex h-full min-h-0 w-full overflow-hidden [anchor-scope:--sidebar-task-list-divider]
+ * state     : max-md:flex-col
+ * dom       : <div data-workspace-shell="true">
+ * evidence  : JS @5957605 `data-workspace-shell`
+ * evidence  : CSS .relative/.flex/.overflow-hidden
+ * confidence: high
+ * purpose   : 应用工作区根容器：左右分栏、裁剪溢出，为侧栏分隔线提供 anchor-scope。
+ */
+.z-shell-workspace-root {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: calc(var(--spacing) * 0);
+  width: 100%;
+  overflow: hidden;
+  anchor-scope: --sidebar-task-list-divider;
+}
+
+/* state/alt class: .max-md\:flex-col { flex-direction:column } */
+
+/* ── shell.sidebar-panel ──────────────────────────────────────────────
+ * component : SidebarPanel (shell inline panel)
+ * original  : w-[var(--workspace-sidebar-panel-width)] max-w-[50%] flex-none overflow-hidden duration-200 ease-out transition-[widt...
+ * state     : pointer-events-none opacity-0
+ * dom       : <div data-panel="" data-workspace-sidebar-panel="true" id="sidebar">
+ * evidence  : JS @5957605
+ * evidence  : CSS .w-[var(--workspace-sidebar-panel-width)]
+ * confidence: high
+ * purpose   : 左侧项目侧栏容器；宽度来自 JS 内联变量，折叠时透明度过渡。
+ */
+.z-shell-sidebar-panel {
+  width: var(--workspace-sidebar-panel-width);
+  max-width: 50%;
+  flex: none;
+  overflow: hidden;
+  transition-property: width,opacity;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .2s;
+  --tw-duration: .2s;
+  --tw-ease: var(--ease-out);
+}
+
+/* state/alt class: .pointer-events-none { pointer-events:none } */
+/* state/alt class: .opacity-0 { opacity:0 } */
+.z-shell-sidebar-panel[data-workspace-sidebar-resizing=true] {
+  transition-property: opacity;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* ── shell.sidebar-aside ──────────────────────────────────────────────
+ * component : SidebarAside (shell inline aside)
+ * original  : h-full overflow-hidden select-none
+ * dom       : <aside id="sidebar">
+ * evidence  : JS @5957605
+ * confidence: high
+ * purpose   : 侧栏内容区，禁止文本选择（桌面壳行为）。
+ */
+.z-shell-sidebar-aside {
+  height: 100%;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+
+/* ── shell.resize-handle ──────────────────────────────────────────────
+ * component : ResizableHandle (shell inline separator)
+ * original  : group/handle relative z-10 flex h-full w-1 shrink-0 touch-none cursor-ew-resize items-center justify-center bg-transp...
+ * state     : after:pointer-events-none after:absolute after:rounded-full after:bg-foreground-subtlest/50 platform-mac-de...
+ * state     : hover:after:opacity-100 data-[separator=hover]:after:opacity-100 data-[separator=active]:after:opacity-100 ...
+ * dom       : <div role="separator" data-testid="resizable-handle">
+ * evidence  : JS @5957605 `data-testid=resizable-handle`
+ * evidence  : CSS .group/handle
+ * confidence: high
+ * purpose   : 侧栏拖拽分隔条：1px 视觉线由 after 伪元素绘制，hover/拖拽时显现。
+ */
+.z-shell-resize-handle {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  height: 100%;
+  width: calc(var(--spacing) * 1);
+  flex-shrink: 0;
+  cursor: ew-resize;
+  touch-action: none;
+  align-items: center;
+  justify-content: center;
+  background-color: #0000;
+  --tw-outline-style: none;
+  outline-style: none;
+  app-region: no-drag;
+}
+
+/* raw: .group-data-\[orientation\=horizontal\]\/handle\:h-6:is(:where(.group\/handle)[data-orientation=horizontal] *)   [@layer utilities] */
+/* raw: .group-data-\[orientation\=horizontal\]\/handle\:w-3:is(:where(.group\/handle)[data-orientation=horizontal] *)   [@layer utilities] */
+/* raw: .group-data-\[orientation\=vertical\]\/handle\:block:is(:where(.group\/handle)[data-orientation=vertical] *)   [@layer utilities] */
+/* raw: .group-data-\[orientation\=vertical\]\/handle\:hidden:is(:where(.group\/handle)[data-orientation=vertical] *)   [@layer utilities] */
+/* raw: .group-data-\[orientation\=vertical\]\/handle\:h-3:is(:where(.group\/handle)[data-orientation=vertical] *)   [@layer utilities] */
+/* raw: .group-data-\[orientation\=vertical\]\/handle\:w-6:is(:where(.group\/handle)[data-orientation=vertical] *)   [@layer utilities] */
+/* raw: [data-workspace-sidebar-resizing=true] .\[\[data-workspace-sidebar-resizing\=true\]_\&\]\:after\:opacity-100:after   [@layer utilities] */
+.z-shell-resize-handle:after {
+  content: var(--tw-content);
+  pointer-events: none;
+  position: absolute;
+  inset-block: var(--workspace-panel-radius);
+  width: calc(var(--spacing) * .5);
+  border-radius: 3.40282e38px;
+  background-color: color-mix(in srgb, color-mix(in oklab, var(--color-neutral-700) 40%, transparent) 50%, transparent);
+  opacity: 0;
+  transition-property: opacity;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+  --tw-content: "";
+}
+@supports (color:color-mix(in lab, red, red)) {
+  .z-shell-resize-handle:after {
+    background-color: color-mix(in oklab, var(--color-foreground-subtlest) 50%, transparent);
+  }
+}
+@media (hover:hover) {
+  .z-shell-resize-handle:hover:after {
+    content: var(--tw-content);
+    opacity: 1;
+  }
+}
+.z-shell-resize-handle:focus {
+  --tw-outline-style: none;
+  outline-style: none;
+}
+.z-shell-resize-handle:focus-visible {
+  --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(0px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+.z-shell-resize-handle:focus-visible:after {
+  content: var(--tw-content);
+  opacity: 1;
+}
+.z-shell-resize-handle[data-separator=active]:after {
+  content: var(--tw-content);
+  opacity: 1;
+}
+.z-shell-resize-handle[data-separator=hover]:after {
+  content: var(--tw-content);
+  opacity: 1;
+}
+.z-shell-resize-handle:where(.platform-linux-desktop,.platform-linux-desktop *):after {
+  content: var(--tw-content);
+  background-color: var(--color-resize-handle);
+}
+.z-shell-resize-handle:where(.platform-mac-desktop,.platform-mac-desktop *):after {
+  content: var(--tw-content);
+  background-color: var(--color-resize-handle);
+}
+.z-shell-resize-handle:where(.platform-windows-desktop,.platform-windows-desktop *):after {
+  content: var(--tw-content);
+  background-color: var(--color-resize-handle);
+}
+
+/* ── shell.divider-extension ──────────────────────────────────────────────
+ * component : SidebarDividerExtension (shell inline span)
+ * original  : pointer-events-none absolute h-px w-1 bg-border/50 [left:anchor(--sidebar-task-list-divider_right,-4px)] [top:anchor(...
+ * dom       : <span data-sidebar-divider-extension="true">
+ * evidence  : JS @5957605
+ * evidence  : CSS [left:anchor(...)]
+ * confidence: high
+ * purpose   : 用 CSS anchor 定位把侧栏分隔线延伸到拖拽手柄，形成连续分割线。
+ */
+.z-shell-divider-extension {
+  pointer-events: none;
+  position: absolute;
+  top: anchor(--sidebar-task-list-divider top,-1px);
+  left: anchor(--sidebar-task-list-divider right,-4px);
+  height: 1px;
+  width: calc(var(--spacing) * 1);
+  background-color: color-mix(in srgb, color-mix(in oklab, var(--color-neutral-950) 10%, transparent) 50%, transparent);
+}
+
+@supports (color:color-mix(in lab, red, red)) {
+  .z-shell-divider-extension {
+    background-color: color-mix(in oklab, var(--color-border) 50%, transparent);
+  }
+}
+
+/* ── shell.content-column ──────────────────────────────────────────────
+ * component : WorkspaceContent (shell inline div#content)
+ * original  : flex min-w-[320px] flex-1 flex-col
+ * state     : pr-1 pb-1
+ * state     : pr-1.5 pb-1.5
+ * dom       : <div data-panel="" id="content">
+ * evidence  : JS @5957605
+ * confidence: high
+ * purpose   : 主内容列（对话 + 侧面板），窄屏最小宽度 320px，桌面留 4px 内边距。
+ */
+.z-shell-content-column {
+  display: flex;
+  min-width: 320px;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* state/alt class: .pr-1 { padding-right:calc(var(--spacing) * 1) } */
+/* state/alt class: .pr-1\.5 { padding-right:calc(var(--spacing) * 1.5) } */
+/* state/alt class: .pb-1 { padding-bottom:calc(var(--spacing) * 1) } */
+/* state/alt class: .pb-1\.5 { padding-bottom:calc(var(--spacing) * 1.5) } */
+
+/* ── shell.conversation-frame ──────────────────────────────────────────────
+ * component : ConversationFrame (shell inline section)
+ * original  : relative flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-background
+ * state     : rounded-[var(--workspace-panel-radius)] border border-border
+ * state     : border-[0.5px]
+ * state     : shadow-xs
+ * dom       : <section data-workspace-conversation-frame="true">
+ * evidence  : JS @5957605
+ * evidence  : CSS [data-workspace-conversation-frame]
+ * confidence: high
+ * purpose   : 对话主面板外框：圆角/描边/阴影由平台与分栏状态决定。
+ */
+.z-shell-conversation-frame {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: calc(var(--spacing) * 0);
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--color-background);
+}
+
+/* state/alt class: .rounded-\[var\(--workspace-panel-radius\)\] { border-radius:var(--workspace-panel-radius) } */
+/* state/alt class: .border { border-style:var(--tw-border-style); border-width:1px } */
+/* state/alt class: .border-\[0\.5px\] { border-style:var(--tw-border-style); border-width:.5px } */
+/* state/alt class: .border-border { border-color:var(--color-border) } */
+/* state/alt class: .shadow-xs { --tw-shadow:0 1px 2px 0 var(--tw-shadow-color,#0000000d); box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow) } */
+
+/* ── shell.side-frame ──────────────────────────────────────────────
+ * component : SidePaneFrame (side pane inline div)
+ * original  : h-full overflow-hidden bg-background
+ * state     : border-[0.5px] shadow-xs
+ * state     : max-md:rounded-none max-md:border-0
+ * state     : min-w-0
+ * state     : max-md:!w-full
+ * state     : absolute inset-0 z-0
+ * dom       : <div data-workspace-side-frame="true">
+ * evidence  : JS @5902563
+ * evidence  : CSS [data-workspace-side-frame]
+ * confidence: high
+ * purpose   : 右侧多标签侧面板外框（浏览器/代码/终端等）。
+ */
+.z-shell-side-frame {
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--color-background);
+}
+
+/* state/alt class: .absolute { position:absolute } */
+/* state/alt class: .inset-0 { inset:calc(var(--spacing) * 0) } */
+/* state/alt class: .z-0 { z-index:0 } */
+/* state/alt class: .min-w-0 { min-width:calc(var(--spacing) * 0) } */
+/* state/alt class: .border-\[0\.5px\] { border-style:var(--tw-border-style); border-width:.5px } */
+/* state/alt class: .shadow-xs { --tw-shadow:0 1px 2px 0 var(--tw-shadow-color,#0000000d); box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow) } */
+/* state/alt class: .max-md\:\!w-full { width:100%!important } */
+/* state/alt class: .max-md\:rounded-none { border-radius:0 } */
+/* state/alt class: .max-md\:border-0 { border-style:var(--tw-border-style); border-width:0 } */
+
+/* ── shell.workspace-header ──────────────────────────────────────────────
+ * component : WorkspaceHeader (VLn)
+ * original  : @container/workspace-header relative flex w-full shrink-0 h-12 border-b
+ * state     : border-transparent
+ * state     : border-border/50
+ * dom       : <header data-workspace-header-variant="task|draft">
+ * evidence  : JS @5172129 `function VLn`
+ * evidence  : CSS @container/workspace-header
+ * confidence: high
+ * purpose   : 工作区顶栏：48px 高，draft 态透明底边，task 态细分隔线。
+ */
+.z-shell-workspace-header {
+  container: workspace-header/inline-size;
+  position: relative;
+  display: flex;
+  height: calc(var(--spacing) * 12);
+  width: 100%;
+  flex-shrink: 0;
+  border-bottom-style: var(--tw-border-style);
+  border-bottom-width: 1px;
+}
+
+/* state/alt class: .border-border\/50 { border-color:color-mix(in srgb, color-mix(in oklab, var(--color-neutral-950) 10%, transparent) 50%, transparent) } */
+/* state/alt class: .border-border\/50 { border-color:color-mix(in oklab, var(--color-border) 50%, transparent) } */
+/* state/alt class: .border-transparent { border-color:#0000 } */
+/* raw: .\[\.border-b\]\:pb-2.border-b   [@layer utilities] */
+/* raw: .\[\.border-b\]\:pb-4.border-b   [@layer utilities] */
+/* raw: .group-data-\[size\=sm\]\/card\:\[\.border-b\]\:pb-3:is(:where(.group\/card)[data-size=sm] *).border-b   [@layer utilities] */
+
+/* ── shell.header-row ──────────────────────────────────────────────
+ * component : WorkspaceHeaderRow (VLn inline div)
+ * original  : flex h-12 flex-1 min-w-0 items-center justify-between gap-2 overflow-hidden p-2 [app-region:drag] transition-[padding...
+ * dom       : <div> inside header
+ * evidence  : JS @5172129
+ * confidence: high
+ * purpose   : 顶栏内容行：可拖拽窗口，左侧标题/分支、右侧动作。
+ */
+.z-shell-header-row {
+  display: flex;
+  height: calc(var(--spacing) * 12);
+  min-width: calc(var(--spacing) * 0);
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(var(--spacing) * 2);
+  overflow: hidden;
+  padding: calc(var(--spacing) * 2);
+  transition-property: padding;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: .3s;
+  --tw-duration: .3s;
+  app-region: drag;
+}
+
+
+/* ── shell.primary-nav ──────────────────────────────────────────────
+ * component : SidebarPrimaryNavigation (fAt)
+ * original  : flex flex-col gap-1 px-2 py-3
+ * state     : max-md:pt-11
+ * dom       : <div data-testid="sidebar-primary-navigation">
+ * evidence  : JS @2435518 `sidebar-primary-navigation`
+ * confidence: high
+ * purpose   : 侧栏顶部主导航（新任务/自动化/插件/设备切换）。
+ */
+.z-shell-primary-nav {
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 1);
+  padding-inline: calc(var(--spacing) * 2);
+  padding-block: calc(var(--spacing) * 3);
+}
+
+/* state/alt class: .max-md\:pt-11 { padding-top:calc(var(--spacing) * 11) } */
+
+/* ── shell.sidebar-content ──────────────────────────────────────────────
+ * component : WorkspaceSidebarContent (sLt)
+ * original  : flex h-full min-h-0 flex-col overflow-hidden
+ * dom       : <aside data-testid=PHe>
+ * evidence  : JS @2691158 `sLt=(0,Q.memo)`
+ * confidence: high
+ * purpose   : 项目侧栏整体：顶部拖拽条 + 导航 + 任务列表 + 底部账户区。
+ */
+.z-shell-sidebar-content {
+  display: flex;
+  height: 100%;
+  min-height: calc(var(--spacing) * 0);
+  flex-direction: column;
+  overflow: hidden;
+}
+
+
+/* ── shell.task-region ──────────────────────────────────────────────
+ * component : SidebarTaskRegion (sLt inline div)
+ * original  : flex min-h-0 flex-1 flex-col border-t border-border/50 pt-3 [anchor-name:--sidebar-task-list-divider]
+ * dom       : <div data-testid="sidebar-task-list-region">
+ * evidence  : JS @2691158
+ * confidence: high
+ * purpose   : 任务列表区域，顶部锚点供分隔线扩展定位。
+ */
+.z-shell-task-region {
+  display: flex;
+  min-height: calc(var(--spacing) * 0);
+  flex: 1;
+  flex-direction: column;
+  border-top-style: var(--tw-border-style);
+  border-top-width: 1px;
+  border-color: color-mix(in srgb, color-mix(in oklab, var(--color-neutral-950) 10%, transparent) 50%, transparent);
+  padding-top: calc(var(--spacing) * 3);
+  anchor-name: --sidebar-task-list-divider;
+}
+
+/* raw: .\[\.border-t\]\:pt-2.border-t   [@layer utilities] */
+/* raw: .\[\.border-t\]\:pt-4.border-t   [@layer utilities] */
+/* raw: .group-data-\[size\=sm\]\/card\:\[\.border-t\]\:pt-3:is(:where(.group\/card)[data-size=sm] *).border-t   [@layer utilities] */
+@supports (color:color-mix(in lab, red, red)) {
+  .z-shell-task-region {
+    border-color: color-mix(in oklab, var(--color-border) 50%, transparent);
+  }
+}
+
+/* ── shell.task-row ──────────────────────────────────────────────
+ * component : TaskRow (CDt / cEt)
+ * original  : flex min-h-7 w-full min-w-0 flex-col justify-center rounded-lg border border-transparent pl-2.5 pr-1 text-left text-u...
+ * state     : bg-selected
+ * state     : hover:bg-surface-hover
+ * state     : pointer-events-none cursor-grabbing border border-border bg-background shadow-lg opacity-100
+ * dom       : <div class="group/task-row" role="button">
+ * evidence  : JS @2276618 `cEt=`
+ * evidence  : JS @2309886 `data-task-item-key`
+ * confidence: high
+ * purpose   : 侧栏任务行：28px 高，选中/悬停/拖拽三态。
+ */
+.z-shell-task-row {
+  display: flex;
+  min-height: calc(var(--spacing) * 7);
+  width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  flex-direction: column;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: #0000;
+  padding-right: calc(var(--spacing) * 1);
+  padding-left: calc(var(--spacing) * 2.5);
+  text-align: left;
+  font-size: var(--text-ui-base);
+  transition-property: background-color,border-color,color,opacity;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* state/alt class: .pointer-events-none { pointer-events:none } */
+/* state/alt class: .cursor-grabbing { cursor:grabbing } */
+/* state/alt class: .border-border { border-color:var(--color-border) } */
+/* state/alt class: .bg-background { background-color:var(--color-background) } */
+/* state/alt class: .bg-selected { background-color:var(--color-selected) } */
+/* state/alt class: .opacity-100 { opacity:1 } */
+/* state/alt class: .shadow-lg { --tw-shadow:0 10px 15px -3px var(--tw-shadow-color,#0000001a), 0 4px 6px -4px var(--tw-shadow-color,#0000001a); box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow) } */
+@media (hover:hover) {
+  .z-shell-task-row:hover {
+    background-color: var(--color-surface-hover);
+  }
+}
+
+/* ── shell.task-row-inner ──────────────────────────────────────────────
+ * component : TaskRowInner (CDt / lEt)
+ * original  : flex h-7 w-full min-w-0 items-center gap-2
+ * dom       : <span> inside task row
+ * evidence  : JS @2276805 `lEt=`
+ * confidence: high
+ * purpose   : 任务行内容行：标题 marquee + 状态/时间/操作。
+ */
+.z-shell-task-row-inner {
+  display: flex;
+  height: calc(var(--spacing) * 7);
+  width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+
+/* ── shell.project-row ──────────────────────────────────────────────
+ * component : ProjectRow (Kkt)
+ * original  : group/project-row ml-2 flex h-8 min-w-0 items-center gap-1 rounded-lg pr-1 hover:bg-surface-hover
+ * dom       : <div data-testid="virtual-project-row">
+ * evidence  : JS @2406574 `function bR` 邻近 Kkt
+ * confidence: high
+ * purpose   : 侧栏项目行：32px 高，悬停显示操作按钮。
+ */
+.z-shell-project-row {
+  margin-left: calc(var(--spacing) * 2);
+  display: flex;
+  height: calc(var(--spacing) * 8);
+  min-width: calc(var(--spacing) * 0);
+  align-items: center;
+  gap: calc(var(--spacing) * 1);
+  border-radius: var(--radius-lg);
+  padding-right: calc(var(--spacing) * 1);
+}
+
+/* raw: .group-focus-within\/card\:opacity-100:is(:where(.group\/card):focus-within *),.group-focus-within\/project-row\:opacity-100:is(:where(.group\/project-row):focus-within *),.group-focus-within\/purpose-section\:opacity-100:is(:where(.group\/purpose-section):focus-within *),.group-focus-within\/share-selection-panel\:opacity-100:is(:where(.group\/share-selection-panel):focus-within *)   [@layer utilities] */
+/* raw: .group-hover\/project-row\:block:is(:where(.group\/project-row):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/project-row\:hidden:is(:where(.group\/project-row):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/project-row\:opacity-100:is(:where(.group\/project-row):hover *)   [@layer utilities / @media (hover:hover)] */
+@media (hover:hover) {
+  .z-shell-project-row:hover {
+    background-color: var(--color-surface-hover);
+  }
+}
+
+/* ── shell.sidebar-drag-strip ──────────────────────────────────────────────
+ * component : SidebarDragStrip (sLt inline div)
+ * original  : h-12 shrink-0 [app-region:drag]
+ * dom       : <div> top of aside
+ * evidence  : JS @2691158
+ * confidence: high
+ * purpose   : 侧栏顶部 48px 窗口拖拽区（macOS 红绿灯让位）。
+ */
+.z-shell-sidebar-drag-strip {
+  height: calc(var(--spacing) * 12);
+  flex-shrink: 0;
+  app-region: drag;
+}
+
+
+/* ── shell.sidebar-nav-panel ──────────────────────────────────────────────
+ * component : SidebarNavigationPanel (sLt inline div)
+ * original  : absolute inset-0 flex min-h-0 flex-col
+ * dom       : <div data-project-sidebar-panel="navigation">
+ * evidence  : JS @2691158
+ * evidence  : CSS [data-project-sidebar-panel]
+ * confidence: high
+ * purpose   : 侧栏导航面板绝对定位容器，供滑入/滑出过渡。
+ */
+.z-shell-sidebar-nav-panel {
+  position: absolute;
+  inset: calc(var(--spacing) * 0);
+  display: flex;
+  min-height: calc(var(--spacing) * 0);
+  flex-direction: column;
+}
+
+
+/* ============================================================================
+ * 2. Home（空会话首屏）
+ * ========================================================================== */
+
+/* ── home.greeting ──────────────────────────────────────────────
+ * component : DraftGreeting (c9t)
+ * original  : relative mb-10 flex w-full max-w-2xl flex-col items-center justify-center gap-6 text-foreground sm:mb-8
+ * dom       : <div class="relative mb-10 ...">
+ * evidence  : JS @3427797 `data-v4-draft-greeting`
+ * evidence  : JS @3425464 `chat.empty.greeting.morning`
+ * confidence: high
+ * purpose   : 空会话首屏问候语容器（含背景 logo）。
+ */
+.z-home-greeting {
+  position: relative;
+  margin-bottom: calc(var(--spacing) * 10);
+  display: flex;
+  width: 100%;
+  max-width: var(--container-2xl);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--spacing) * 6);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+@media (width>=40rem) {
+  .z-home-greeting {
+    margin-bottom: calc(var(--spacing) * 8);
+  }
+}
+
+/* ── home.greeting-text ──────────────────────────────────────────────
+ * component : DraftGreetingText (c9t inline p)
+ * original  : relative z-10 w-full px-4 text-center font-medium text-foreground
+ * state     : text-xl/[1.2]
+ * state     : text-[length:var(--v4-draft-greeting-font-size)]/[1.2]
+ * dom       : <p data-v4-draft-greeting="true">
+ * evidence  : JS @3427797
+ * confidence: high
+ * purpose   : 问候语文本：字号按可用宽度动态计算（20–30px）。
+ */
+.z-home-greeting-text {
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  padding-inline: calc(var(--spacing) * 4);
+  text-align: center;
+  --tw-font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+/* state/alt class: .text-\[length\:var\(--v4-draft-greeting-font-size\)\]\/\[1\.2\] { font-size:var(--v4-draft-greeting-font-size); line-height:1.2 } */
+/* state/alt class: .text-xl\/\[1\.2\] { font-size:var(--text-xl); line-height:1.2 } */
+
+/* ── home.logo ──────────────────────────────────────────────
+ * component : DraftLogo (l9t)
+ * original  : pointer-events-none absolute left-1/2 top-1/2 aspect-[5/4] w-[min(72vw,25rem)] -mt-10 -translate-x-1/2 -translate-y-1...
+ * dom       : <div aria-hidden="true">
+ * evidence  : JS @3427797
+ * confidence: high
+ * purpose   : 问候语背后的 ZCode 标志水印（浅色 SVG / 深色位图）。
+ */
+.z-home-logo {
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin-top: calc(var(--spacing) * -10);
+  aspect-ratio: 5/4;
+  width: min(72vw,25rem);
+  --tw-translate-x: calc(calc(1 / 2 * 100%) * -1);
+  translate: var(--tw-translate-x) var(--tw-translate-y);
+  --tw-translate-y: calc(calc(1 / 2 * 100%) * -1);
+  color: var(--color-foreground-subtlest);
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(var(--lucide-subtlest-opacity));
+}
+
+
+/* ── home.suggestions-chips ──────────────────────────────────────────────
+ * component : SuggestedPromptsChips (F9t chips branch)
+ * original  : w-full min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden
+ * dom       : <div data-v4-draft-suggested-prompts="true">
+ * evidence  : JS @3639296
+ * confidence: high
+ * purpose   : 首屏推荐提示词横向滚动条（隐藏滚动条）。
+ */
+.z-home-suggestions-chips {
+  width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.z-home-suggestions-chips::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── home.suggestions-chip-group ──────────────────────────────────────────────
+ * component : SuggestedPromptsChipsGroup (F9t inline div)
+ * original  : mx-auto flex w-max items-center gap-4
+ * dom       : <div data-v4-draft-suggested-prompts-group="true">
+ * evidence  : JS @3639296
+ * confidence: high
+ * purpose   : 推荐提示词按钮组，水平居中。
+ */
+.z-home-suggestions-chip-group {
+  margin-inline: auto;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: calc(var(--spacing) * 4);
+}
+
+
+/* ── home.suggestion-chip ──────────────────────────────────────────────
+ * component : SuggestedPromptChip (F9t chip button)
+ * original  : zcode-draft-prompt-waterfall h-8 min-w-0 justify-start gap-1.5 overflow-hidden rounded-lg px-3 text-left text-ui-capt...
+ * dom       : <button data-draft-suggested-prompt=ID>
+ * evidence  : JS @3639296
+ * evidence  : CSS .zcode-draft-prompt-waterfall
+ * confidence: high
+ * purpose   : 推荐提示词胶囊：32px 高，逐个瀑布式入场。
+ */
+.z-home-suggestion-chip {
+  height: calc(var(--spacing) * 8);
+  min-width: calc(var(--spacing) * 0);
+  justify-content: flex-start;
+  gap: calc(var(--spacing) * 1.5);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  padding-inline: calc(var(--spacing) * 3);
+  text-align: left;
+  font-size: var(--text-ui-caption);
+  --tw-leading: calc(var(--spacing) * 4.5);
+  line-height: calc(var(--spacing) * 4.5);
+  --tw-font-weight: var(--font-weight-normal);
+  font-weight: var(--font-weight-normal);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+  animation: zcode-draft-prompt-waterfall .26s cubic-bezier(.22, 1, .36, 1) var(--zcode-draft-prompt-waterfall-delay,0s) both;
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .z-home-suggestion-chip {
+    animation: none;
+  }
+}
+
+/* ── home.suggestions-list ──────────────────────────────────────────────
+ * component : SuggestedPromptsList (F9t list branch)
+ * original  : w-full min-w-0 px-2 py-4
+ * dom       : <div data-v4-draft-suggested-prompts="true">
+ * evidence  : JS @3639296
+ * confidence: high
+ * purpose   : 推荐提示词列表容器（onboarding 场景）。
+ */
+.z-home-suggestions-list {
+  width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  padding-inline: calc(var(--spacing) * 2);
+  padding-block: calc(var(--spacing) * 4);
+}
+
+
+/* ── home.suggestion-list-item ──────────────────────────────────────────────
+ * component : SuggestedPromptListItem (F9t list button)
+ * original  : flex w-full items-center gap-3 rounded-xl p-3 text-left text-ui-base text-foreground hover:bg-hover focus-visible:out...
+ * dom       : <button data-draft-suggested-prompt=ID>
+ * evidence  : JS @3639296
+ * confidence: high
+ * purpose   : 推荐提示词列表项：图标 + 文案。
+ */
+.z-home-suggestion-list-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: calc(var(--spacing) * 3);
+  border-radius: var(--radius-xl);
+  padding: calc(var(--spacing) * 3);
+  text-align: left;
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+@media (hover:hover) {
+  .z-home-suggestion-list-item:hover {
+    background-color: var(--color-hover);
+  }
+}
+.z-home-suggestion-list-item:focus-visible {
+  --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  --tw-ring-color: var(--color-input-border-focused);
+  --tw-outline-style: none;
+  outline-style: none;
+}
+.z-home-suggestion-list-item:disabled {
+  opacity: .5;
+}
+
+/* ── home.suggestions-slot ──────────────────────────────────────────────
+ * component : SuggestedPromptsSlot (home suggestions wrapper)
+ * original  : h-8
+ * dom       : <div data-v4-draft-suggested-prompts-slot="true">
+ * evidence  : JS @3667401
+ * confidence: high
+ * purpose   : 推荐提示词插槽：chips 布局固定 32px 高。
+ */
+.z-home-suggestions-slot {
+  height: calc(var(--spacing) * 8);
+}
+
+
+/* ============================================================================
+ * 3. Composer（输入区）
+ * ========================================================================== */
+
+/* ── composer.region ──────────────────────────────────────────────
+ * component : ComposerRegion (composer root)
+ * original  : chat-composer-region z-20 w-full shrink-0 @container/composer
+ * state     : max-w-2xl
+ * dom       : <div data-testid=MWe data-input-routing=...>
+ * evidence  : JS @3419441 邻近 composer root
+ * evidence  : CSS .z-20/.w-full
+ * confidence: high
+ * purpose   : 输入区根容器：container query 上下文，浮层 z-20。
+ * unresolved: chat-composer-region（CSS 无规则，仅 JS 钩子）
+ */
+.z-composer-region {
+  container: composer/inline-size;
+  z-index: 20;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* state/alt class: .max-w-2xl { max-width:var(--container-2xl) } */
+
+/* ── composer.surface ──────────────────────────────────────────────
+ * component : ComposerSurface (composer inline div)
+ * original  : chat-composer-input-surface relative w-full
+ * state     : rounded-2xl bg-surface shadow-xl/5
+ * dom       : <div data-highspeed-composer=...>
+ * evidence  : JS @3419441
+ * evidence  : CSS .chat-composer-input-surface
+ * confidence: high
+ * purpose   : 输入框表面层：承载 highspeed 动画背景与编辑器。
+ */
+.z-composer-surface {
+  position: relative;
+  width: 100%;
+  border-color: #0000;
+}
+
+/* state/alt class: .rounded-2xl { border-radius:var(--radius-2xl) } */
+/* state/alt class: .bg-surface { background-color:var(--color-surface) } */
+/* state/alt class: .shadow-xl\/5 { --tw-shadow-alpha:5%; --tw-shadow:0 20px 25px -5px var(--tw-shadow-color,oklab(0% 0 0/.05)), 0 8px 10px -6px var(--tw-shadow-color,oklab(0% 0 0/.05)); box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow) } */
+
+/* ── composer.highspeed-surface ──────────────────────────────────────────────
+ * component : HighspeedComposerSurface (same surface)
+ * original  : highspeed-composer-surface
+ * dom       : <div class="highspeed-composer-surface">
+ * evidence  : CSS .highspeed-composer-surface
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 高速模式输入框：紫色描边/辉光，按 data-phase 切换。
+ */
+.z-composer-highspeed-surface {
+  isolation: isolate;
+  border-radius: 16px;
+  transition: border-color 1.04s cubic-bezier(.45,0,.55,1),box-shadow 1.04s cubic-bezier(.45,0,.55,1);
+  background-color: var(--color-input)!important;
+  border: 1px solid #0000!important;
+}
+
+.z-composer-highspeed-surface:hover {
+  background-color: var(--color-input-focused)!important;
+  border-color: #0000!important;
+}
+.z-composer-highspeed-surface:has([data-phase=diffusing]) {
+  border: 1px solid var(--color-highspeed-composer-border-pre-animation)!important;
+}
+.z-composer-highspeed-surface:has([data-phase=handoff]) {
+  border: 1px solid var(--color-highspeed-composer-border-pre-animation)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.z-composer-highspeed-surface:has([data-phase=stable]) {
+  box-shadow: 0 0 3px var(--color-highspeed-glow-01), 0 0 4px var(--color-highspeed-glow-04), 0 0 6.8px var(--color-highspeed-glow-15), 0 0 12px var(--color-highspeed-glow-26);
+  border: 1px solid var(--color-highspeed-composer-border-idle)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.z-composer-highspeed-surface:has([data-phase=stable]):hover {
+  border-color: var(--color-highspeed-composer-border-hover)!important;
+}
+.z-composer-highspeed-surface:has([data-phase=stable]):focus-within {
+  border: 1px solid var(--color-highspeed-composer-border-idle)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.z-composer-highspeed-surface[data-highspeed-entrance=restore] {
+  transition: none;
+}
+.z-composer-highspeed-surface[data-highspeed-entrance=restore] .highspeed-inline-countdown {
+  animation: none;
+}
+
+/* ── composer.shell ──────────────────────────────────────────────
+ * component : ComposerShell (j2t form > div)
+ * original  : relative flex flex-col gap-3 overflow-hidden rounded-2xl border-[0.5px] border-input-border bg-input p-3 shadow-(--sh...
+ * state     : flex-row flex-wrap items-end gap-2 p-2
+ * state     : border-brand bg-input-focused ring-1 ring-brand/30
+ * dom       : <div data-composer-layout="stacked|inline">
+ * evidence  : JS @3154850 `function j2t`
+ * confidence: high
+ * purpose   : 输入框卡片：默认纵向，inline 模式横排；聚焦/拖拽换边框色。
+ */
+.z-composer-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 3);
+  overflow: hidden;
+  border-radius: var(--radius-2xl);
+  border-style: var(--tw-border-style);
+  border-width: .5px;
+  border-color: var(--color-input-border);
+  background-color: var(--color-input);
+  padding: calc(var(--spacing) * 3);
+  --tw-shadow: var(--shadow-composer-soft);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* state/alt class: .flex-row { flex-direction:row } */
+/* state/alt class: .flex-wrap { flex-wrap:wrap } */
+/* state/alt class: .items-end { align-items:flex-end } */
+/* state/alt class: .gap-2 { gap:calc(var(--spacing) * 2) } */
+/* state/alt class: .border-brand { border-color:var(--color-brand) } */
+/* state/alt class: .bg-input-focused { background-color:var(--color-input-focused) } */
+/* state/alt class: .p-2 { padding:calc(var(--spacing) * 2) } */
+/* state/alt class: .ring-1 { --tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor); box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow) } */
+/* state/alt class: .ring-brand\/30 { --tw-ring-color:#00bcfe4d } */
+/* state/alt class: .ring-brand\/30 { --tw-ring-color:color-mix(in oklab, var(--color-brand) 30%, transparent) } */
+.z-composer-shell:focus-within {
+  border-color: var(--color-input-border-focused)!important;
+  background-color: var(--color-input-focused);
+}
+@media (hover:hover) {
+  .z-composer-shell:hover {
+    border-color: var(--color-input-border-hover);
+  }
+}
+
+/* ── composer.editor-wrap ──────────────────────────────────────────────
+ * component : ComposerEditorWrap (x2t)
+ * original  : relative flex-1
+ * dom       : <div class="relative flex-1">
+ * evidence  : JS @3142693 `function x2t`
+ * confidence: high
+ * purpose   : Lexical 富文本编辑器外层。
+ */
+.z-composer-editor-wrap {
+  position: relative;
+  flex: 1;
+}
+
+
+/* ── composer.editor ──────────────────────────────────────────────
+ * component : ComposerEditor (x2t contentEditable)
+ * original  : min-h-10 max-h-40 overflow-y-auto text-foreground outline-none
+ * dom       : <div contenteditable data-testid="chat-input">
+ * evidence  : JS @3142693
+ * confidence: high
+ * purpose   : 可编辑输入区：最小 40px、最大 160px 后滚动。
+ */
+.z-composer-editor {
+  max-height: calc(var(--spacing) * 40);
+  min-height: calc(var(--spacing) * 10);
+  overflow-y: auto;
+  color: var(--color-foreground);
+  --tw-outline-style: none;
+  outline-style: none;
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+
+/* ── composer.placeholder ──────────────────────────────────────────────
+ * component : ComposerPlaceholder (x2t inline div)
+ * original  : pointer-events-none absolute left-0 top-0 line-clamp-2 text-foreground-subtlest
+ * dom       : <div aria-placeholder>
+ * evidence  : JS @3142693
+ * confidence: high
+ * purpose   : 空输入占位文案，最多两行。
+ */
+.z-composer-placeholder {
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--spacing) * 0);
+  left: calc(var(--spacing) * 0);
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-foreground-subtlest);
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(var(--lucide-subtlest-opacity));
+}
+
+
+/* ── composer.toolbar ──────────────────────────────────────────────
+ * component : ComposerToolbar (j2t inline div)
+ * original  : group/toolbar flex items-end gap-3
+ * state     : shrink-0 gap-1.5
+ * dom       : <div class="group/toolbar">
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 输入框底部工具栏：左侧附件/模式，右侧模型/发送。
+ */
+.z-composer-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: calc(var(--spacing) * 3);
+}
+
+/* state/alt class: .shrink-0 { flex-shrink:0 } */
+/* state/alt class: .gap-1\.5 { gap:calc(var(--spacing) * 1.5) } */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:hidden:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:inline-flex:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:w-auto:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:max-w-none:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:min-w-0:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:transform-none\!:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:justify-center:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:px-1\.5:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-model-icon\=true\]\/toolbar\:opacity-100\!:is(:where(.group\/toolbar)[data-composer-model-icon=true] *)   [@layer utilities] */
+
+/* ── composer.leading-actions ──────────────────────────────────────────────
+ * component : ComposerLeadingActions (j2t inline div)
+ * original  : flex min-w-0 flex-1 items-center
+ * dom       : <div data-composer-leading-actions="true">
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 工具栏左侧动作区，承载宽度折叠逻辑。
+ */
+.z-composer-leading-actions {
+  display: flex;
+  min-width: calc(var(--spacing) * 0);
+  flex: 1;
+  align-items: center;
+}
+
+
+/* ── composer.leading-content ──────────────────────────────────────────────
+ * component : ComposerLeadingContent (j2t inline div)
+ * original  : flex shrink-0 items-center gap-1
+ * dom       : <div data-composer-leading-content="true">
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 左侧动作内容组。
+ */
+.z-composer-leading-content {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: calc(var(--spacing) * 1);
+}
+
+
+/* ── composer.trailing-actions ──────────────────────────────────────────────
+ * component : ComposerTrailingActions (j2t inline div)
+ * original  : ml-auto flex shrink-0 items-center justify-end gap-1.5
+ * dom       : <div data-composer-trailing-actions="true">
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 工具栏右侧：停止/发送/模型选择。
+ */
+.z-composer-trailing-actions {
+  margin-left: auto;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: calc(var(--spacing) * 1.5);
+}
+
+
+/* ── composer.send-button ──────────────────────────────────────────────
+ * component : ComposerSendButton (j2t submitControl)
+ * original  : cursor-pointer gap-1 rounded-full bg-brand text-ui-base text-foreground-inverse hover:bg-brand/80
+ * dom       : <button type="submit" data-testid=FWe>
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 发送按钮：品牌色圆形，禁用时降透明度。
+ */
+.z-composer-send-button {
+  cursor: pointer;
+  gap: calc(var(--spacing) * 1);
+  border-radius: 3.40282e38px;
+  background-color: var(--color-brand);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground-inverse);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+@media (hover:hover) {
+  .z-composer-send-button:hover {
+    background-color: #00bcfecc;
+  }
+}
+@media (hover:hover) {
+  @supports (color:color-mix(in lab, red, red)) {
+    .z-composer-send-button:hover {
+      background-color: color-mix(in oklab, var(--color-brand) 80%, transparent);
+    }
+  }
+}
+
+/* ── composer.stop-button ──────────────────────────────────────────────
+ * component : ComposerStopButton (j2t cancel control)
+ * original  : rounded-full
+ * dom       : <button type="button" data-testid=HWe>
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 停止生成按钮（圆形）。
+ */
+.z-composer-stop-button {
+  border-radius: 3.40282e38px;
+}
+
+
+/* ── composer.attachment-row ──────────────────────────────────────────────
+ * component : AttachmentRow (composer inline div)
+ * original  : flex max-w-full flex-wrap gap-2
+ * dom       : <div data-composer-file-attachments-row="true">
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 输入框上方附件行，自动换行。
+ */
+.z-composer-attachment-row {
+  display: flex;
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: calc(var(--spacing) * 2);
+}
+
+
+/* ── composer.attachment-inline ──────────────────────────────────────────────
+ * component : AttachmentItemInline (T6e)
+ * original  : h-12 w-fit max-w-full min-w-0 gap-2 rounded-lg border border-border bg-surface p-1.5 pr-6 [--attachment-bg:var(--colo...
+ * dom       : <div data-composer-attachment-kind="file|pdf">
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 文件附件卡片（非图片）：48px 高，右侧留删除按钮位。
+ */
+.z-composer-attachment-inline {
+  height: calc(var(--spacing) * 12);
+  width: fit-content;
+  max-width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  gap: calc(var(--spacing) * 2);
+  border-radius: var(--radius-lg);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  background-color: var(--color-surface);
+  padding: calc(var(--spacing) * 1.5);
+  padding-right: calc(var(--spacing) * 6);
+  --attachment-bg: var(--color-surface);
+}
+
+@media (hover:hover) {
+  .z-composer-attachment-inline:hover {
+    background-color: var(--color-surface-hover);
+  }
+}
+
+/* ── composer.attachment-grid ──────────────────────────────────────────────
+ * component : AttachmentItemGrid (T6e grid variant)
+ * original  : relative size-12 overflow-hidden rounded-lg bg-surface after:pointer-events-none after:absolute after:inset-0 after:r...
+ * dom       : <div data-composer-attachment-kind="image|video">
+ * evidence  : JS @3419441
+ * confidence: high
+ * purpose   : 图片/视频缩略图附件：48×48 圆角方块。
+ */
+.z-composer-attachment-grid {
+  position: relative;
+  width: calc(var(--spacing) * 12);
+  height: calc(var(--spacing) * 12);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface);
+}
+
+.z-composer-attachment-grid:after {
+  content: var(--tw-content);
+  pointer-events: none;
+  position: absolute;
+  inset: calc(var(--spacing) * 0);
+  border-radius: var(--radius-lg);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  --tw-content: "";
+}
+
+/* ── composer.thought-slider ──────────────────────────────────────────────
+ * component : ThoughtSlider (H5t)
+ * original  : composer-thought-slider relative h-8 w-full rounded-full
+ * dom       : <div data-testid="composer-thought-slider">
+ * evidence  : JS @3333672
+ * evidence  : CSS .composer-thought-slider
+ * confidence: high
+ * purpose   : 思考等级滑杆：32px 高，含轨道/填充/拇指/刻度点。
+ */
+.z-composer-thought-slider {
+  --composer-thought-slider-thumb: var(--color-white);
+  --composer-thought-max-accent: var(--color-blue-500);
+  position: relative;
+  height: calc(var(--spacing) * 8);
+  width: 100%;
+  border-radius: 3.40282e38px;
+}
+
+.z-composer-thought-slider[data-disabled=true] {
+  opacity: .5;
+}
+.z-composer-thought-slider:has(input:focus-visible) {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* ── composer.thought-track ──────────────────────────────────────────────
+ * component : ThoughtSliderTrack (H5t inline div)
+ * original  : absolute inset-x-0 top-1 h-6 overflow-hidden rounded-full bg-foreground/10
+ * dom       : <div data-testid="composer-thought-track">
+ * evidence  : JS @3333672
+ * confidence: high
+ * purpose   : 滑杆轨道：24px 高，内描边由子元素绘制。
+ */
+.z-composer-thought-track {
+  position: absolute;
+  inset-inline: calc(var(--spacing) * 0);
+  top: calc(var(--spacing) * 1);
+  height: calc(var(--spacing) * 6);
+  overflow: hidden;
+  border-radius: 3.40282e38px;
+  background-color: #4040401a;
+}
+
+@supports (color:color-mix(in lab, red, red)) {
+  .z-composer-thought-track {
+    background-color: color-mix(in oklab, var(--color-foreground) 10%, transparent);
+  }
+}
+
+/* ── composer.thought-fill ──────────────────────────────────────────────
+ * component : ThoughtSliderFill (H5t inline div)
+ * original  : composer-thought-slider-fill absolute inset-y-0 left-0 overflow-hidden rounded-full
+ * dom       : <div class="composer-thought-slider-fill" data-max data-highspeed>
+ * evidence  : JS @3333672
+ * evidence  : CSS .composer-thought-slider-fill
+ * confidence: high
+ * purpose   : 滑杆进度填充；满级时显示气泡动画，highspeed 时变蓝紫渐变。
+ */
+.z-composer-thought-fill {
+  background: var(--color-success);
+  transition: width .12s ease-out;
+  position: absolute;
+  inset-block: calc(var(--spacing) * 0);
+  left: calc(var(--spacing) * 0);
+  overflow: hidden;
+  border-radius: 3.40282e38px;
+}
+
+.z-composer-thought-fill[data-highspeed=true] {
+  background: var(--color-blue-500);
+}
+.z-composer-thought-fill:before {
+  content: "";
+  border-radius: inherit;
+  opacity: 0;
+  background: linear-gradient(270deg in oklch shorter hue, var(--composer-thought-max-accent) 0%, var(--color-success) 100%);
+  transition: opacity .2s ease-out;
+  position: absolute;
+  inset: 0;
+}
+.z-composer-thought-fill[data-highspeed=true]:before {
+  background: linear-gradient(90deg in oklab, var(--color-blue-500) 0%, var(--color-purple-500) 100%);
+}
+.z-composer-thought-fill[data-max=true]:before {
+  opacity: 1;
+}
+@media (prefers-reduced-motion:reduce) {
+  .z-composer-thought-fill {
+    transition: none;
+  }
+}
+
+/* ── composer.thought-thumb ──────────────────────────────────────────────
+ * component : ThoughtSliderThumb (H5t inline div)
+ * original  : composer-thought-slider-thumb absolute top-0.5 size-7 rounded-full shadow-sm
+ * dom       : <div class="composer-thought-slider-thumb">
+ * evidence  : JS @3333672
+ * confidence: high
+ * purpose   : 滑杆拇指：28px 白色圆点。
+ */
+.z-composer-thought-thumb {
+  background: var(--composer-thought-slider-thumb);
+  transition: left .12s ease-out;
+  position: absolute;
+  top: calc(var(--spacing) * .5);
+  width: calc(var(--spacing) * 7);
+  height: calc(var(--spacing) * 7);
+  border-radius: 3.40282e38px;
+  --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color,#0000001a), 0 1px 2px -1px var(--tw-shadow-color,#0000001a);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .z-composer-thought-thumb {
+    transition: none;
+  }
+}
+
+/* ── composer.thought-stop ──────────────────────────────────────────────
+ * component : ThoughtSliderStop (H5t inline span)
+ * original  : composer-thought-slider-stop size-1 shrink-0 rounded-full
+ * dom       : <span data-composer-thought-stop data-filled data-hovered>
+ * evidence  : JS @3333672
+ * evidence  : CSS .composer-thought-slider-stop
+ * confidence: high
+ * purpose   : 等级刻度点：4px，悬停放大 1.75 倍。
+ */
+.z-composer-thought-stop {
+  background: var(--color-foreground-subtlest);
+  transition: scale .12s ease-out,opacity .12s ease-out;
+  scale: 1;
+  width: calc(var(--spacing) * 1);
+  height: calc(var(--spacing) * 1);
+  flex-shrink: 0;
+  border-radius: 3.40282e38px;
+}
+
+.z-composer-thought-stop[data-filled=true] {
+  background: var(--color-white);
+  opacity: .3;
+}
+.z-composer-thought-stop[data-hovered=true] {
+  opacity: 1;
+  scale: 1.75;
+}
+@media (prefers-reduced-motion:reduce) {
+  .z-composer-thought-stop {
+    transition: none;
+  }
+}
+
+/* ── composer.thought-range ──────────────────────────────────────────────
+ * component : ThoughtSliderInput (H5t input[type=range])
+ * original  : composer-thought-range absolute inset-0 m-0 h-8 w-full cursor-pointer appearance-none bg-transparent outline-none ari...
+ * dom       : <input type="range" data-testid="composer-thought-slider">
+ * evidence  : JS @3333672
+ * confidence: high
+ * purpose   : 透明原生 range 覆盖层，负责指针/键盘交互。
+ */
+.z-composer-thought-range {
+  position: absolute;
+  inset: calc(var(--spacing) * 0);
+  margin: calc(var(--spacing) * 0);
+  height: calc(var(--spacing) * 8);
+  width: 100%;
+  cursor: pointer;
+  appearance: none;
+  background-color: #0000;
+  --tw-outline-style: none;
+  outline-style: none;
+}
+
+.z-composer-thought-range::-webkit-slider-runnable-track {
+  background: 0 0;
+  height: 32px;
+}
+.z-composer-thought-range::-webkit-slider-thumb {
+  appearance: none;
+  background: 0 0;
+  border: 0;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+}
+.z-composer-thought-range::-moz-range-track {
+  background: 0 0;
+  height: 32px;
+}
+.z-composer-thought-range::-moz-range-thumb {
+  background: 0 0;
+  border: 0;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+}
+.z-composer-thought-range::-moz-range-progress {
+  background: 0 0;
+}
+.z-composer-thought-range[aria-disabled=true] {
+  cursor: default;
+}
+
+/* ── composer.drag-overlay ──────────────────────────────────────────────
+ * component : ComposerDragOverlay (j2t inline div)
+ * original  : pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-accent/55 backdrop-blur-sm
+ * dom       : <div> drag overlay
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 文件拖入输入框时的半透明遮罩。
+ */
+.z-composer-drag-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: calc(var(--spacing) * 0);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-2xl);
+  background-color: #f0f9ff8c;
+  --tw-backdrop-blur: blur(var(--blur-sm));
+  -webkit-backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
+  backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
+}
+
+@supports (color:color-mix(in lab, red, red)) {
+  .z-composer-drag-overlay {
+    background-color: color-mix(in oklab, var(--color-accent) 55%, transparent);
+  }
+}
+
+/* ── composer.drag-pill ──────────────────────────────────────────────
+ * component : ComposerDragPill (j2t inline div)
+ * original  : flex items-center gap-2 rounded-full border border-border bg-accent px-4 py-2 text-ui-base text-foreground shadow-sm
+ * dom       : <div> drag hint pill
+ * evidence  : JS @3154850
+ * confidence: high
+ * purpose   : 拖拽提示胶囊（图标 + 文案）。
+ */
+.z-composer-drag-pill {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  border-radius: 3.40282e38px;
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  background-color: var(--color-accent);
+  padding-inline: calc(var(--spacing) * 4);
+  padding-block: calc(var(--spacing) * 2);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground);
+  --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color,#0000001a), 0 1px 2px -1px var(--tw-shadow-color,#0000001a);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+
+/* ── composer.queue-resume ──────────────────────────────────────────────
+ * component : QueueResumeBar (chat queue)
+ * original  : relative z-0 w-full overflow-hidden rounded-t-2xl border border-border bg-surface p-1 backdrop-blur-md
+ * state     : -mb-7 pb-7
+ * dom       : <div class="relative z-0 ...">
+ * evidence  : JS @3675643 `chat.queue.resume.description`
+ * confidence: medium
+ * purpose   : 队列恢复条：与输入框顶部叠接的圆角卡片。
+ */
+.z-composer-queue-resume {
+  position: relative;
+  z-index: 0;
+  width: 100%;
+  overflow: hidden;
+  border-top-left-radius: var(--radius-2xl);
+  border-top-right-radius: var(--radius-2xl);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  background-color: var(--color-surface);
+  padding: calc(var(--spacing) * 1);
+  --tw-backdrop-blur: blur(var(--blur-md));
+  -webkit-backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
+  backdrop-filter: var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);
+}
+
+/* state/alt class: .-mb-7 { margin-bottom:calc(var(--spacing) * -7) } */
+/* state/alt class: .pb-7 { padding-bottom:calc(var(--spacing) * 7) } */
+
+/* ── composer.model-trigger ──────────────────────────────────────────────
+ * component : ModelSelectTrigger (FY)
+ * original  : min-w-0 rounded-full text-ui-base/relaxed
+ * state     : max-w-full pl-3 pr-2
+ * state     : size-8 px-0
+ * dom       : <button data-testid="chat-model-select-trigger">
+ * evidence  : JS @3333672 邻近 model trigger
+ * evidence  : JS @452 `chat-model-select-trigger`
+ * confidence: high
+ * purpose   : 模型选择触发器：胶囊形，窄容器折叠为图标。
+ */
+.z-composer-model-trigger {
+  min-width: calc(var(--spacing) * 0);
+  border-radius: 3.40282e38px;
+  font-size: var(--text-ui-base);
+  line-height: var(--leading-relaxed);
+}
+
+/* state/alt class: .size-8 { width:calc(var(--spacing) * 8); height:calc(var(--spacing) * 8) } */
+/* state/alt class: .max-w-full { max-width:100% } */
+/* state/alt class: .px-0 { padding-inline:calc(var(--spacing) * 0) } */
+/* state/alt class: .pr-2 { padding-right:calc(var(--spacing) * 2) } */
+/* state/alt class: .pl-3 { padding-left:calc(var(--spacing) * 3) } */
+
+/* ── composer.thought-compact ──────────────────────────────────────────────
+ * component : ThoughtControlCompact (FY thought control)
+ * original  : group/thought shrink-0 data-[composer-compact=icon]:size-7 data-[composer-compact=icon]:justify-center data-[composer...
+ * dom       : <button data-composer-thought-control>
+ * evidence  : JS @3333672
+ * evidence  : CSS .group-data-[composer-compact=icon]/thought
+ * confidence: medium
+ * purpose   : 思考等级控件的紧凑态：折叠为 28px 图标按钮。
+ */
+.z-composer-thought-compact {
+  flex-shrink: 0;
+}
+
+/* raw: .group-data-\[composer-compact\]\/thought\:hidden:is(:where(.group\/thought)[data-composer-compact] *)   [@layer utilities] */
+/* raw: .group-data-\[composer-compact\=true\]\/thought\:inline-flex:is(:where(.group\/thought)[data-composer-compact=true] *)   [@layer utilities] */
+.z-composer-thought-compact[data-composer-compact=icon] {
+  width: calc(var(--spacing) * 7);
+  height: calc(var(--spacing) * 7);
+  justify-content: center;
+  gap: calc(var(--spacing) * 0);
+  padding: calc(var(--spacing) * 0);
+}
+
+/* ============================================================================
+ * 4. Chat Timeline（消息时间线）
+ * ========================================================================== */
+
+/* ── timeline.root ──────────────────────────────────────────────
+ * component : Timeline (dTn)
+ * original  : relative flex min-h-0 flex-1 flex-col
+ * state     : min-w-0
+ * dom       : <div class="relative flex min-h-0 flex-1 flex-col">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 对话时间线根容器。
+ */
+.z-timeline-root {
+  position: relative;
+  display: flex;
+  min-height: calc(var(--spacing) * 0);
+  flex: 1;
+  flex-direction: column;
+}
+
+/* state/alt class: .min-w-0 { min-width:calc(var(--spacing) * 0) } */
+
+/* ── timeline.scroller ──────────────────────────────────────────────
+ * component : TimelineScroller (dTn inline div)
+ * original  : min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable_both-edges] [--markdown-table-layout-left-i...
+ * state     : !overflow-y-hidden
+ * state     : mb-[calc(var(--v4-floating-composer-dock-height,0px)+12px)] pb-4
+ * dom       : <div data-testid=xWe data-v4-timeline-scroll="true">
+ * evidence  : JS @4486416
+ * evidence  : CSS .[scrollbar-gutter:stable_both-edges]
+ * confidence: high
+ * purpose   : 虚拟滚动容器；滚动条槽两侧稳定，表格布局内缩变量。
+ */
+.z-timeline-scroller {
+  min-height: calc(var(--spacing) * 0);
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  --markdown-table-layout-left-inset: 16px;
+  --markdown-table-layout-right-inset: 16px;
+  scrollbar-gutter: stable both-edges;
+}
+
+/* state/alt class: .mb-\[calc\(var\(--v4-floating-composer-dock-height\,0px\)\+12px\)\] { margin-bottom:calc(var(--v4-floating-composer-dock-height,0px) + 12px) } */
+/* state/alt class: .\!overflow-y-hidden { overflow-y:hidden!important } */
+/* state/alt class: .pb-4 { padding-bottom:calc(var(--spacing) * 4) } */
+@media not all and (width>=48rem) {
+  .z-timeline-scroller {
+    --markdown-table-layout-left-inset: 8px;
+    --markdown-table-layout-right-inset: 8px;
+  }
+}
+
+/* ── timeline.inner ──────────────────────────────────────────────
+ * component : TimelineInner (dTn inline div)
+ * original  : flex min-h-full flex-col
+ * state     : flex min-h-full flex-col items-center justify-center gap-4 px-2
+ * state     : flex min-h-full flex-col items-center px-2 before:block before:min-h-[52px] before:w-full before:shrink bef...
+ * dom       : <div style="overflow-anchor:none">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 时间线内容内层：空态居中或顶部 29dvh 留白。
+ */
+.z-timeline-inner {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+}
+
+/* state/alt class: .items-center { align-items:center } */
+/* state/alt class: .justify-center { justify-content:center } */
+/* state/alt class: .gap-4 { gap:calc(var(--spacing) * 4) } */
+/* state/alt class: .px-2 { padding-inline:calc(var(--spacing) * 2) } */
+.z-timeline-inner:before {
+  content: var(--tw-content);
+  display: block;
+  min-height: 52px;
+  width: 100%;
+  flex-shrink: 1;
+  flex-basis: 29dvh;
+  --tw-content: "";
+}
+.z-timeline-inner:after {
+  content: var(--tw-content);
+  display: block;
+  min-height: calc(var(--spacing) * 4);
+  width: 100%;
+  flex: 1;
+  --tw-content: "";
+}
+
+/* ── timeline.message-layer ──────────────────────────────────────────────
+ * component : TimelineMessageLayer (dTn inline div)
+ * original  : relative w-full flex-1 [mask-repeat:no-repeat] [-webkit-mask-repeat:no-repeat]
+ * dom       : <div data-v4-timeline-message-layer="true" data-sandbox-page-container="true">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 消息层：承载 header slot、虚拟历史、运行尾部和 guide 列表。
+ */
+.z-timeline-message-layer {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+
+/* ── timeline.content-column ──────────────────────────────────────────────
+ * component : TimelineContentColumn (dTn inline div)
+ * original  : relative mx-auto w-full shrink-0 transition-[width,max-width,transform] duration-150 ease-out @min-[1280px]/conversat...
+ * dom       : <div data-v4-timeline-content-column="true">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 内容列：宽度随侧面板开合过渡，≥1280px 只过渡 transform。
+ */
+.z-timeline-content-column {
+  position: relative;
+  margin-inline: auto;
+  width: 100%;
+  flex-shrink: 0;
+  transition-property: width,max-width,transform;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .15s;
+  --tw-duration: .15s;
+  --tw-ease: var(--ease-out);
+}
+
+@container conversation (width>=1280px) {
+  .z-timeline-content-column {
+    transition-property: transform;
+    transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration,var(--default-transition-duration));
+  }
+}
+
+/* ── timeline.turn-unit ──────────────────────────────────────────────
+ * component : TurnUnit (RCn / LCn)
+ * original  : absolute left-0 top-0 w-full
+ * state     : pt-14
+ * dom       : <div data-v4-turn-unit="true" data-turn-id=...>
+ * evidence  : JS @4486416
+ * evidence  : JS @4437719 `RCn`
+ * confidence: high
+ * purpose   : 虚拟列表中的单轮容器：绝对定位 + translateY。
+ */
+.z-timeline-turn-unit {
+  position: absolute;
+  top: calc(var(--spacing) * 0);
+  left: calc(var(--spacing) * 0);
+  width: 100%;
+}
+
+/* state/alt class: .pt-14 { padding-top:calc(var(--spacing) * 14) } */
+
+/* ── timeline.assistant-turn ──────────────────────────────────────────────
+ * component : AssistantTurn (LCn)
+ * original  : group/assistant-turn flex w-full flex-col gap-5
+ * dom       : <div class="group/assistant-turn">
+ * evidence  : JS @4437719
+ * confidence: high
+ * purpose   : 助手回合内容：20px 间距的纵向栈。
+ */
+.z-timeline-assistant-turn {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 5);
+}
+
+/* raw: .group-hover\/assistant-row\:opacity-100:is(:where(.group\/assistant-row):hover *),.group-hover\/assistant-turn\:opacity-100:is(:where(.group\/assistant-turn):hover *),.group-hover\/button\:opacity-100:is(:where(.group\/button):hover *),.group-hover\/card\:opacity-100:is(:where(.group\/card):hover *),.group-hover\/comment\:opacity-100:is(:where(.group\/comment):hover *),.group-hover\/context\:opacity-100:is(:where(.group\/context):hover *)   [@layer utilities / @media (hover:hover)] */
+
+/* ── timeline.user-bubble ──────────────────────────────────────────────
+ * component : UserInputBubble (uin)
+ * original  : flex max-w-full flex-col gap-2 rounded-xl rounded-tr-xs border border-border bg-surface px-4 py-3 text-ui-base text-f...
+ * dom       : <div data-v4-user-input-bubble="true">
+ * evidence  : JS @3795549
+ * confidence: high
+ * purpose   : 用户消息气泡：右上角小圆角，≥624px 最大宽 36rem。
+ */
+.z-timeline-user-bubble {
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  gap: calc(var(--spacing) * 2);
+  border-radius: var(--radius-xl);
+  border-top-right-radius: var(--radius-xs);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  background-color: var(--color-surface);
+  padding-inline: calc(var(--spacing) * 4);
+  padding-block: calc(var(--spacing) * 3);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+@container conversation (width>=624px) {
+  .z-timeline-user-bubble {
+    max-width: var(--container-xl);
+  }
+}
+
+/* ── timeline.user-collapsible ──────────────────────────────────────────────
+ * component : UserInputCollapsible ($rn)
+ * original  : min-w-0 overflow-hidden whitespace-pre-wrap break-words transition-[max-height] duration-300 ease-out motion-reduce:t...
+ * state     : [mask-image:linear-gradient(to_bottom,black_0%,black_70%,transparent_100%)] [-webkit-mask-image:linear-grad...
+ * dom       : <div data-v4-user-input-collapsible-content="true">
+ * evidence  : JS @3795549
+ * confidence: high
+ * purpose   : 长用户消息折叠：默认 120px，超过 120px 显示展开按钮。
+ */
+.z-timeline-user-collapsible {
+  min-width: calc(var(--spacing) * 0);
+  overflow: hidden;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+  transition-property: max-height;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .3s;
+  --tw-duration: .3s;
+  --tw-ease: var(--ease-out);
+}
+
+/* state/alt class: .\[mask-image\:linear-gradient\(to_bottom\,black_0\%\,black_70\%\,transparent_100\%\)\] { -webkit-mask-image:linear-gradient(#000 0% 70%,#0000 100%); mask-image:linear-gradient(#000 0% 70%,#0000 100%) } */
+/* state/alt class: .\[-webkit-mask-image\:linear-gradient\(to_bottom\,black_0\%\,black_70\%\,transparent_100\%\)\] { -webkit-mask-image:linear-gradient(#000 0% 70%,#0000 100%) } */
+@media (prefers-reduced-motion:reduce) {
+  .z-timeline-user-collapsible {
+    transition-property: none;
+  }
+}
+
+/* ── timeline.assistant-text ──────────────────────────────────────────────
+ * component : AssistantTextRow (aCn)
+ * original  : w-full text-ui-base
+ * dom       : <div data-conversation-selectable="true">
+ * evidence  : JS @4400606 `aCn=`
+ * confidence: high
+ * purpose   : 助手 Markdown 正文行。
+ */
+.z-timeline-assistant-text {
+  width: 100%;
+  font-size: var(--text-ui-base);
+}
+
+
+/* ── timeline.assistant-actions ──────────────────────────────────────────────
+ * component : AssistantActions (iCn)
+ * original  : mt-1
+ * state     : opacity-100
+ * state     : opacity-0 transition-opacity group-hover/assistant-row:opacity-100 focus-within:opacity-100
+ * dom       : <div class="mt-1"> copy/retry/feedback
+ * evidence  : JS @4400606
+ * confidence: high
+ * purpose   : 助手消息操作条：默认悬停显现。
+ */
+.z-timeline-assistant-actions {
+  margin-top: calc(var(--spacing) * 1);
+}
+
+/* state/alt class: .opacity-0 { opacity:0 } */
+/* state/alt class: .opacity-100 { opacity:1 } */
+/* state/alt class: .transition-opacity { transition-property:opacity; transition-timing-function:var(--tw-ease,var(--default-transition-timing-function)); transition-duration:var(--tw-duration,var(--default-transition-duration)) } */
+/* raw: .group-hover\/assistant-row\:opacity-100:is(:where(.group\/assistant-row):hover *),.group-hover\/assistant-turn\:opacity-100:is(:where(.group\/assistant-turn):hover *),.group-hover\/button\:opacity-100:is(:where(.group\/button):hover *),.group-hover\/card\:opacity-100:is(:where(.group\/card):hover *),.group-hover\/comment\:opacity-100:is(:where(.group\/comment):hover *),.group-hover\/context\:opacity-100:is(:where(.group\/context):hover *)   [@layer utilities / @media (hover:hover)] */
+.z-timeline-assistant-actions:focus-within {
+  opacity: 1;
+}
+
+/* ── timeline.reasoning-root ──────────────────────────────────────────────
+ * component : Reasoning (D2)
+ * original  : not-prose flex flex-col
+ * dom       : <div class="not-prose flex flex-col">
+ * evidence  : JS @4370741 `displayName=Reasoning`
+ * confidence: high
+ * purpose   : 思考过程折叠根（Radix Collapsible）。
+ * unresolved: not-prose（CSS 无规则，仅 JS 钩子）
+ */
+.z-timeline-reasoning-root {
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* ── timeline.reasoning-trigger ──────────────────────────────────────────────
+ * component : ReasoningTrigger (O2)
+ * original  : group/reasoning inline-flex max-w-full min-w-0 items-center gap-2 self-start text-ui-base transition-colors
+ * dom       : <button data-testid=sWe>
+ * evidence  : JS @4370741
+ * confidence: high
+ * purpose   : 思考过程摘要触发条：图标 + “思考 · N 秒” + 流式末行。
+ */
+.z-timeline-reasoning-trigger {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  align-self: flex-start;
+  font-size: var(--text-ui-base);
+  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* raw: .group-hover\/purpose-section\:opacity-100:is(:where(.group\/purpose-section):hover *),.group-hover\/reasoning\:opacity-100:is(:where(.group\/reasoning):hover *),.group-hover\/reference\:opacity-100:is(:where(.group\/reference):hover *)   [@layer utilities / @media (hover:hover)] */
+
+/* ── timeline.reasoning-streaming ──────────────────────────────────────────────
+ * component : ReasoningStreamingLabel (O2 inline span)
+ * original  : animated-gradient-text font-medium
+ * dom       : <span class="animated-gradient-text font-medium">
+ * evidence  : JS @4370741
+ * confidence: high
+ * purpose   : 流式思考中的渐变文字。
+ */
+.z-timeline-reasoning-streaming {
+  --tw-font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-medium);
+  background: linear-gradient(90deg, var(--animated-gradient-text-strong) 0%, var(--animated-gradient-text-strong) 34%, var(--animated-gradient-text-soft) 50%, var(--animated-gradient-text-strong) 66%, var(--animated-gradient-text-strong) 100%);
+  color: #0000;
+  -webkit-text-fill-color: transparent;
+  will-change: background-position;
+  backface-visibility: hidden;
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: 4s linear infinite gradient-flow;
+  display: inline-block;
+  transform: translateZ(0);
+}
+
+/* raw: .highspeed-animated-gradient-text .animated-gradient-text   [@layer utilities] */
+/* raw: .highspeed-animated-gradient-text .animated-gradient-text   [@layer utilities / @supports (color:color-mix(in lab, red, red))] */
+
+/* ── timeline.reasoning-content ──────────────────────────────────────────────
+ * component : ReasoningContent (k2)
+ * original  : pt-3
+ * dom       : <div data-reasoning-content="true">
+ * evidence  : JS @4370741
+ * confidence: high
+ * purpose   : 思考过程内容区外层。
+ */
+.z-timeline-reasoning-content {
+  padding-top: calc(var(--spacing) * 3);
+}
+
+
+/* ── timeline.reasoning-body ──────────────────────────────────────────────
+ * component : ReasoningBody (k2 inline div)
+ * original  : max-h-60 space-y-2 overflow-auto text-ui-base text-foreground-subtlest
+ * state     : ml-2 border-border border-l pl-3.5
+ * dom       : <div data-reasoning-scroll-mask>
+ * evidence  : JS @4370741
+ * confidence: high
+ * purpose   : 思考正文：最大 240px 滚动，左侧竖线缩进。
+ */
+.z-timeline-reasoning-body {
+  max-height: calc(var(--spacing) * 60);
+  overflow: auto;
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground-subtlest);
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(var(--lucide-subtlest-opacity));
+}
+
+/* state/alt class: .ml-2 { margin-left:calc(var(--spacing) * 2) } */
+/* raw: :where(.space-y-2>:not(:last-child))   [@layer utilities] */
+/* state/alt class: .border-l { border-left-style:var(--tw-border-style); border-left-width:1px } */
+/* state/alt class: .border-border { border-color:var(--color-border) } */
+/* state/alt class: .pl-3\.5 { padding-left:calc(var(--spacing) * 3.5) } */
+
+/* ── timeline.marker ──────────────────────────────────────────────
+ * component : TimelineMarker (fCn)
+ * original  : flex w-full items-center gap-3 px-4 py-2 text-ui-base text-[var(--color-foreground-subtle)]
+ * dom       : <div class="group/marker ...">
+ * evidence  : JS @4400606 邻近 fCn
+ * confidence: high
+ * purpose   : 时间线分隔标记（压缩/模型切换等）：两侧细线 + 居中标签。
+ */
+.z-timeline-marker {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: calc(var(--spacing) * 3);
+  padding-inline: calc(var(--spacing) * 4);
+  padding-block: calc(var(--spacing) * 2);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground-subtle);
+}
+
+
+/* ── timeline.turn-header ──────────────────────────────────────────────
+ * component : TurnHeaderRow (sCn)
+ * original  : border-b border-[var(--color-border)] py-1 text-ui-sm text-[var(--color-foreground-subtle)]
+ * dom       : <div> turn · origin · state
+ * evidence  : JS @4404037 `sCn=`
+ * confidence: medium
+ * purpose   : 调试用回合头（origin/state），通常不展示给最终用户。
+ */
+.z-timeline-turn-header {
+  border-bottom-style: var(--tw-border-style);
+  border-bottom-width: 1px;
+  border-color: var(--color-border);
+  padding-block: calc(var(--spacing) * 1);
+  font-size: var(--text-ui-sm);
+  color: var(--color-foreground-subtle);
+}
+
+/* raw: .\[\.border-b\]\:pb-2.border-b   [@layer utilities] */
+/* raw: .\[\.border-b\]\:pb-4.border-b   [@layer utilities] */
+/* raw: .group-data-\[size\=sm\]\/card\:\[\.border-b\]\:pb-3:is(:where(.group\/card)[data-size=sm] *).border-b   [@layer utilities] */
+
+/* ── timeline.composer-dock ──────────────────────────────────────────────
+ * component : ComposerDock (dTn inline div)
+ * original  : pointer-events-none z-20 flex w-full justify-center
+ * state     : absolute inset-x-0 bottom-0
+ * state     : mt-3 shrink-0
+ * state     : sticky bottom-0
+ * dom       : <div data-v4-composer-dock="true">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 时间线底部输入框停靠层：sticky / absolute / static 三模式。
+ */
+.z-timeline-composer-dock {
+  pointer-events: none;
+  z-index: 20;
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+/* state/alt class: .absolute { position:absolute } */
+/* state/alt class: .sticky { position:sticky } */
+/* state/alt class: .inset-x-0 { inset-inline:calc(var(--spacing) * 0) } */
+/* state/alt class: .bottom-0 { bottom:calc(var(--spacing) * 0) } */
+/* state/alt class: .mt-3 { margin-top:calc(var(--spacing) * 3) } */
+/* state/alt class: .shrink-0 { flex-shrink:0 } */
+
+/* ── timeline.dock-content ──────────────────────────────────────────────
+ * component : ComposerDockContent (dTn inline div)
+ * original  : pointer-events-auto relative z-10 w-full shrink-0 transition-[width,max-width,transform] duration-150 ease-out @min-[...
+ * dom       : <div data-v4-composer-dock-content="true">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 停靠内容宽度过渡层。
+ */
+.z-timeline-dock-content {
+  pointer-events: auto;
+  position: relative;
+  z-index: 10;
+  width: 100%;
+  flex-shrink: 0;
+  transition-property: width,max-width,transform;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .15s;
+  --tw-duration: .15s;
+  --tw-ease: var(--ease-out);
+}
+
+@container conversation (width>=1280px) {
+  .z-timeline-dock-content {
+    transition-property: transform;
+    transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration,var(--default-transition-duration));
+  }
+}
+
+/* ── timeline.scroll-to-bottom ──────────────────────────────────────────────
+ * component : ScrollToBottomButton (sTn)
+ * original  : pointer-events-auto absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 shadow-sm
+ * state     : absolute bottom-3 left-1/2 -translate-x-1/2 shadow-sm
+ * dom       : <button class="...">
+ * evidence  : JS @4486416
+ * confidence: high
+ * purpose   : 回到底部按钮：悬于输入框上方或时间线底部。
+ */
+.z-timeline-scroll-to-bottom {
+  pointer-events: auto;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  z-index: 30;
+  margin-bottom: calc(var(--spacing) * 2);
+  --tw-translate-x: calc(calc(1 / 2 * 100%) * -1);
+  translate: var(--tw-translate-x) var(--tw-translate-y);
+  --tw-shadow: 0 1px 3px 0 var(--tw-shadow-color,#0000001a), 0 1px 2px -1px var(--tw-shadow-color,#0000001a);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+/* state/alt class: .bottom-3 { bottom:calc(var(--spacing) * 3) } */
+
+/* ── timeline.turn-navigator ──────────────────────────────────────────────
+ * component : TurnNavigator (UCn)
+ * original  : pointer-events-none invisible absolute inset-y-0 left-0 z-10 w-12 -translate-x-2 opacity-0 transition-[opacity,transf...
+ * dom       : <nav data-testid=xGe>
+ * evidence  : JS @4437719 邻近 UCn
+ * confidence: high
+ * purpose   : 左侧回合导航条：≥864px 显示，按用户提问定位。
+ */
+.z-timeline-turn-navigator {
+  pointer-events: none;
+  visibility: hidden;
+  position: absolute;
+  inset-block: calc(var(--spacing) * 0);
+  left: calc(var(--spacing) * 0);
+  z-index: 10;
+  width: calc(var(--spacing) * 12);
+  --tw-translate-x: calc(var(--spacing) * -2);
+  translate: var(--tw-translate-x) var(--tw-translate-y);
+  opacity: 0;
+  transition-property: opacity,transform,visibility;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .15s;
+  --tw-duration: .15s;
+  --tw-ease: var(--ease-out);
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .z-timeline-turn-navigator {
+    transition-property: none;
+  }
+}
+@container conversation (width>=864px) {
+  .z-timeline-turn-navigator {
+    visibility: visible;
+    --tw-translate-x: calc(var(--spacing) * 0);
+    translate: var(--tw-translate-x) var(--tw-translate-y);
+    opacity: 1;
+  }
+}
+
+/* ── timeline.navigator-tick ──────────────────────────────────────────────
+ * component : TurnNavigatorTick (WCn inline span)
+ * original  : block h-0.5 w-3 origin-left rounded-full transition-[height,opacity,transform,background-color] duration-150 ease-out...
+ * state     : bg-foreground
+ * state     : bg-foreground-subtlest
+ * dom       : <span> inside nav button
+ * evidence  : JS @4437719
+ * confidence: high
+ * purpose   : 导航条刻度：2px 高短线，按距离缩放/着色。
+ */
+.z-timeline-navigator-tick {
+  display: block;
+  height: calc(var(--spacing) * .5);
+  width: calc(var(--spacing) * 3);
+  transform-origin: 0;
+  border-radius: 3.40282e38px;
+  transition-property: height,opacity,transform,background-color;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .15s;
+  --tw-duration: .15s;
+  --tw-ease: var(--ease-out);
+}
+
+/* state/alt class: .bg-foreground { background-color:var(--color-foreground) } */
+/* state/alt class: .bg-foreground-subtlest { background-color:var(--color-foreground-subtlest) } */
+@media (prefers-reduced-motion:reduce) {
+  .z-timeline-navigator-tick {
+    transition-property: none;
+  }
+}
+
+/* ============================================================================
+ * 5. Tool（工具调用卡片）
+ * ========================================================================== */
+
+/* ── tool.block ──────────────────────────────────────────────
+ * component : ToolCallBlock (r0 / Bgn)
+ * original  : w-full
+ * dom       : <div data-tool-call-id data-tool-name data-status>
+ * evidence  : JS @4164176 `displayName=ToolCallBlock`
+ * confidence: high
+ * purpose   : 工具调用卡片根；data-tool-name/status 驱动具体渲染器。
+ */
+.z-tool-block {
+  width: 100%;
+}
+
+
+/* ── tool.nested-list ──────────────────────────────────────────────
+ * component : ToolCallNestedList (r0 inline div)
+ * original  : ml-2 space-y-2 border-border border-l pl-3.5 border-border
+ * dom       : <div class="ml-2 space-y-2 border-l ...">
+ * evidence  : JS @4164176
+ * confidence: high
+ * purpose   : 子工具调用列表：左侧竖线 + 14px 缩进。
+ */
+.z-tool-nested-list {
+  margin-left: calc(var(--spacing) * 2);
+  border-left-style: var(--tw-border-style);
+  border-left-width: 1px;
+  border-color: var(--color-border);
+  padding-left: calc(var(--spacing) * 3.5);
+}
+
+/* raw: :where(.space-y-2>:not(:last-child))   [@layer utilities] */
+
+/* ── tool.layout ──────────────────────────────────────────────
+ * component : ToolLayout (y0e)
+ * original  : w-full flex flex-col
+ * dom       : <div class="w-full flex flex-col">
+ * evidence  : JS @1145709 `displayName=ToolLayout`
+ * confidence: high
+ * purpose   : 工具卡片布局根（Collapsible）。
+ */
+.z-tool-layout {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+}
+
+
+/* ── tool.summary-trigger ──────────────────────────────────────────────
+ * component : ToolSummaryTrigger (h0e)
+ * original  : group/tool-summary inline-flex max-w-full cursor-pointer items-center gap-2 self-start text-left text-ui-base transit...
+ * dom       : <div role="button" data-testid=tool-summary-trigger>
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 工具摘要行（可展开）：图标 + 动作名 + 文件/命令摘要 + 状态。
+ */
+.z-tool-summary-trigger {
+  display: inline-flex;
+  max-width: 100%;
+  cursor: pointer;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  align-self: flex-start;
+  text-align: left;
+  font-size: var(--text-ui-base);
+  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* raw: .group-hover\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/tool-summary\:opacity-100:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-focus-visible\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):focus-visible *)   [@layer utilities] */
+.z-tool-summary-trigger:focus-visible {
+  --tw-ring-shadow: var(--tw-ring-inset,) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  --tw-ring-color: var(--color-input-border-focused);
+  --tw-outline-style: none;
+  outline-style: none;
+}
+
+/* ── tool.summary-static ──────────────────────────────────────────────
+ * component : ToolSummaryStatic (h0e static branch)
+ * original  : group/tool-summary cursor-default flex w-full items-center gap-2 text-left text-ui-base transition-colors focus-visib...
+ * dom       : <div class="group/tool-summary cursor-default ...">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 不可展开工具的摘要行。
+ */
+.z-tool-summary-static {
+  display: flex;
+  width: 100%;
+  cursor: default;
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+  text-align: left;
+  font-size: var(--text-ui-base);
+  transition-property: color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;
+  transition-timing-function: var(--tw-ease,var(--default-transition-timing-function));
+  transition-duration: var(--tw-duration,var(--default-transition-duration));
+}
+
+/* raw: .group-hover\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/tool-summary\:opacity-100:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-hover\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+/* raw: .group-focus-visible\/tool-summary\:text-foreground:is(:where(.group\/tool-summary):focus-visible *)   [@layer utilities] */
+.z-tool-summary-static:focus-visible {
+  --tw-outline-style: none;
+  outline-style: none;
+}
+
+/* ── tool.chevron ──────────────────────────────────────────────
+ * component : ToolChevron (h0e inline icon)
+ * original  : size-4 text-foreground-subtlest opacity-0 transition-transform transition-opacity duration-200 ease-out will-change-t...
+ * state     : rotate-90 opacity-100
+ * state     : rotate-0
+ * dom       : <svg class="size-4 ...">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 展开箭头：悬停显现，展开旋转 90°。
+ */
+.z-tool-chevron {
+  width: calc(var(--spacing) * 4);
+  height: calc(var(--spacing) * 4);
+  flex-shrink: 0;
+  color: var(--color-foreground-subtlest);
+  opacity: 0;
+  transition-property: transform,translate,scale,rotate;
+  transition-timing-function: var(--ease-out);
+  transition-duration: .2s;
+  --tw-duration: .2s;
+  --tw-ease: var(--ease-out);
+  will-change: transform;
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(var(--lucide-subtlest-opacity));
+}
+
+/* state/alt class: .rotate-0 { rotate:0deg } */
+/* state/alt class: .rotate-90 { rotate:90deg } */
+/* state/alt class: .opacity-100 { opacity:1 } */
+/* raw: .group-hover\/tool-summary\:opacity-100:is(:where(.group\/tool-summary):hover *)   [@layer utilities / @media (hover:hover)] */
+
+/* ── tool.kind-label ──────────────────────────────────────────────
+ * component : ToolKindLabel (y0e inline span)
+ * original  : font-medium whitespace-nowrap shrink-0
+ * state     : animated-gradient-text
+ * state     : text-foreground-subtlest
+ * dom       : <span class="font-medium whitespace-nowrap shrink-0">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 工具类型标签（如“读取”“终端”）：运行中渐变，结束后灰字。
+ */
+.z-tool-kind-label {
+  flex-shrink: 0;
+  --tw-font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+/* state/alt class: .text-foreground-subtlest { color:var(--color-foreground-subtlest) } */
+/* state/alt class: .text-foreground-subtlest { --lucide-stroke:rgb(from currentColor r g b / 1); --lucide-filter:opacity(var(--lucide-subtlest-opacity)) } */
+/* state/alt class: .animated-gradient-text { background:linear-gradient(90deg, var(--animated-gradient-text-strong) 0%, var(--animated-gradient-text-strong) 34%, var(--animated-gradient-text-soft) 50%, var(--animated-gradient-text-strong) 66%, var(--animated-gradient-text-strong) 100%); color:#0000; -webkit-text-fill-color:transparent; will-change:background-position; backface-visibility:hidden; background-size:300% 100%; -webkit-background-clip:text; background-clip:text; animation:4s linear infinite gradient-flow; display:inline-block; transform:translateZ(0) } */
+/* raw: .highspeed-animated-gradient-text .animated-gradient-text   [@layer utilities] */
+/* raw: .highspeed-animated-gradient-text .animated-gradient-text   [@layer utilities / @supports (color:color-mix(in lab, red, red))] */
+
+/* ── tool.content ──────────────────────────────────────────────
+ * component : ToolContent (y0e collapsible content)
+ * original  : text-popover-foreground outline-none
+ * dom       : <div class="text-popover-foreground outline-none">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 工具详情内容容器。
+ */
+.z-tool-content {
+  color: var(--color-popover-foreground);
+  --tw-outline-style: none;
+  outline-style: none;
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+
+/* ── tool.content-pad ──────────────────────────────────────────────
+ * component : ToolContentPad (y0e inline div)
+ * original  : pt-2
+ * dom       : <div class="pt-2">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 工具详情内容顶部 8px 间距。
+ */
+.z-tool-content-pad {
+  padding-top: calc(var(--spacing) * 2);
+}
+
+
+/* ── tool.execute-detail ──────────────────────────────────────────────
+ * component : ExecuteDetail (kcn renderContent)
+ * original  : space-y-3 mb-2 rounded-xl border border-border bg-panel px-4 py-3
+ * dom       : <div data-testid="execute-detail">
+ * evidence  : JS @3936971 `function kcn`
+ * confidence: high
+ * purpose   : 终端/命令工具详情卡片：圆角面板 + 12px 内边距。
+ */
+.z-tool-execute-detail {
+  margin-bottom: calc(var(--spacing) * 2);
+  border-radius: var(--radius-xl);
+  border-style: var(--tw-border-style);
+  border-width: 1px;
+  border-color: var(--color-border);
+  background-color: var(--color-panel);
+  padding-inline: calc(var(--spacing) * 4);
+  padding-block: calc(var(--spacing) * 3);
+}
+
+/* raw: :where(.space-y-3>:not(:last-child))   [@layer utilities] */
+
+/* ── tool.execute-command ──────────────────────────────────────────────
+ * component : ExecuteCommand (kcn inline div)
+ * original  : flex items-start gap-2 font-sans text-ui-base text-foreground
+ * dom       : <div class="flex items-start gap-2 ...">
+ * evidence  : JS @3936971
+ * confidence: high
+ * purpose   : 命令文本行（代码字体由子组件提供）。
+ */
+.z-tool-execute-command {
+  display: flex;
+  align-items: flex-start;
+  gap: calc(var(--spacing) * 2);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground);
+  --lucide-stroke: currentColor;
+  --lucide-filter: initial;
+}
+
+
+/* ── tool.execute-empty ──────────────────────────────────────────────
+ * component : ExecuteEmptyOutput (kcn inline p)
+ * original  : font-mono text-ui-base text-foreground-subtle
+ * dom       : <p> no output
+ * evidence  : JS @3936971
+ * confidence: high
+ * purpose   : 无输出提示。
+ */
+.z-tool-execute-empty {
+  font-family: var(--font-mono);
+  font-size: var(--text-ui-base);
+  color: var(--color-foreground-subtle);
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(.6);
+}
+
+
+/* ── tool.file-link ──────────────────────────────────────────────
+ * component : ToolFileLink (LQ)
+ * original  : inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-foreground-subtle hover:underline
+ * dom       : <button class="inline-flex ...">
+ * evidence  : JS @3936971 邻近 LQ
+ * confidence: high
+ * purpose   : 工具摘要中的可点击文件链接。
+ */
+.z-tool-file-link {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: calc(var(--spacing) * 0);
+  cursor: pointer;
+  align-items: center;
+  gap: calc(var(--spacing) * 1.5);
+  color: var(--color-foreground-subtle);
+  --lucide-stroke: rgb(from currentColor r g b / 1);
+  --lucide-filter: opacity(.6);
+}
+
+@media (hover:hover) {
+  .z-tool-file-link:hover {
+    text-decoration-line: underline;
+  }
+}
+
+/* ── tool.file-name ──────────────────────────────────────────────
+ * component : ToolFileName (LQ inline span)
+ * original  : min-w-0 truncate
+ * dom       : <span class="min-w-0 truncate">
+ * evidence  : JS @3936971
+ * confidence: high
+ * purpose   : 文件名截断。
+ */
+.z-tool-file-name {
+  min-width: calc(var(--spacing) * 0);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+
+/* ── tool.error-trigger ──────────────────────────────────────────────
+ * component : ToolErrorTrigger (y0e status label)
+ * original  : whitespace-nowrap underline decoration-dotted underline-offset-2 cursor-help
+ * dom       : <span class="whitespace-nowrap underline decoration-dotted ...">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 失败状态文字：点线下划线 + 帮助光标。
+ */
+.z-tool-error-trigger {
+  cursor: help;
+  white-space: nowrap;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+/* raw: .katex .hdashline,.katex .hline,.katex .mfrac .frac-line,.katex .overline .overline-line,.katex .rule,.katex .underline .underline-line */
+/* raw: .katex .hline,.katex .overline .overline-line,.katex .underline .underline-line */
+
+/* ── tool.error-popover ──────────────────────────────────────────────
+ * component : ToolErrorPopover (y0e tooltip content)
+ * original  : flex max-w-96 items-center gap-2
+ * dom       : <div class="flex max-w-96 items-center gap-2">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 错误详情浮层行：错误文本 + 复制按钮。
+ */
+.z-tool-error-popover {
+  display: flex;
+  max-width: calc(var(--spacing) * 96);
+  align-items: center;
+  gap: calc(var(--spacing) * 2);
+}
+
+
+/* ── tool.error-text ──────────────────────────────────────────────
+ * component : ToolErrorText (y0e tooltip span)
+ * original  : line-clamp-3 min-w-0 flex-1 whitespace-pre-wrap break-words
+ * dom       : <span class="line-clamp-3 ...">
+ * evidence  : JS @1145709
+ * confidence: high
+ * purpose   : 错误文本最多 3 行。
+ */
+.z-tool-error-text {
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  display: -webkit-box;
+  overflow: hidden;
+  min-width: calc(var(--spacing) * 0);
+  flex: 1;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+
+/* ============================================================================
+ * 6. 语义类（独立于 Tailwind utility 的组件级 class）
+ * ========================================================================== */
+
+/* ── .composer-thought-slider — 思考等级滑杆容器变量 */
+.composer-thought-slider {
+  --composer-thought-slider-thumb: var(--color-white);
+  --composer-thought-max-accent: var(--color-blue-500);
+}
+.composer-thought-slider[data-disabled=true] {
+  opacity: .5;
+}
+.composer-thought-slider:has(input:focus-visible) {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* ── .composer-thought-slider-fill — 滑杆进度填充 */
+.composer-thought-slider-fill {
+  background: var(--color-success);
+  transition: width .12s ease-out;
+}
+.composer-thought-slider-fill[data-highspeed=true] {
+  background: var(--color-blue-500);
+}
+.composer-thought-slider-fill:before {
+  content: "";
+  border-radius: inherit;
+  opacity: 0;
+  background: linear-gradient(270deg in oklch shorter hue, var(--composer-thought-max-accent) 0%, var(--color-success) 100%);
+  transition: opacity .2s ease-out;
+  position: absolute;
+  inset: 0;
+}
+.composer-thought-slider-fill[data-highspeed=true]:before {
+  background: linear-gradient(90deg in oklab, var(--color-blue-500) 0%, var(--color-purple-500) 100%);
+}
+.composer-thought-slider-fill[data-max=true]:before {
+  opacity: 1;
+}
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-slider-fill {
+    transition: none;
+  }
+}
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-slider-fill {
+    transition: none;
+  }
+}
+
+/* ── .composer-thought-slider-thumb — 滑杆拇指 */
+.composer-thought-slider-thumb {
+  background: var(--composer-thought-slider-thumb);
+  transition: left .12s ease-out;
+}
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-slider-thumb {
+    transition: none;
+  }
+}
+
+/* ── .composer-thought-slider-stop — 滑杆刻度点 */
+.composer-thought-slider-stop {
+  background: var(--color-foreground-subtlest);
+  transition: scale .12s ease-out,opacity .12s ease-out;
+  scale: 1;
+}
+.composer-thought-slider-stop[data-filled=true] {
+  background: var(--color-white);
+  opacity: .3;
+}
+.composer-thought-slider-stop[data-hovered=true] {
+  opacity: 1;
+  scale: 1.75;
+}
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-slider-stop {
+    transition: none;
+  }
+}
+
+/* ── .composer-thought-bubble — 滑杆满级气泡 */
+.composer-thought-bubble {
+  opacity: 0;
+  animation: linear infinite composer-thought-bubble-flow;
+}
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-bubble {
+    animation: none;
+  }
+}
+
+/* ── .composer-thought-bubbles — 滑杆满级气泡容器 */
+@media (prefers-reduced-motion:reduce) {
+  .composer-thought-bubbles {
+    display: none;
+  }
+}
+
+/* ── .composer-thought-meter-fill — 紧凑态思考进度条填充 */
+/* raw: .composer-thought-slider-fill[data-highspeed=true],[data-highspeed=true]>.composer-thought-meter-fill */
+
+/* ── .highspeed-model-trigger-label-sweep — 高速模式模型名扫光 */
+.highspeed-model-trigger-label-sweep {
+  --highspeed-model-sweep-width: 96px;
+  color: #0000;
+  background-color: var(--color-highspeed-accent);
+  background-image: linear-gradient(90deg, transparent 0%, transparent 6%, var(--color-highspeed-model-sweep-highlight) 22%, var(--color-highspeed-model-sweep-highlight) 34%, var(--color-highspeed-model-sweep-highlight) 66%, var(--color-highspeed-model-sweep-highlight) 78%, transparent 94%, transparent 100%);
+  background-position: calc(0% - var(--highspeed-model-sweep-width)) 0;
+  background-repeat: no-repeat;
+  background-size: var(--highspeed-model-sweep-width) 100%;
+  -webkit-text-fill-color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+@supports (color:color-mix(in lab, red, red)) {
+  .highspeed-model-trigger-label-sweep {
+    background-image: linear-gradient(90deg, transparent 0%, transparent 6%, color-mix(in oklab, var(--color-highspeed-model-sweep-highlight) 90%, var(--color-highspeed-accent)) 22%, var(--color-highspeed-model-sweep-highlight) 34%, var(--color-highspeed-model-sweep-highlight) 66%, color-mix(in oklab, var(--color-highspeed-model-sweep-highlight) 90%, var(--color-highspeed-accent)) 78%, transparent 94%, transparent 100%);
+  }
+}
+/* raw: .highspeed-model-trigger-label-sweep.is-sweep-active */
+@media (prefers-reduced-motion:reduce) {
+  .highspeed-model-trigger-label-sweep {
+    color: var(--color-highspeed-accent);
+    -webkit-text-fill-color: currentcolor;
+    background-image: none;
+    animation: none;
+  }
+}
+
+/* ── .composer-thought-range — 透明原生 range */
+.composer-thought-range::-webkit-slider-runnable-track {
+  background: 0 0;
+  height: 32px;
+}
+.composer-thought-range::-webkit-slider-thumb {
+  appearance: none;
+  background: 0 0;
+  border: 0;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+}
+.composer-thought-range::-moz-range-track {
+  background: 0 0;
+  height: 32px;
+}
+.composer-thought-range::-moz-range-thumb {
+  background: 0 0;
+  border: 0;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+}
+.composer-thought-range::-moz-range-progress {
+  background: 0 0;
+}
+
+/* ── .highspeed-composer-surface — 高速模式输入框表面 */
+.highspeed-composer-surface {
+  isolation: isolate;
+  border-radius: 16px;
+  transition: border-color 1.04s cubic-bezier(.45,0,.55,1),box-shadow 1.04s cubic-bezier(.45,0,.55,1);
+  background-color: var(--color-input)!important;
+  border: 1px solid #0000!important;
+}
+.highspeed-composer-surface:hover {
+  background-color: var(--color-input-focused)!important;
+  border-color: #0000!important;
+}
+.highspeed-composer-surface:hover {
+  background-color: var(--color-input-focused)!important;
+  border-color: #0000!important;
+}
+.highspeed-composer-surface:has([data-phase=diffusing]) {
+  border: 1px solid var(--color-highspeed-composer-border-pre-animation)!important;
+}
+.highspeed-composer-surface:has([data-phase=handoff]) {
+  border: 1px solid var(--color-highspeed-composer-border-pre-animation)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.highspeed-composer-surface:has([data-phase=stable]) {
+  box-shadow: 0 0 3px var(--color-highspeed-glow-01), 0 0 4px var(--color-highspeed-glow-04), 0 0 6.8px var(--color-highspeed-glow-15), 0 0 12px var(--color-highspeed-glow-26);
+  border: 1px solid var(--color-highspeed-composer-border-idle)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.highspeed-composer-surface:has([data-phase=stable]):hover {
+  border-color: var(--color-highspeed-composer-border-hover)!important;
+}
+.highspeed-composer-surface:has([data-phase=stable]):focus-within {
+  border: 1px solid var(--color-highspeed-composer-border-idle)!important;
+  background-color: var(--color-highspeed-composer-surface)!important;
+}
+.highspeed-composer-surface[data-highspeed-entrance=restore] {
+  transition: none;
+}
+.highspeed-composer-surface[data-highspeed-entrance=restore] .highspeed-inline-countdown {
+  animation: none;
+}
+
+/* ── .prompt-mention — 输入框 @ 提及图标 */
+.prompt-mention:before {
+  content: "";
+  background: var(--mention-icon-color,transparent) var(--mention-image,none) center / contain no-repeat;
+  width: 1rem;
+  height: 1rem;
+  -webkit-mask: var(--mention-mask,none) center / contain no-repeat;
+  -webkit-mask: var(--mention-mask,none) center / contain no-repeat;
+  -webkit-mask: var(--mention-mask,none) center / contain no-repeat;
+  mask: var(--mention-mask,none) center / contain no-repeat;
+  flex-shrink: 0;
+}
+.prompt-mention[data-mention-category=plugins]:before {
+  border-radius: var(--radius-sm);
+}
+
+/* ── .tool-call-progress-indeterminate — 工具进度不确定态动画 */
+.tool-call-progress-indeterminate {
+  animation: 1.2s ease-in-out infinite tool-call-progress-indeterminate;
+}
+@media (prefers-reduced-motion:reduce) {
+  .tool-call-progress-indeterminate {
+    width: 100%;
+    animation: none;
+    left: 0;
+  }
+}
+
+/* ── .markdown-image-loading-shimmer — Markdown 图片加载微光 */
+.markdown-image-loading-shimmer {
+  background-color: var(--color-card);
+  background-image: linear-gradient(135deg, var(--color-card) 0%, var(--color-background) 50%, var(--color-card) 100%);
+  background-size: 240% 100%;
+  animation: 1.8s linear infinite markdown-image-loading-shimmer;
+}
+@media (prefers-reduced-motion:reduce) {
+  .markdown-image-loading-shimmer {
+    animation: none;
+  }
+}
+
+/* ── .zcode-draft-prompt-waterfall — 首屏推荐提示词入场动画 */
+.zcode-draft-prompt-waterfall {
+  animation: zcode-draft-prompt-waterfall .26s cubic-bezier(.22, 1, .36, 1) var(--zcode-draft-prompt-waterfall-delay,0s) both;
+}
+@media (prefers-reduced-motion:reduce) {
+  .zcode-draft-prompt-waterfall {
+    animation: none;
+  }
+}
+
+/* ── .task-title-marquee — 任务标题跑马灯 */
+@media (hover:hover) and (prefers-reduced-motion:no-preference) {
+  .task-title-marquee:hover .task-title-marquee-track {
+    will-change: transform;
+  }
+}
+
+/* ── .animated-gradient-text — 运行中渐变文字 */
+.animated-gradient-text {
+  background: linear-gradient(90deg, var(--animated-gradient-text-strong) 0%, var(--animated-gradient-text-strong) 34%, var(--animated-gradient-text-soft) 50%, var(--animated-gradient-text-strong) 66%, var(--animated-gradient-text-strong) 100%);
+  color: #0000;
+  -webkit-text-fill-color: transparent;
+  will-change: background-position;
+  backface-visibility: hidden;
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: 4s linear infinite gradient-flow;
+  display: inline-block;
+  transform: translateZ(0);
+}
+/* raw: .highspeed-animated-gradient-text .animated-gradient-text */
+@supports (color:color-mix(in lab, red, red)) {
+  /* raw: .highspeed-animated-gradient-text .animated-gradient-text */
+}
+
+/* ── .text-wrap-phrase — 短语级换行控制 */
+.text-wrap-phrase {
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-break: strict;
+  text-wrap: pretty;
+}
+@supports (word-break:auto-phrase) {
+  .text-wrap-phrase {
+    word-break: auto-phrase;
+  }
+}
+
+/* ── .workspace-remote-connecting-breathe — 远程工作区连接呼吸动画 */
+.workspace-remote-connecting-breathe {
+  animation: 1.8s ease-in-out infinite workspace-remote-connecting-breathe;
+}
+
+/* ── .file-application-more-trigger — 文件应用更多菜单箭头翻转 */
+.file-application-more-trigger:has(+[data-radix-popper-content-wrapper]>[data-side=left])>svg:last-child {
+  transform: rotate(180deg);
+}
+
+/* ── .onboarding-logo-sweep — 引导页 Logo 扫光 */
+.onboarding-logo-sweep {
+  border-radius: inherit;
+  pointer-events: none;
+  padding: 1px;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(#fff 0 0),linear-gradient(#fff 0 0);
+  mask-image: linear-gradient(#fff 0 0),linear-gradient(#fff 0 0);
+  -webkit-mask-position: 0 0,0 0;
+  mask-position: 0 0,0 0;
+  -webkit-mask-size: auto,auto;
+  mask-size: auto,auto;
+  -webkit-mask-repeat: repeat,repeat;
+  mask-repeat: repeat,repeat;
+  -webkit-mask-clip: content-box,border-box;
+  mask-clip: content-box,border-box;
+  -webkit-mask-origin: content-box,border-box;
+  mask-origin: content-box,border-box;
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  -webkit-mask-source-type: auto,auto;
+  mask-mode: match-source,match-source;
+}
+.onboarding-logo-sweep>div {
+  background: conic-gradient(#0000 0deg 240deg,#ffffff14 280deg,#ffffffa6 350deg,#0000 360deg);
+  animation: 5s linear infinite onboarding-logo-border-sweep;
+  position: absolute;
+  inset: -50%;
+}
+@media (prefers-reduced-motion:reduce) {
+  .onboarding-logo-sweep {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion:reduce) {
+  .onboarding-logo-sweep>div {
+    animation: none;
+  }
+}
+
