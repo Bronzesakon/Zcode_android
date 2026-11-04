@@ -305,6 +305,17 @@
 - [x] `rendererGone()` 在已有罩时转可撤形态并允许 `expire(-1)` 兜底；交还确认计时器共享化并在成功路径取消。
 - [x] `onConfigurationChanged`（uiMode 不重建 ⇒ 登录面条带重算）+ `onPageCommitVisible` 复用（登录面 SPA 跳转对档）。
 
+### 第二轮审查（2026-11-05，报告 pre-device-review2-{kotlin,inject}.md）
+
+- [x] **P1 重建死实例**：非可恢复页分支也要 `installFreshWebView()`——接入页扫码/粘贴/手动入口
+  与任何 evaluateJavascript 都打在活实例上（原修复引入，已修）。
+- [x] 桥冷挂：`post()` 每次**现查** `ZCodeShell`（不再启动时捕获一次定终身）。
+- [x] 归因窗口跨文档：`ready` 时承载在跑即补开窗口；新承载启动复位"被踢"记账（`openCarrierWindow`）。
+- [x] `requestPageReload` 的"被踢 10s 内取消"不再占 `pageReloadEpoch`（执行时才占用，拒绝不烧恢复机会）；
+  档 3 恢复在记账前先查 `versionGateBlocked`（阻断不烧预算）。
+- [x] 外域导航**启动成功才焚 pin**；旋转跨 512dp 阈值按最后落地 URL 重算登录面档位；
+  死代码清理（`foregroundEpoch` 只写残留、旧注释 afterCarrierReturn/healKickedOnForeground）。
+
 ### 仍然留档（需真机/产品决策）
 
 - 下载判定仍按"后缀表留在 WebView"实现：**无后缀 + Content-Disposition: attachment 的外域下载仍会外抛**

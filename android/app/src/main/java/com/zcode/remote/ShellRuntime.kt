@@ -524,6 +524,12 @@ object ShellRuntime {
         // 两道限流同时归零**，连续触发会变成"每次回前台都闪一次"。
         // 所以闸门落在 [Prefs.conversationRecovery]（跨进程落盘），注入层只负责执行。
         if (!allowConversationRecovery()) return
+        // 闸门③（审查2 注入层 P2-B）：阻断时注入层会拒绝执行，但**记账已经发生**。
+        // 原生自己有同步缓存位，先查再记账——别把恢复预算烧在注定被拒的调用上。
+        if (versionGateBlocked) {
+            Diagnostics.log("warn", "对话恢复：版本闸门阻断中，暂缓（不记账）")
+            return
+        }
         val reason = "离开时在对话($who) / ${fmtMs(viewAtLateActualMs)} 复判 chat=false" +
             (if (historyChat) " / historyChat=true" else " / historyChat=false")
         recordConversationRecovery(reason)
@@ -1280,7 +1286,8 @@ object ShellRuntime {
      * 原实现只在 [carrierHandedBack] 这一条路径上安排兜底，即"回前台那一刻 `NativeRelayClient.isRunning()`
      * 仍为真"。可承载完全可能在**后台期间**就被停掉（诊断 `carrier_stop`/`carrier_off`、探针自停、
      * 任何非"回前台交还"的路径），那时 `isRunning()` 已是 false ⟹ **兜底永不安排**；
-     * 而注入层那条 KICKED 自愈（`healKickedOnForeground`）要求页面**亲眼看见** KICKED 帧——
+     * 而注入层那条 KICKED 自愈（已于 2026-11-04 改为归因语义并并入 pagefailure 路径）
+     * 要求页面**亲眼看见** KICKED 帧——
      * 页面若在接管前就已 `dispose` 掉 socket（真机 19:54:33 `socket.close() … X2t.dispose`），
      * 那一帧它永远收不到 ⟹ **两条路同时失效，页面被彻底留下，只能 force-stop 重启**。
      * 原生一定知道"这次后台承载跑过"，所以由它兜住这一格。
@@ -1947,7 +1954,6 @@ object ShellRuntime {
             Diagnostics.log("warn", "快速交接：跳过网页重载——版本闸门阻断中（$reason）")
             return
         }
-        pageReloadEpoch = epoch
         // 不加延时；让同一生命周期事务内的新 Intent 有机会提供通知定位目标。
         mainHandler.post {
             if (!handoff.isCurrent(epoch, false) || userIsAway()) return@post
@@ -1956,10 +1962,14 @@ object ShellRuntime {
             if (carrierLostControlAtMs > 0L &&
                 SystemClock.elapsedRealtime() - carrierLostControlAtMs <= 10_000L
             ) {
+                // 审查2 Kotlin P2-3：**这里不占 pageReloadEpoch**——被守卫拒绝的那一次
+                // 不烧掉恢复机会，之后（宽限过了）再来的 requestPageReload 仍可执行。
                 Diagnostics.log("warn", "快速交接：承载刚被外部踢出，取消重载（避免反顶接管方）")
                 return@post
             }
+            if (pageReloadEpoch == epoch) return@post
             val reloader = pageReloader ?: return@post
+            pageReloadEpoch = epoch
             Diagnostics.info("快速交接：开始网页重载（切换后 ${SystemClock.elapsedRealtime() - handoffChangedAt}ms）· $reason")
             reloader()
         }
@@ -2033,6 +2043,9 @@ object ShellRuntime {
     /** 承载拨号窗口开启（页面据此归因 KICKED）。只记键名/会话 id，不含凭证。 */
     private fun openCarrierWindow() {
         carrierWindowCloseToken += 1
+        // 新窗口 = 新一轮"我们的连接"：上一轮"被踢"的记账作废（审查2 Kotlin P2-2），
+        // 否则重启承载后的自我 KICK 会在 10s 窗口内被误判成外部。
+        carrierLostControlAtMs = 0L
         val at = System.currentTimeMillis()
         evaluateJs(
             "window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(" +
@@ -2540,6 +2553,11 @@ object ShellRuntime {
                     mainHandler.post { handoffCover.pageReady(document) }
                     onPageReloaded()
                     injectionReadiness.markReady()
+                    if (NativeRelayClient.isRunning()) {
+                        // 归因窗口不跨文档（审查2 注入层 P2-A）：承载运行中页面重载后，
+                        // 新文档没开窗，会把我们的自我 KICK 记成"外部抢占"。ready 即补开。
+                        openCarrierWindow()
+                    }
                     if (relayCreds == null) {
                         // bfcache 返回的远程文档不会重发凭证（relayCredsPosted 是文档级一次性），
                         // 而离开远程页时凭证已被清（D7）。这里至少把状态说破，别让"后台不拨号"

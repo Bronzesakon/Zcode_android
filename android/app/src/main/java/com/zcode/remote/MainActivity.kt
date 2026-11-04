@@ -94,6 +94,9 @@ class MainActivity : AppCompatActivity() {
     /** The theme the page resolved for itself; null until it says. */
     private var pageTheme: PageTheme? = null
 
+    /** 最近一次状态栏档位判定的落地 URL：旋转跨 512dp 阈值时用它重算登录面档位。 */
+    private var lastSurfaceUri: Uri? = null
+
     /**
      * 注入脚本缓存。每次主帧加载有三道时机（见 installInjection / injectStable），
      * 都用同一份脚本；只在首次成功读取时缓存，读失败不缓存（下次加载重试）。
@@ -337,24 +340,24 @@ class MainActivity : AppCompatActivity() {
                         // 离开远程页前焚掉 pin 标记（审查注入层 P2-3）：登录/回调不该把
                         // "上次在对话页"带进下一轮。best-effort——JS 一般赶在导航提交前跑完；
                         // 就算没赶上，document-start 的"用完即焚"也兜底。
-                        webView.evaluateJavascript(
-                            "try{sessionStorage.removeItem('zcodeShellPinChat')}catch(e){}", null,
-                        )
+                        webView.evaluateJavascript(PIN_CLEAR_JS, null)
                     }
                     setBridgeAttached(allowed)
                     return false
                 }
-                // 其余外部链接仍交给系统浏览器（同样先焚 pin，理由同上）。
-                webView.evaluateJavascript(
-                    "try{sessionStorage.removeItem('zcodeShellPinChat')}catch(e){}", null,
-                )
+                // 其余外部链接交给系统浏览器。**先启动、成功才焚 pin**（审查2 Kotlin P2-E）：
+                // 启动失败（ActivityNotFoundException）时哪儿都没去，白焚会丢一次窄窗口恢复。
                 Diagnostics.info("外部链接交给系统浏览器: ${uri.host}")
-                return try {
+                val started = try {
                     startActivity(Intent(Intent.ACTION_VIEW, uri))
                     true
                 } catch (e: ActivityNotFoundException) {
                     true
                 }
+                if (started) {
+                    webView.evaluateJavascript(PIN_CLEAR_JS, null)
+                }
+                return started
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -610,14 +613,26 @@ class MainActivity : AppCompatActivity() {
         // 只恢复远程页：about:blank / chrome-error:// / 一次性 OAuth 回调（带 code，
         // 重放会得到授权失败页）都不能原样重放。校验不过就回扫码页（审查 P1-4）。
         val url = candidate?.takeIf { RemoteUrl.isAllowed(Uri.parse(it)) }
+        if (url != null) {
+            ShellRuntime.coverForRendererGone("渲染进程终止")
+        }
         detachAndDestroy(dead)
+        // webView 字段必须指向**活**实例：接入页的扫码/粘贴/手动入口与后续任何
+        // evaluateJavascript 都打在它上；留着死实例 = 壳卡死在接入页（审查2 P1-1）。
+        installFreshWebView()
         if (url == null) {
-            Diagnostics.log("warn", "渲染进程终止时页面不是可恢复的远程页，回扫码页")
+            Diagnostics.log("warn", "渲染进程终止时页面不是可恢复的远程页，回接入页")
             showSetup()
             return
         }
-        ShellRuntime.coverForRendererGone("渲染进程终止")
+        setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
+        applyStatusBarSurface()
+        Diagnostics.info("重建完成，重新加载: ${RemoteUrl.toDisplayString(url)}")
+        webView.loadUrl(DesktopVersion.withAppVersion(url))
+    }
 
+    /** 造一个全新 WebView 并接好全部宿主配置（配置/注入注册/下载器），塞回根布局第 0 层。 */
+    private fun installFreshWebView() {
         val fresh = WebView(this)
         fresh.layoutParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -630,10 +645,6 @@ class MainActivity : AppCompatActivity() {
         bridgeAttached = false
         configureWebView()
         installInjection()
-        setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
-        applyStatusBarSurface()
-        Diagnostics.info("重建完成，重新加载: ${RemoteUrl.toDisplayString(url)}")
-        webView.loadUrl(DesktopVersion.withAppVersion(url))
     }
 
     /** 把死掉的 WebView 从布局摘掉并销毁；重建的两个出口（可恢复 / 不可恢复）共用。 */
@@ -874,6 +885,7 @@ class MainActivity : AppCompatActivity() {
      * 头部色；登录/授权面：按 URL 直接给 D4 的专用色，不等一个永远不会来的回推。
      */
     private fun onPageStartedSurface(uri: Uri) {
+        lastSurfaceUri = uri
         val surface = RemoteUrl.authSurfaceOf(uri)
         if (surface == null) {
             pageTheme = null
@@ -930,6 +942,9 @@ class MainActivity : AppCompatActivity() {
         // Activity 重建：登录面又没有注入层回推，条带/图标会停在旧值（审查 Kotlin P2-2）。
         // 这里按当前状态重算一次（幂等；auth 面是 fixedDark，远程页由页面回推纠正）。
         applyStatusBarSurface()
+        // 旋转跨 512dp 阈值会换登录面的窄/宽档（审查2 Kotlin P2-6）：按最后落地的
+        // URL 重算一次；远程页 onPageStartedSurface 会落回 BOOT_SHELL，同样幂等。
+        lastSurfaceUri?.let { onPageStartedSurface(it) }
     }
 
     private fun installBackHandling() {
@@ -1324,6 +1339,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val ACTION_LOCATE_TASK = "com.zcode.remote.action.LOCATE_TASK"
         const val ACTION_RELOAD = "com.zcode.remote.action.RELOAD"
+
+        /** 离开远程页（登录/外域导航）时焚掉注入层的 pin 标记（审查注入层 P2-3）。 */
+        private const val PIN_CLEAR_JS = "try{sessionStorage.removeItem('zcodeShellPinChat')}catch(e){}"
 
         /** Launcher long-press shortcut: rescan the desktop's QR code. */
         const val ACTION_SCAN = "com.zcode.remote.action.SCAN"

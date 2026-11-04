@@ -76,6 +76,12 @@
     // native bridge
     // -----------------------------------------------------------------------
     function post(event, data) {
+        // 桥冷挂（审查2 Kotlin P2-1）：桥由原生的 onPageStarted 挂上，可能晚于
+        // document-start。启动时捕获一次会让整份文档静默失联——每次 post 现查，
+        // 拿到就缓存，拿不到就安静丢帧（下一条 post 再试）。
+        if (!bridge || typeof bridge.postMessage !== 'function') {
+            bridge = G.ZCodeShell || null;
+        }
         if (!bridge || typeof bridge.postMessage !== 'function') {
             return;
         }
@@ -1246,7 +1252,6 @@
     // 就会缺一路信号（真机 17:07 现场一环）。
     // config() 是 document-start 的同步询问；字段缺失（老壳/测试桩）按 true 兜底。
     var appForeground = config().foreground !== false;
-    var foregroundEpoch = 0;
     var backgroundStartedWallMs = 0;
     var lastBackgroundSilenceLoggedAt = 0;
     /**
@@ -1315,8 +1320,9 @@
      *   不在窗口内 ⇒ 前端被别的设备/对话抢占，是**官方流程**：kicked 文案/终态照常展示，
      *     壳不动手（不盖罩、不重载，只记日志）。
      */
-    var carrierWindow = {at: 0, workspace: '', session: ''};
-    /** 窗口的时间上界（60 秒）：拨号造成的 KICK 在几秒内就到；原生停承载后 5s 会主动
+    // session 字段当前只记不用（审查注入层 P2-C）：workspace 已参与匹配，session 留作
+    // 未来"同工作区多会话"细分时的匹配键；原生侧照常下发，改动两侧签名前先想清楚。
+    var carrierWindow = {at: 0, workspace: '', session: ''};    /** 窗口的时间上界（60 秒）：拨号造成的 KICK 在几秒内就到；原生停承载后 5s 会主动
      *  关窗，这里只是进程被杀/异常时的兜底。 */
     var CARRIER_WINDOW_MAX_MS = 60000;
 
@@ -2335,9 +2341,9 @@
      * **档 0 观测**：离开前台/回到前台那一刻的"页面视图 + 当前会话"快照。
      *
      * 为什么需要它（2026-09-19 调研，见 `Docs/19-回前台对话恢复-调研与计划提议.md`）：
-     * 「回前台后对话没回来」这件事在日志里**曾经是隐形的**——三道回前台兜底
-     * （KICKED 自愈 / healDeadLinkOnResume / afterCarrierReturn）全都只在"页面已彻底失败"
-     * 时动手，而假死形态的页面**看起来完全健康**（socket OPEN、有帧、paired=true），
+     * 「回前台后对话没回来」这件事在日志里**曾经是隐形的**——两道回前台兜底
+     * （KICKED 归因恢复 / healDeadLinkOnResume；afterCarrierReturn 已于 2026-11-05 删除）
+     * 全都只在"页面已彻底失败"时动手，而假死形态的页面**看起来完全健康**（socket OPEN、有帧、paired=true），
      * 于是全部判"无需介入"，日志里一行都不留。
      *
      * 两个必须记住的时序事实（都是真机实测）：
@@ -3074,7 +3080,6 @@
 /** Called by the native side when the app's foreground state changes. */
     G.__zcodeShellSetAppForeground = function (foreground) {
         diag('info', 'app foreground = ' + (foreground ? 'true' : 'false'));
-        if (foreground !== appForeground) foregroundEpoch += 1;
         appForeground = foreground;
         if (!foreground) {
             if (resumeHealTimer) {
