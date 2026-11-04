@@ -1559,6 +1559,74 @@ test('clicking the refresh button reloads in-process and leaves a log line', asy
     }
 });
 
+test('on the wide shell the button anchors to the workspace header (no mobile header)', async () => {
+    const page = setupPage({pageState: true, media: {'(max-width: 767px)': false}});
+    try {
+        // The wide/desktop shell never renders section[data-mobile-page="chat"];
+        // the right-most header menu (measured: the help menu) is the anchor.
+        const help = new FakeElement('button');
+        help.setAttribute('aria-haspopup', 'menu');
+        help.className = 'header-action';
+        const header = new FakeElement('header');
+        header.setAttribute('data-testid', 'workspace-header');
+        header.querySelectorAll = (sel) => (sel === 'button[aria-haspopup="menu"]' ? [help] : []);
+        header.appendChild(help);
+        page.document.querySelector = (sel) =>
+            (sel === 'header[data-testid="workspace-header"]' ? header : null);
+        await bootPageState(page);
+
+        const buttons = refreshButtonsIn(header);
+        assert.strictEqual(buttons.length, 1, 'exactly one refresh button in the wide header');
+        assert.strictEqual(help.previousElementSibling, buttons[0],
+            'it sits immediately left of the header menu trigger, i.e. top-right');
+        assert.strictEqual(buttons[0].className, 'header-action', 'the look is cloned, not hardcoded');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('the testid toggle fallback anchors the button and strips the selected highlight', async () => {
+    const page = setupPage({pageState: true, media: {'(max-width: 767px)': false}});
+    try {
+        const bar = new FakeElement('div');
+        const toggle = new FakeElement('button');
+        toggle.setAttribute('data-testid', 'side-pane-toggle');
+        toggle.className = 'plain !bg-selected icon-sm';
+        bar.appendChild(toggle);
+        page.document.querySelector = (sel) =>
+            (sel === 'button[data-testid="side-pane-toggle"]' ? toggle : null);
+        await bootPageState(page);
+
+        const buttons = refreshButtonsIn(bar);
+        assert.strictEqual(buttons.length, 1, 'the last-resort anchor still gets the button');
+        assert.strictEqual(toggle.previousElementSibling, buttons[0], 'placed left of the toggle');
+        assert.strictEqual(buttons[0].className, 'plain icon-sm',
+            'the open-state !bg-selected highlight is stripped from the clone');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('login and authorization surfaces never get the refresh button', async () => {
+    const surfaces = [
+        'https://bigmodel.cn/login',
+        'https://chat.z.ai/auth/oauth/authorize',
+        'https://zcode.z.ai/web-remote/callback?code=redacted',
+    ];
+    for (const href of surfaces) {
+        const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+        try {
+            const {row} = stubChatHeader(page);
+            globalThis.location.href = href;
+            await bootPageState(page);
+            assert.strictEqual(refreshButtonsIn(row).length, 0,
+                'the anchor exists here, so only the auth guard can keep it out: ' + href);
+        } finally {
+            page.teardown();
+        }
+    }
+});
+
 // ---------------------------------------------------------------------------
 // 进对话卡住（§5b）——**只读壳口径：只记账，不刷新**
 //

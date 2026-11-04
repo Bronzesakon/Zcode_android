@@ -26,7 +26,10 @@
  *  10. Inject a refresh button into the chat page's own header, left of its
  *      theme-menu trigger with the trigger's own cloned styling, so a stuck
  *      conversation can be reloaded by hand (in-process reload keeps
- *      history.state, so the page returns to the current conversation).
+ *      history.state, so the page returns to the current conversation). On the
+ *      wide/desktop shell — where the mobile header never renders — it anchors
+ *      to the workspace header's last menu button instead (mirrors the Harmony
+ *      shell), and it is never injected on login/authorization surfaces.
  *
  * Installed via WebViewCompat.addDocumentStartJavaScript, i.e. BEFORE any page
  * script runs. That timing is mandatory: the page opens its WebSocket during
@@ -3854,7 +3857,7 @@
     }
 
     // -----------------------------------------------------------------------
-    // 8. header refresh button（对话页头部 · 主题按钮左侧）
+    // 8. header refresh button（对话页头部 · 主题按钮左侧；宽屏落右上角）
     //
     // 手机壳里没有桌面端那样的菜单栏兜底，页面卡住时用户此前只能等看门狗或杀
     // 应用重进。这里给页面补一个「刷新」：插在对话页头部行、主题按钮左侧。
@@ -3864,11 +3867,22 @@
     // className 原样复制过来就是同款——hover/focus 态与深浅色自动跟随，而且
     // 不硬编码任何类名，页面改版调样式不用追。
     //
-    // 锚点是 `button[aria-haspopup="menu"]`（取头部行内最后一个）：主题按钮是
-    // Radix 菜单触发器，这个属性不随语言变（aria-label 是「选择主题」/
-    // "Switch theme"），返回按钮永远不是菜单。查找范围严格限定在头部行内，
-    // 绝不会落到消息区的菜单上；找不到锚点时失效模式是"按钮安静地不出现"
-    // （一次性 debug 日志），绝不动页面自己的节点。
+    // 锚点分两种外壳（互斥渲染，走错的兜底分支只在重锚时刻多一次空扫描）：
+    //   * 手机/窄屏：`section[data-mobile-page="chat"]` 头部行内最后一个
+    //     `button[aria-haspopup="menu"]`（主题按钮）。该属性不随语言变
+    //     （aria-label 是「选择主题」/"Switch theme"），返回按钮永远不是菜单。
+    //   * 宽屏/平板：`data-mobile-page` 只在小屏分支渲染 ⇒ 改锚
+    //     `header[data-testid="workspace-header"]` 内最后一个菜单按钮（实测=帮助
+    //     菜单），缺席再退 `side-pane-toggle` / `terminal-toggle` 的 testid 直锚。
+    //     （口径照鸿蒙 2026-09-28 平板调研；宽屏主页无活动任务时头部整个不渲染 ⇒
+    //     无按钮是预期。）
+    // 查找范围严格限定在头部行/头部栏内，绝不会落到消息区的菜单上；找不到锚点时
+    // 失效模式是"按钮安静地不出现"（一次性 debug 日志），绝不动页面自己的节点。
+    //
+    // 登录/授权页不插（照鸿蒙）：判定只认 host + path 前缀（bigmodel 全系、
+    // chat.z.ai `/auth*`、zcode `/web-remote|/share|/cn/share`），不碰 Cookie。
+    // 原生路径闸已挡住绝大多数非 `/remote` 页面，这一层兜"登录页落在 /remote
+    // 前缀下"的情形。
     //
     // 保活不另开观察器：§6 的页面状态观察器本来就全 subtree 监听、每拍合并，
     // 这里借同一拍做"确保存在"——按钮还连着时一次 isConnected 读就返回，
@@ -3883,6 +3897,55 @@
         }
         refreshWarned = true;
         diag('debug', message);
+    }
+
+    /** host 等于 root 或为其子域。 */
+    function hostMatches(host, root) {
+        return host === root || host.slice(-(root.length + 1)) === '.' + root;
+    }
+
+    /** 登录/授权面判定（照鸿蒙：只认 host + path 前缀，不碰 Cookie/存储）。 */
+    function isAuthSurface() {
+        try {
+            var url = new URL(G.location.href);
+            var host = String(url.hostname || '').toLowerCase();
+            var path = url.pathname || '';
+            if (hostMatches(host, 'bigmodel.cn')) {
+                return true;
+            }
+            if (hostMatches(host, 'chat.z.ai')) {
+                return path.indexOf('/auth') === 0;
+            }
+            if (hostMatches(host, 'zcode.z.ai')) {
+                return path.indexOf('/web-remote') === 0 ||
+                    path.indexOf('/share') === 0 ||
+                    path.indexOf('/cn/share') === 0;
+            }
+            return false;
+        } catch (e) {
+            // 拿不到 URL 时不猜：照常走锚点流程，找不到锚点自然不插。
+            return false;
+        }
+    }
+
+    /** 解析头部锚点：手机优先、宽屏兜底，都没有就返回 null。 */
+    function refreshAnchor() {
+        var section = document.querySelector('section[data-mobile-page="chat"]');
+        if (section && section.firstElementChild && section.firstElementChild.querySelectorAll) {
+            var menus = section.firstElementChild.querySelectorAll('button[aria-haspopup="menu"]');
+            if (menus && menus.length) {
+                return menus[menus.length - 1];
+            }
+        }
+        var header = document.querySelector('header[data-testid="workspace-header"]');
+        if (header && header.querySelectorAll) {
+            var wide = header.querySelectorAll('button[aria-haspopup="menu"]');
+            if (wide && wide.length) {
+                return wide[wide.length - 1];
+            }
+        }
+        return document.querySelector('button[data-testid="side-pane-toggle"]') ||
+            document.querySelector('button[data-testid="terminal-toggle"]');
     }
 
     function refreshButtonLabel() {
@@ -3910,21 +3973,17 @@
 
     function ensureHeaderRefreshButton() {
         try {
+            // 登录/授权页不插（照鸿蒙；判定只认 host + path 前缀）。
+            if (isAuthSurface()) {
+                return;
+            }
             // 快路径：按钮还连着 ⇒ 这一拍到此为止。
             if (refreshBtn && refreshBtn.isConnected) {
                 return;
             }
-            var section = document.querySelector('section[data-mobile-page="chat"]');
-            if (!section) {
-                return;
-            }
-            var row = section.firstElementChild;
-            var menus = row && row.querySelectorAll
-                ? row.querySelectorAll('button[aria-haspopup="menu"]')
-                : null;
-            var theme = menus && menus.length ? menus[menus.length - 1] : null;
+            var theme = refreshAnchor();
             if (!theme || !theme.parentElement) {
-                warnRefreshOnce('刷新按钮：对话页头部找不到主题菜单锚点（页面改版？），不注入');
+                warnRefreshOnce('刷新按钮：头部找不到菜单锚点（页面改版？），不注入');
                 return;
             }
             // 已经在位（前一个兄弟就是我们的按钮）＝不重复插。这也是同文档里
@@ -3937,7 +3996,10 @@
             var label = refreshButtonLabel();
             var btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = String(theme.className || '');
+            // 克隆锚点按钮的 className；终端/侧面板开关的打开态会带 !bg-selected
+            // 高亮类，剥掉（照鸿蒙）。
+            btn.className = String(theme.className || '')
+                .replace(/(^|\s)!bg-selected(?=\s|$)/g, '').trim();
             btn.setAttribute('aria-label', label);
             btn.setAttribute('title', label);
             btn.setAttribute('data-zcode-shell-refresh', '1');

@@ -181,6 +181,11 @@
       ⇒ 系统深色下"深图标压 `#171717`"）。
 - [ ] **D9 路径闸收窄（待真机）**：先确认登录页 URL；若落在 `/remote` 前缀下（如 `/remote/v4/login`），
       注入的路径闸与 `isAllowed` 收窄为**精确白名单**，避免 `pinChatRoute`/WS hook/滚动条/刷新按钮在登录页生效。
+- [x] **D10 刷新按钮对齐鸿蒙**（2026-11-04 完成）：宽屏锚点链——`header[data-testid="workspace-header"]`
+      内最后一个菜单按钮（实测=帮助菜单，落在**右上角**）→ 缺席退 `side-pane-toggle` → `terminal-toggle`
+      的 testid 直锚（原实现只锚 `section[data-mobile-page="chat"]`，宽屏/平板上按钮根本不出现）；
+      登录/授权页不插（`isAuthSurface()`：bigmodel 全系 / `chat.z.ai/auth*` / zcode `/web-remote|/share|/cn/share`）；
+      克隆 className 时剥掉 `!bg-selected` 打开态高亮。JS 测试 +3（109/109 通过）。
 - **不照抄鸿蒙的坑**：`currentPageUrl`（写了不读）、`isRemoteControlPage()`（定义不调用）、失实注释；
   深链 manifest 只声明 `zcode.z.ai` 而代码放行 `*.z.ai` 的口径不一致（安卓直接对齐代码口径）。
 
