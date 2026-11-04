@@ -252,11 +252,13 @@
 
 - [ ] 承载与闸门修复后、真机验收前，3.17.1 仍按「页面持有连接」验证：后台卡片覆盖依赖页面存活，
       承载新语义（0ms/30s/归因遮罩）未经真机检验前不作数。
-- [ ] **批次 2 真机待量**：① 交还路径"close 确认"常态耗时 + 回前台到 reload 总时长 <300ms
+- [ ] **批次 2 真机待量**：交还路径"close 确认"常态耗时 + 回前台到 reload 总时长 <300ms
       （超时上限已压到 **100ms**，`NativeRelayClient.CLOSE_CONFIRM_TIMEOUT_MS`，原 250ms——
-      250ms 会让最坏情况贴穿预算；常态走 close 回调远快于超时，若实测常态 >100ms 再回调该值）；
-      ② 下载缺口：`isDownloadUrl` 只把下载链接放行给 WebView（**未接 `DownloadListener`**），
-      非可信域下载会停在空白页——是否接系统下载器待拍板。
+      250ms 会让最坏情况贴穿预算；常态走 close 回调远快于超时，若实测常态 >100ms 再回调该值）。
+- [x] **系统下载器已接**（2026-11-04）：`setDownloadListener` → `DownloadManager`
+      （带 WebView cookie + UA，公共 Downloads；API ≤28 退应用私有目录），文件名/清洗/mime
+      由纯逻辑 `core/DownloadPlan.kt` 决定（9 条单测）。剩余缺口：`MODE_SAVE`（网页请求"另存为"）
+      仍未实现；`blob:`/`data:` 下载无法交给系统下载器（只记日志，页面内生成的文件需后续做 JS 侧兜底）。
 - [ ] Kotlin 客户端的 3.17.1 适配**未实测**（Rust 侧旁证更硬）；token 移植后必须真机验证一次。
 - [ ] `docs/android/vendor`（含 miuix 约 22 MB）、`coloros`（88 MB）本地-only，换机器需手动拷贝；
       清单见 `docs/android/MANIFEST.md`。

@@ -1,6 +1,7 @@
 package com.zcode.remote
 
 import android.Manifest
+import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.ClipboardManager
 import android.content.Context
@@ -10,12 +11,14 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.View
 import android.webkit.ConsoleMessage
+import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -41,6 +44,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.zcode.remote.core.DesktopVersion
 import com.zcode.remote.core.Diagnostics
+import com.zcode.remote.core.DownloadPlan
 import com.zcode.remote.core.PageBarColor
 import com.zcode.remote.core.PageBarState
 import com.zcode.remote.core.PageTheme
@@ -517,6 +521,58 @@ class MainActivity : AppCompatActivity() {
                 showUploadSourceDialog(fileChooserParams)
                 return true
             }
+        }
+
+        // 系统下载器：WebView 自己不带下载器，页面点下载链接时没有 listener 就会
+        // 停在空白页（D2 只是把链接"放行"进 WebView，真正把文件拿下来靠这里）。
+        // configureWebView() 在首建与渲染器重建两条路径上都会跑，所以 listener 两边都在。
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            enqueueDownload(url, userAgent, contentDisposition, mimeType)
+        }
+    }
+
+    /**
+     * 把一次下载交给系统 `DownloadManager`：带 WebView 的 cookie 与 UA（页面下载几乎
+     * 都要登录态，缺了就是 401/403），落到公共 Downloads 目录（API ≤28 退应用私有目录，
+     * 本应用不申请存储权限）。进度与完成通知由 DownloadManager 自己发。
+     *
+     * 日志只记文件名与 host——URL 里的凭证（sid/mid/token）严禁进日志。
+     */
+    private fun enqueueDownload(
+        url: String,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+    ) {
+        val plan = DownloadPlan.of(url, contentDisposition, mimeType)
+        if (plan == null) {
+            Diagnostics.log("warn", "下载：非 http(s) 链接（无重放地址），不交给下载器")
+            return
+        }
+        try {
+            val request = DownloadManager.Request(Uri.parse(plan.url))
+                .setTitle(plan.fileName)
+                .setDescription(plan.host)
+                .setMimeType(plan.mimeType)
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setAllowedOverMetered(true)
+            CookieManager.getInstance().getCookie(plan.url)?.let {
+                request.addRequestHeader("Cookie", it)
+            }
+            if (!userAgent.isNullOrBlank()) {
+                request.addRequestHeader("User-Agent", userAgent)
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, plan.fileName)
+            } else {
+                // API ≤28 写公共 Downloads 要 WRITE_EXTERNAL_STORAGE（本应用不申请）；
+                // 退到应用私有目录，完成通知仍能直接打开文件。
+                request.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, plan.fileName)
+            }
+            val id = (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
+            Diagnostics.log("info", "下载已交给系统下载器：${plan.fileName}（${plan.host}，id=$id）")
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "下载入队失败：${e.javaClass.simpleName}")
         }
     }
 
