@@ -150,7 +150,44 @@
       `controller/tasks-index`（`parts-Ba2kLaRj.js`）、3.17.1 已无 `src-*.js`。
 - [x] `zcodeMobilePage` 存活、`reloadPage` 确认死参数（全仓 1 处定义、0 调用）——复核为真。
 
-## 4. 迁移状态
+## 4. 登录页纳入壳内 + 状态栏新配色（2026-11-04 新增范围，方案照鸿蒙）
+
+现状取证：`docs/android/login-page-shell-audit.md`（安卓侧）+ `docs/android/harmony-login-reference.md`（鸿蒙口径）。
+
+- 已天然成立：`chat.z.ai/api/oauth/authorize`、`bigmodel.cn/login`、`zcode.z.ai/web-remote/callback`
+  都在受信域内（`RemoteUrl.kt:37`）⇒ 留在同一 WebView、同一存储上下文；注入层被 `/remote` 路径闸挡
+  （`MainActivity.kt:505`）、JS 桥摘除（`:311/332`）⇒ 登录页上壳不误动作。
+- 唯一走不通：**白名单外的域**被外抛系统浏览器 ⇒ `sessionStorage` 里的 OAuth nonce 丢、回调必 CSRF 失败；
+  且壳**没有深链 intent-filter**，出壳回不来。
+
+决定（**照抄鸿蒙**，2026-11-04 拍板）：
+
+- [ ] **D1 可信域**：`z.ai` + `*.z.ai` + `bigmodel.cn` + `*.bigmodel.cn`（安卓现为两个根域 + 子域匹配，核对等价）。
+- [ ] **D2 导航闸门**：只有「非可信域 + 主框架 + 非下载」三条同时成立才外抛系统浏览器；**子资源与下载一律放行**。
+- [ ] **D3 登录判定只认 host + path 前缀**（不碰 Cookie、无登出清理、回调由网页在同 WebView 自洽）：
+      `bigmodel.cn`（恒亮）、`chat.z.ai/auth/oauth/authorize`、`chat.z.ai/auth*`、`zcode.z.ai(/web-remote|/share|/cn/share)`。
+- [ ] **D4 登录页专用固定色表**（8 个 `auth-*` 状态名，随**网页**主题、不随系统深浅；无主题信号时 zcode 默认暗）：
+      - `auth-bigmodel`（`*.bigmodel.cn`）：`#F7F8FA` **恒亮**
+      - `auth-zai-consent-light/dark`（`chat.z.ai` + `/auth/oauth/authorize`）：`#F8F8F8` / `#161616`
+      - `auth-zai-login-light`（`chat.z.ai` + `/auth*`）：`#F5F6F8`（窄屏 `max-width:512px` → `#FFFFFF`）
+      - `auth-zai-login-dark`：`#141618`
+- [ ] **D5 先给初值防闪色**：`onPageBegin` 直接按 URL 给状态名与色值（不等注入层回推），再由页面回推纠正。
+- [ ] **D6 boot / KICKED / 配对等待底色对齐鸿蒙表**：boot 未着主题 `#FAFAFA`/`#171717`；
+      已着主题 / KICKED / 配对等待 `#F8F8F8`/`#161616`——按此核对并替换 `PageBarColor.kt:85-92`
+      与 Android 资源里的 boot 色（替代"真机截图取色"的口径）。
+- [ ] **D7 离开远程页全清**（用户拍板）：清 `relayCreds`（防死凭证拨号）+ 停承载 + `store.reset()`
+      （运行态/通知一并复位），由"非 remote 页 / 登录页判定"触发。
+- [ ] **D8 图标明暗纯 bug**：`MainActivity.kt:692/695` 改用解析后的 `dark`（登录页 `pageTheme` 恒 null
+      ⇒ 系统深色下"深图标压 `#171717`"）。
+- [ ] **D9 路径闸收窄（待真机）**：先确认登录页 URL；若落在 `/remote` 前缀下（如 `/remote/v4/login`），
+      注入的路径闸与 `isAllowed` 收窄为**精确白名单**，避免 `pinChatRoute`/WS hook/滚动条/刷新按钮在登录页生效。
+- **不照抄鸿蒙的坑**：`currentPageUrl`（写了不读）、`isRemoteControlPage()`（定义不调用）、失实注释；
+  深链 manifest 只声明 `zcode.z.ai` 而代码放行 `*.z.ai` 的口径不一致（安卓直接对齐代码口径）。
+
+**未验证前提**：登录全链路域是否真只有这四个（鸿蒙口径是代码口径、非实测清单）；
+新登录页 URL 归属（在不在 `/remote` 前缀下）；鸿蒙色表是否已是线上最新 palette（真机阶段复核）。
+
+## 5. 迁移状态
 
 | 项 | 状态 |
 | --- | --- |
@@ -165,9 +202,10 @@
 | 3.17.1 锚点审计 / Rust 可用度评估 | ✅ 2026-11-04，报告在 `docs/android/` |
 | 术语更名（Tier2→原生承载、Tier1→页面侧） | ✅ 代码 + 文档全量替换，commit `dac579c` |
 | 承载计划与 3.17.1 修复方案 | ✅ 2026-11-04 逐条拍板（本文件 §2、§3） |
+| 登录页/状态栏新增范围 | ✅ 方案照鸿蒙（本文件 §4；两份取证报告在 `docs/android/`） |
 | 首次 CI 运行 | ⏳ 需要推送 `main` 后验证 |
 
-## 5. 已知风险 / 待办
+## 6. 已知风险 / 待办
 
 - [ ] 承载与闸门修复前，3.17.1 上是「页面持有连接」的降级态：后台卡片覆盖依赖页面存活。
 - [ ] Kotlin 客户端的 3.17.1 适配**未实测**（Rust 侧旁证更硬）；token 移植后必须真机验证一次。
