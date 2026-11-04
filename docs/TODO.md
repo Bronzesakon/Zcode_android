@@ -74,12 +74,13 @@
 
 | KICKED 来源 | 判定依据 | 动作 |
 | --- | --- | --- |
-| **本壳后台承载造成的**（自我接管） | 落在承载 dial 窗口内（`carrierDialedAt` + 期望的 workspace/session） | **自动恢复**：页面遮罩**延伸**到新文档就绪；交还后重载回原任务 |
-| **前台被其它对话/设备抢占** | 不在承载窗口内 | **不做恢复**：只记日志，页面按官方流程走（官方 kicked 文案/终态），不抢回来 |
+| **本壳后台承载造成的**（自我接管） | 落在承载 dial 窗口内（`carrierDialedAt` + 期望的 workspace/session） | **自动恢复**：**检测到 KICKED/终态即盖上加载中遮罩**（后台就盖、前台不露一秒），遮罩延伸到新文档就绪；交还后重载回原任务 |
+| **前台被其它对话/设备抢占** | 不在承载窗口内 | **不做恢复**：只记日志，页面按官方流程走（官方 kicked 文案/终态），不抢回来（**不罩**） |
 
 > 依据：3.17.1 页面收到 KICKED 会先自愈一次（`kickedDelay()`：2–5s 重连，60s 内第二次才
 > `session-conflict` 终态）。自我归因时页面自愈必然再被踢 ⇒ 壳应罩住等待并重载；
 > 外部归因时页面自愈是官方设计，壳不得干预。
+> **新版 kicked 页面在自我归因路径上不得上屏**（2026-11-04 用户明确要求）。
 
 ### 2.4 多工作区：先验证“能否并行”，不预设轮换
 
@@ -124,8 +125,12 @@
 
 - [ ] ① **document-start 重钉 `history.state`**：闸门 replace 会抹掉 `pinChatRoute` 预设，重钉救回
       （需确认 `restoreChat` 为真，见报告 §4.1）。
-- [ ] ② **让壳的 URL 带上 `app_version`**：学到 `desktopAppVersion` 后写进下次加载/重载的 URL（治本）；
-      拿不到值时**不猜**，退回 ③。
+- [ ] ② **让壳的 URL 带上 `app_version`**（治本）——**优先做"持久化跟随页面最终 URL"**：
+      页面 `Pir()` 自己 `location.replace()` 出的 URL 就带正确值，壳把它回写 `Prefs` 即可，
+      **不自己拼参数、不猜 `desktopAppVersion`**（用户 2026-11-04 质疑"一定要加吗"，
+      结论：不是必须加，跟随更省）。
+      前提待代理 A 结论：壳是否会读到/更新页面 replace 后的 URL；**若壳不更新持久化值**，
+      才退回"学到 `desktopAppVersion` 后写进下次加载的 URL"。
 - [ ] ③ **重载前探测** `dialog[aria-labelledby="remote-version-title"]`，命中即判「版本闸门阻断」，
       **不重载**、只记日志。
 - [ ] 顺带：URL 白名单参数已含 `app_version`（`Xnr=new Set(['app_version','sid','mid','name'])`），
