@@ -36,9 +36,11 @@
   根 APK 删除，`README.md` / `Docs/README.md` 重写为纯鸿蒙，`.gitignore` / `.zcodeignore` 清理，
   `entry/.../Index.ets` 中的 Android 注释已改；本地 `.adb-bridge`（38 MB）与 `.workbuddy-ai`（1.1 MB）移出仓库；
   鸿蒙记忆已按纯鸿蒙重写（22 个 Android 壳记忆移出记忆目录）。
-- **已暂存**：`E:\Zcode_android\scratch\android-shell-import\`（269 MB，壳源码 + 本地文档 + ColorOS + keystore）；
-  Android 自撰文档与厂商文档在 `E:\Zcode_android\docs\android\`（91 MB）。
-- **未执行**：原生 67 个未提交改动的 commit/tag、壳搬入 `android/`、CI 切换。这些属于 P1。
+- **已暂存/已导入**：壳源码 + 本地文档 + ColorOS + keystore 已从 `scratch/android-shell-import/` 导入
+  `android/`（快照导入，commit `1231133`）；原生 Compose/Rust 已归档到 `archive/native-compose/`
+  （commit `c37349e`，tag `native-compose-final`）；Android 文档在 `docs/android/`（commit `6d239bb`）。
+- **已验证**：本地 JDK 17 下 Kotlin 单测通过；JS 测试 106 项通过；`app-debug.apk` 构建成功（7.1 MB）。
+- **未执行**：GitHub Secrets 换成壳 keystore、首次 CI 验证、3.17.1 锚点回归、Rust carrier 评估。
 
 ---
 

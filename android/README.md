@@ -1,10 +1,10 @@
-# android-shell — ZCode 远程（安卓薄壳）
+# ZCode 远程（Android 薄壳）
 
-> **2026-10-15 前台 KICK / 长历史更新**：断线等待重连仍视作原生承载持有；回前台取消整个承载生命周期，旧重连、延迟开桥和旧连接清理不能复活或串入新连接。连接及认证前检查前台状态。已确认原生配对竞态时保留一次恢复；普通外部 KICK 沿用网页出口。网页 3.15.3 的首屏保留协议末尾 60 行，关闭自动补完整轮、滚顶预取与宽屏自动全量目录；通过“加载更早历史”手动补拉，保留流式输出、分享与显式导航。接口按行分页，60 行不等于两轮。只对精确资源路径、SHA-256 和唯一源码锚点应用补丁；新版或未知资源原样回退。详细证据和边界见[快速交接说明](../Docs/安卓壳-快速交接与性能收窄.md)。
+> **2026-10-15 前台 KICK / 长历史更新**：断线等待重连仍视作原生承载持有；回前台取消整个承载生命周期，旧重连、延迟开桥和旧连接清理不能复活或串入新连接。连接及认证前检查前台状态。已确认原生配对竞态时保留一次恢复；普通外部 KICK 沿用网页出口。网页 3.15.3 的首屏 60 行历史窗口补丁已随 3.17.1 迁移删除；本文相关补丁段落仅作历史记录。详细证据和边界见[快速交接说明](../docs/android/安卓壳-快速交接与性能收窄.md)。
 
-> **网页最新已核实快照（2026-10-15）为 3.15.3**：本机 [Docs/48-remote-v4-网页快照-20261015/README.md](../Docs/48-remote-v4-网页快照-20261015/README.md)。公开 `/remote/v4?app_version=3.15.3` 与设备日志一致；无参数入口仍返回旧 `latest`。主包 SHA-256：`ce2e2fc490d6364d21630e9f510b99f48748958e392724c0c9faf8fb5f9b88fd`。旧 09-11／09-20 快照保留作历史，不再作为当前契约。静态资源只留本机，不随 APK 或仓库分发。
+> **网页最新已核实快照（2026-10-15）为 3.15.3**：本机 [Docs/48-remote-v4-网页快照-20261015/README.md](../Reference_web/)。公开 `/remote/v4?app_version=3.15.3` 与设备日志一致；无参数入口仍返回旧 `latest`。主包 SHA-256：`ce2e2fc490d6364d21630e9f510b99f48748958e392724c0c9faf8fb5f9b88fd`。旧 09-11／09-20 快照保留作历史，不再作为当前契约。静态资源只留本机，不随 APK 或仓库分发。
 
-> **2026-10-13 快速交接更新**：有运行任务且凭据就绪时，退后台/熄屏后约 200ms 启动原生接管；热返回从 `onRestart()`、API 29+ 的 PreStarted／PreResumed 提前交还，先停止原生连接，再无延时派发 WebView 重载。新建 WebView 复用首次加载。“正在返回”状态阻止正式前台计数更新前重新接管，取消返回或再次熄屏则恢复后台判据。路由在 document-start 恢复；残余死链/丢路由判定压到 500ms。切换代次取消旧回调，通知定位复用已安排的重载。网页加载、配对耗时与系统调度不包含在壳侧等待预算内。性能收窄及验收口径见 [快速交接说明](../Docs/安卓壳-快速交接与性能收窄.md)。本轮全部校验复用 CI，通过后自动发布滚动 prerelease；后文的 3s/8s/12s 交接描述为历史行为。
+> **2026-10-13 快速交接更新**：有运行任务且凭据就绪时，退后台/熄屏后约 200ms 启动原生接管；热返回从 `onRestart()`、API 29+ 的 PreStarted／PreResumed 提前交还，先停止原生连接，再无延时派发 WebView 重载。新建 WebView 复用首次加载。“正在返回”状态阻止正式前台计数更新前重新接管，取消返回或再次熄屏则恢复后台判据。路由在 document-start 恢复；残余死链/丢路由判定压到 500ms。切换代次取消旧回调，通知定位复用已安排的重载。网页加载、配对耗时与系统调度不包含在壳侧等待预算内。性能收窄及验收口径见 [快速交接说明](../docs/android/安卓壳-快速交接与性能收窄.md)。本轮全部校验复用 CI，通过后自动发布滚动 prerelease；后文的 3s/8s/12s 交接描述为历史行为。
 
 > **logo 交接过渡**：后台原生 matched 确认后，用网页同款 logo 覆盖旧页面；后台不重载。回前台提前交还并重载，新文档首个 logo 或页面元素完成绘制就撤罩，接着显示网页自己的 logo／连接工作区方框／认证／配对等待，不等连接成功或主界面出现。logo 只向前填补空档，不向后延长。前台 KICK、未知冲突、原生被踢及加载错误保持可见；返回 15s 仍无首帧则撤罩露出实际页面。没有新增 DOM 轮询、网页跳转或第二个 WebView。
 
@@ -12,11 +12,11 @@
 > 本文件是唯一的状态与配置来源：进度与待验证项看「项目现状」与「已知问题」，
 > 迁移清单看「交接清单」，环境、adb 与取日志约定看「本机开发」，发版看「发布流程」。已不再另设交接文档。
 
-把上层鸿蒙工程「ZCode 远程」的薄壳思路搬到安卓：**WebView 加载 `zcode.z.ai/remote/v4` + 原生对接系统能力**，并补上鸿蒙版没有的**任务通知**与**后台保活**。
+薄壳加载官方远程页（`zcode.z.ai/remote/v4`）并对接原生系统能力，同时提供任务通知与后台保活。
 
 - 包名 / 应用名：`com.zcode.remote` / 「ZCode 远程」
 - 技术栈：原生 Kotlin + AndroidX（不用 Flutter），`minSdk 26` / `targetSdk 35`
-- 编译：**本机可出包**（`E:\AndroidSdk` + `E:\Autopsy-4.22.1\jre` + 预置 Gradle 8.9，见「本机开发」；2026-09-15 起不再依赖 CI 编译）；GitHub Actions 仍保留，推 `pre` 会自动出包并覆写滚动预发布
+- 编译：**本机可出包**（`E:\AndroidSdk` + `E:\AndroidSdk\jdk-17` + 预置 Gradle 8.9，见「本机开发」；2026-09-15 起不再依赖 CI 编译）；GitHub Actions 仍保留，推 `pre` 会自动出包并覆写滚动预发布
 
 设计与决策记录已并入本文件（见「已敲定的决策」与「决策落点」）；上层 `../安卓薄壳迁移文档.md` 是**未入库的本地归档**，本文件不依赖它。
 
@@ -38,7 +38,7 @@
 | --- | --- |
 | **`docs/18-全仓审计-错误路线残留与清理.md`** | **2026-09-16 全仓审计**：四个子代理并行只读审计 + 本轮落地。已删清单（Kotlin 死代码 / 整文件级死资源 / 注入层自伤代码）、保留但标注的、刻意没做的（需拍板）、多工作区落地与 E1 跑法 |
 | `docs/15-后台原生承载-独立设计.md` | 备份方案：子代理只读 bundle 推导的**协议契约**（逐条 `文件:行:列` 证据）；⚠️ §4 的"必须补 window 控制面"已被推翻 |
-| `../Docs/48-remote-v4-网页快照-20261015/` | **最新已核实 3.15.3**，入口、递归资源和 SHA 清单；无参数旧入口单独留证 | 当前网页策略与滚动分析基线 |
+| `../docs/android/48-remote-v4-网页快照-20261015/` | **最新已核实 3.15.3**，入口、递归资源和 SHA 清单；无参数旧入口单独留证 | 当前网页策略与滚动分析基线 |
 | `docs/05-远程网页-remote-v4-20260911/` | **历史**远程网页的静态资源快照（页面自己就是客户端，**代码即规格**）+ 两份分析：注入点/主题/滚动条审计、进对话无内容与左下角转圈 |
 
 ### `docs/miuix/`：后续界面重写的组件库
@@ -262,7 +262,7 @@ hook 挂在 `WebSocket.prototype` 上、对补注前已存在的页面连接同�
 **编译错误怎么读（重要）**：Actions 的**日志**需要鉴权（匿名 404），但 job 页面是服务端渲染的，且 **annotation 会写进 job 页面的 HTML**。所以 workflow 在 Gradle 失败时会把关键错误行（`^e: `、`Execution failed for task`、单测断言等）grep 出来以 `::error::` 重新输出，并加 `--console=plain` 去掉 ANSI/CR 噪声——本机没有 JDK/SDK，这是唯一能读到编译错误的通道。
 
 ```bash
-cd android-shell
+cd android
 python tools/watch_ci.py     # 单次读取：run 号 / 短 SHA / 分支 / 推送时间 + 每个 job 状态 + 失败注解
                              # 退出码 0=全绿，1=失败/已取消/零 job/--watch 超时
                              # --watch 长驻会被宿主取消（你一发言它就连同子进程被杀），优先短间隔单次调用
@@ -355,15 +355,15 @@ base64 -w0 scratch/zcode-remote-release.p12 > scratch/keystore-base64.txt
 
 | # | Name | 取值 | 说明 |
 | --- | --- | --- | --- |
-| 1 | `ANDROID_KEYSTORE_BASE64` | `android-shell/scratch/keystore-base64.txt` 的全部内容 | 单行 3676 字符，**不要手工加换行或空格**；`+` `/` `=` 都是正常字符 |
-| 2 | `ANDROID_KEYSTORE_PASSWORD` | `android-shell/scratch/keystore-password.txt` 的内容 | |
+| 1 | `ANDROID_KEYSTORE_BASE64` | `android/scratch/keystore-base64.txt` 的全部内容 | 单行 3676 字符，**不要手工加换行或空格**；`+` `/` `=` 都是正常字符 |
+| 2 | `ANDROID_KEYSTORE_PASSWORD` | `android/scratch/keystore-password.txt` 的内容 | |
 | 3 | `ANDROID_KEY_PASSWORD` | **与 #2 完全相同** | PKCS12 要求 key 与 store 同密码 |
 | 4 | `ANDROID_KEY_ALIAS` | `zcode-remote` | |
 
 取值怎么拿到（注意别把密码贴进任何聊天或 issue）：
 
 ```bash
-cd /e/Zcode_harmony/android-shell
+cd android
 cat scratch/keystore-password.txt          # #2 / #3 的值，手动输入到网页
 cat scratch/keystore-base64.txt | clip     # #1 的值直接进剪贴板（Git Bash 的 clip 不会加换行）
 ```
@@ -388,14 +388,14 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 
 ### 在 git 里（clone 即随行）
 
-`android-shell/app/src/**`（Kotlin、资源、`assets/inject.js`、`assets/zcode-protocol.js`）、`app/src/test/**`（8 个 Kotlin 单测类）、`tools/**`、`gradle/wrapper/**` + `gradlew` + `gradlew.bat`（**必须保留**，CI 靠它构建；`gradlew` 必须是 LF，`.gitattributes` 已保证）、`build.gradle.kts` / `settings.gradle.kts` / `gradle.properties`（版本基准 `zcodeBaseVersion` 在这里）、`.gitattributes` / `.gitignore` / `key.properties.example` / `CHANGELOG.md` / `README.md`。
+`android/app/src/**`（Kotlin、资源、`assets/inject.js`、`assets/zcode-protocol.js`）、`app/src/test/**`（8 个 Kotlin 单测类）、`tools/**`、`gradle/wrapper/**` + `gradlew` + `gradlew.bat`（**必须保留**，CI 靠它构建；`gradlew` 必须是 LF，`.gitattributes` 已保证）、`build.gradle.kts` / `settings.gradle.kts` / `gradle.properties`（版本基准 `zcodeBaseVersion` 在这里）、`.gitattributes` / `.gitignore` / `key.properties.example` / `CHANGELOG.md` / `README.md`。
 
 ### ⚠️ 在父仓库根，不在子项目目录内（最容易漏）
 
 | 路径 | 为什么必须跟着走 |
 | --- | --- |
-| `.github/workflows/android-shell.yml` | 整个构建/签名/滚动发布流程。所有 step 都用 `working-directory: android-shell`，**路径写死**——子项目改名或换目录必须同步改 |
-| `.github/scripts/android-shell-release-notes.ps1` | 正式发版（`v*` tag）时从 `android-shell/CHANGELOG.md` 取 Release 说明 |
+| `.github/workflows/android.yml` | 整个构建/签名/滚动发布流程。所有 step 都用 `working-directory: android`，**路径写死**——子项目改名或换目录必须同步改 |
+| `.github/scripts/android-release-notes.ps1` | 正式发版（`v*` tag）时从 `android/CHANGELOG.md` 取 Release 说明 |
 
 若把子项目抽成独立仓库：把 `.github/` 一起搬过去，把 workflow 里的 `working-directory` 改成 `.`（或删掉），`paths` 过滤简化为 `**`。
 
@@ -403,9 +403,9 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 
 | 路径 | 大小 | 内容 | 处置 |
 | --- | --- | --- | --- |
-| `android-shell/scratch/` | 13 KB | 签名密钥：`zcode-remote-release.p12`、`keystore-password.txt`、`keystore-base64.txt`；另有一份 `zemote-planB.patch`（已放弃的 zemote CI 改造，仅供回溯，可随时删） | **务必备份密钥那三个**——丢了就无法再给老版本做覆盖安装。CI 从 4 个 Secret 读，本地构建不需要，但要带走 |
-| `android-shell/docs/`、`android-shell/ColorOS_docs/` | 124 MB + 87 MB | 厂商文档离线快照（Android 官方 + ColorOS/OPPO + miuix 源码） | 手动拷贝；内容清单见开头「参考库与离线资料索引」 |
-| `../安卓薄壳迁移文档.md` | 50 KB | 迁移调研与历史回填的**完整归档**（§1–§12：技术事实清单、被推翻的三处假设、决策往返、CI 反馈回路）。耐久结论已全部并入本 README，**本文件不再依赖它**，留作细节出处 | 手动拷贝；不入库。原 `android-shell/` 下的旧快照已删（缺 §12） |
+| `android/scratch/` | 13 KB | 签名密钥：`zcode-remote-release.p12`、`keystore-password.txt`、`keystore-base64.txt`；另有一份 `zemote-planB.patch`（已放弃的 zemote CI 改造，仅供回溯，可随时删） | **务必备份密钥那三个**——丢了就无法再给老版本做覆盖安装。CI 从 4 个 Secret 读，本地构建不需要，但要带走 |
+| `android/docs/`、`android/ColorOS_docs/` | 124 MB + 87 MB | 厂商文档离线快照（Android 官方 + ColorOS/OPPO + miuix 源码） | 手动拷贝；内容清单见开头「参考库与离线资料索引」 |
+| `../安卓薄壳迁移文档.md` | 50 KB | 迁移调研与历史回填的**完整归档**（§1–§12：技术事实清单、被推翻的三处假设、决策往返、CI 反馈回路）。耐久结论已全部并入本 README，**本文件不再依赖它**，留作细节出处 | 手动拷贝；不入库。原 `android/` 下的旧快照已删（缺 §12） |
 | `../项目文档.md` | 20 KB | 鸿蒙侧需求与决策历史 | 手动拷贝；不入库 |
 
 > 厂商快照两个目录在 `.gitignore` 里，clone 拿不到——**交接时整目录拷走**。
@@ -413,7 +413,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 ### GitHub 仓库侧（不在文件系统里）
 
 - **4 个 Secrets**（缺失时 CI 回退 debug 签名，见上一节）：`ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_PASSWORD`、`ANDROID_KEY_ALIAS`。换仓库/换密钥时必须同步更新，否则新旧包签名不一致 → 只能卸载重装。
-- **正式发版的 tag 命名空间撞车（待你决策）**：`v1.0.0` 已被**鸿蒙版**的 Release 占用（资产是 `entry-default-unsigned.hap`）。同一仓库两个应用共享 tag 空间，而安卓正式发版的触发条件是 `tags: ['v*']`——给鸿蒙版打 `v1.0.1` 会**误触发安卓构建**并在那个 tag 上发布安卓 APK。建议把安卓侧改成 `tags: ['android-v*']`（发版用 `git tag android-v1.0.0`）；未擅自改，因为这会改变你的发版习惯。日常预发布侧已无此问题：滚动 tag `android-pre` 不带 `v`，与 `v*` 互不触发。
+- **正式发版 tag**：本仓库只服务这一个应用，`v*` 触发正式 Release；滚动预发布用 `android-pre`（不带 `v`，与 `v*` 互不触发）。
 
 ---
 
@@ -463,7 +463,7 @@ zcode-remote.apk -> CN=ZCode Remote, OU=Mobile, O=ZCode, L=Unknown, ST=Unknown, 
 14. **只读壳（`SHELL_READ_ONLY = true`，2026-09-15 定案）：壳永不关闭页面的 socket、永不自动重载页面。** 真机把三种自伤来源抓齐了——`socket.close() 被调用 … 来自 …` 那行会点名调用者：`nudgeReconnect ← fallbackCheck`（"进对话 5s 铁判准"，**40 秒里 10 次**）、`forceReconnect ← G.__zcodeShellSetAppForeground`（**回一次前台拆一次**，20:53:04）、`forceReconnect ← heartbeatTick ← G.__zcodeShellHeartbeat`（18:24 / 18:35 / 19:40 / 20:56）。拆掉的每一次都是**页面正用着的那条** relay 连接，用户看到的"发消息转圈 / 要重连 n 次才出来 / 返回页面是它自己在重连"全是它的下游。对照实验（`diag_cmd passive_off`，这些手段全部失去 socket 句柄）：页面自己的订阅 ack 之后 **5 分钟零生命周期事件**。**壳对页面的写入面只允许七处**：① document-start 的滚动条 CSS；② **退后台之后**每 10s 一帧 `pair_status_query`（前台一帧都不写——页面自己的 10s 心跳在前台是准的，见第 6 条）；③ KICKED 终态时回前台的自愈重载（终态页面自己回不来，只有手动"重新连接"）；④ 通知点击后的定位点击；⑤ **回前台死链兜底重载**（2026-09-15 晚加，**待真机验证**：静默 >60s ＋ 5s 观察窗零入站帧 ＋ 对话 0 行，三条齐了才重载，5 分钟限流；判据是"页面已经失败"，不是"我们怀疑它失败"）；⑥ **通知点击定位时的"预设 + 重载"**（2026-09-18 加）：把 `localStorage['zcode-v4-last-session:v1:<workspaceKey>']` 写成目标 sessionId、并把 `history.state.zcodeMobilePage` 钉成 `chat`，然后 `reload()` 一次——页面自己会因此打开那个任务（页面原生通路，见「死代码清理收口」节第 5 小节第 4 条）。**只在那一种情况下做**：判据是"承载在跑 或 本次后台承载跑过"（`MainActivity.maybeReloadForKickedPage`）——**页面本来好好的就绝不重载**（宁可漏判、不可误判）。⑦ **回前台"对话没回来"的恢复**（2026-09-19 加，**这是政策扩张，已由用户拍板**）：钉住
 `history.state.zcodeMobilePage='chat'` 然后 `reload()` 一次。判据（**档 0**，真机两形态验收过）：退后台那一刻
 `chat=true`（视图快照跨进程落盘）**且**回前台 12s 后仍 `chat=false`——即"用户离开时在对话里，回来却不在"。
-**三个真机对照实验**（证据 `android-shell/scratch/PROOF-RESULTS.md`）证明这是**最小充分**动作：
+**三个真机对照实验**（证据 `android/scratch/PROOF-RESULTS.md`）证明这是**最小充分**动作：
 ① 卡死态 + 钉 + reload → 落回对话（rows 610）；② 卡死态 + **不钉** + reload → 落 home 任务列表；
 ③ **冷启动**（进程被杀、`history.state` 已归零）+ 钉 + reload → 落回对话（rows 645）。
 ⟹ 那个字段是"落 chat 视图"的**唯一开关**且**不跨进程存活**（这正是"进程被杀后回前台落 home"的根因）；
@@ -690,7 +690,7 @@ M3 基线的做法（2026-09-11 落地）：
 | D1/D2 | 技术路线 / 数据来源 | 薄壳（WebView 套壳）+ hook WebSocket 读协议帧 | 重资产（自实现协议）、**DOM 嗅探** |
 | D3 | 壳的技术栈 | 原生 Kotlin（AndroidX） | Flutter + flutter_inappwebview（复用 CI 更省事，用户仍选原生） |
 | D4 | 包名 / 应用名 | `com.zcode.remote` / 「ZCode 远程」 | 沿用 `com.zcode.control` |
-| D5 | 子项目目录 | `android-shell/` | — |
+| D5 | 子项目目录 | `android/` | — |
 | D6 | 前台服务类型 | `specialUse` | `connectedDevice`（语义偏外设）、`dataSync`（Android 15 有 6 小时上限） |
 | D7 | sessions-index 订阅范围 | 主动订阅所有 workspace | 只被动嗅探当前 workspace、先被动后升级 |
 | D8 | 常驻通知格式 | 标题=任务名；正文=`状态 · 最新进展` | 正文只放最新进展、状态放标题 |
@@ -744,11 +744,11 @@ M3 基线的做法（2026-09-11 落地）：
 ## 本机开发
 
 本机（这台 Windows）**现在能本地出包了**（2026-09-15 第十四轮打通，环境与坑见该轮记录）：
-`E:\AndroidSdk` + `E:\Autopsy-4.22.1\jre`（**不能用 DevEco 的 JBR，它没有 `jlink.exe`**）+ 预置的 Gradle 8.9 分发。
+`E:\AndroidSdk` + `E:\AndroidSdk\jdk-17`（**不能用 DevEco 的 JBR，它没有 `jlink.exe`**）+ 预置的 Gradle 8.9 分发。
 出包命令与门禁：
 
 ```powershell
-cd android-shell
+cd android
 node --test tools/inject.test.js tools/protocol.test.js   # 82 项：线格式、分片重组、通道客户端、会话索引、注入层、页面 RPC 取证
 python tools/check_kotlin_structure.py   # 括号配平 / 包名与目录一致 / 合并残留（约 1 秒）
 python tools/check_resources.py          # 资源引用名是否存在（约 1 秒，补 aapt2 只在 CI 跑的缺口）
@@ -756,7 +756,7 @@ python tools/watch_ci.py                 # 读 CI 状态与失败原因（无需
 python tools/doc_snapshot.py --probe     # 官方文档快照（docs/）的状态；详见脚本头部 docstring
 
 # 本地出包直装真机（不消耗 CI）：改版本号必须加 --no-configuration-cache，否则会复用上次配置
-$env:JAVA_HOME='E:\Autopsy-4.22.1\jre'; $env:ANDROID_HOME='E:\AndroidSdk'; $env:ANDROID_SDK_ROOT='E:\AndroidSdk'
+$env:JAVA_HOME='E:\AndroidSdk\jdk-17'; $env:ANDROID_HOME='E:\AndroidSdk'; $env:ANDROID_SDK_ROOT='E:\AndroidSdk'
 $env:ZCODE_VERSION_CODE='128'; $env:ZCODE_VERSION_NAME='1.0.0-local.128'
 .\gradlew.bat --stop; .\gradlew.bat --no-configuration-cache assembleRelease
 ```
@@ -849,9 +849,9 @@ MSYS_NO_PATHCONV=1 "$ADB" devices -l                 # 确认出现设备
 ---
 ## 死代码清理收口与鸿蒙移植把手（2026-09-18 四批 · 自包含）
 
-> **一句话状态**：`android-shell` 历史积累的死代码已于 2026-09-18 分 **4 批**系统性清掉，**每批跑全套门禁、第 3/4 批每项各自独立真机回归**；
+> **一句话状态**：`android` 历史积累的死代码已于 2026-09-18 分 **4 批**系统性清掉，**每批跑全套门禁、第 3/4 批每项各自独立真机回归**；
 > 收口门禁为 **JS 82 项（`protocol` 37 + `inject` 45）/ Kotlin 单测 122 项 · 12 类 · 0 失败 / `lintRelease` 0 error · 36 warning / 编译器警告 0 /
-> 结构检查 42 文件 / 资源检查 25 文件**；设备装 **`1.0.0-local.187`**；清理轮的代码改动提交为 **`b627610`**（40 文件，+2247/−2743，只含 `android-shell/` + 根 `.gitignore`）。
+> 结构检查 42 文件 / 资源检查 25 文件**；设备装 **`1.0.0-local.187`**；清理轮的代码改动提交为 **`b627610`**（40 文件，+2247/−2743，只含 `android/` + 根 `.gitignore`）。
 > ⚠️ **工作区不是干净的**：`b627610` 之后**还有一轮新功能（点通知/流体云卡片 → 进任务详情页，4 个文件）尚未提交**，本文第 5 小节把它当作"机制把手"写进去了——**别把本节读成"全部改动都已入库"**。
 > **本节怎么用**：新会话读完就知道「哪些东西已经删了（别再找、别再当死代码审一遍）」「哪些绝不能删」「改代码会踩什么坑」「往鸿蒙搬要抓哪几处把手」。
 > **详档在哪**：`E:\Zcode_harmony\docs\12-安卓壳死代码清理-结论与决策档.md`（结论/决策台帐/四条陷阱的完整版）与
@@ -999,7 +999,7 @@ B 级 4 条（**删需同批改断言**，改动时"改断言而不是删断言"
    于是树**一度破损**：`zcode-protocol.js` 已删 `acceptPayload`，而 `inject.js` 仍在 `try { … acceptPayload(…); acceptObservedPayload(…); }` 里调用它——
    **那一行与被动观察同在一个 `try` 里**，抛异常会**连带跳过被动观察**（实测 `inject.test.js` 由 45/45 掉到 42/45）。
    判据：`node --check` 两个 JS + 两套 Node 测试 + `python tools/check_kotlin_structure.py`，尤其看**"删定义"与"删调用点"是否落在同一批里完成**。
-6. **grep 纪律：源码级搜索一律显式限定到 `app/src`（或 `tools/`）。** `android-shell/docs/` 里有 **519 个 Kotlin 文件（20.5 MB，`docs/miuix/` 是小米 MiuiX 库的完整源码副本）**，
+6. **grep 纪律：源码级搜索一律显式限定到 `app/src`（或 `tools/`）。** `android/docs/` 里有 **519 个 Kotlin 文件（20.5 MB，`docs/miuix/` 是小米 MiuiX 库的完整源码副本）**，
    不忽略 gitignore 的搜索（如 `Select-String -Recurse`）会把它们的命中混进来（实测：`resetState` 全目录递归报 16 处，`app/src` 下 **0 处**）。
    ⚠️ 同时记住 **ripgrep 默认跳过 gitignore 的文件** ⟹ 所有"全仓 grep"严格说是"**除 `docs/`、`scratch/` 外**的全仓"；
    **判"某能力不存在"之前，必须显式搜 `docs/` 与 `scratch/`**（本轮父代理关于"页面不支持深链""只能点 DOM"的判断**错了两次**，根因就是不知道 `scratch/audit/` 里那两份前置审计存在）。
@@ -1045,23 +1045,23 @@ B 级 4 条（**删需同批改断言**，改动时"改断言而不是删断言"
 耗时较长，**本文没有重跑**，其数字沿用收口时的实测记录（Kotlin **122 / 0 失败**、lint **0 error / 36 warning**）：
 
 ```powershell
-cd E:\Zcode_harmony\android-shell
+cd E:\Zcode_harmony\android
 python tools/check_kotlin_structure.py     # 42 文件；含接线断言（"页面加载回调复位注入就绪位"）
 python tools/check_resources.py            # 25 文件
 node --test tools/protocol.test.js tools/inject.test.js   # 82 项（37 + 45），实测 82 pass / 0 fail
 # Kotlin 单测 + lint + 出包（本机可出包；JAVA_HOME 必须显式指定，否则 JdkImageTransform 因缺 jlink 失败）
-$env:JAVA_HOME='E:\Autopsy-4.22.1\jre'; $env:ANDROID_HOME='E:\AndroidSdk'; $env:ANDROID_SDK_ROOT='E:\AndroidSdk'
+$env:JAVA_HOME='E:\AndroidSdk\jdk-17'; $env:ANDROID_HOME='E:\AndroidSdk'; $env:ANDROID_SDK_ROOT='E:\AndroidSdk'
 .\gradlew.bat --console=plain :app:testReleaseUnitTest :app:lintRelease :app:assembleRelease
 ```
 
-**通过判据**：全绿 + `lintRelease` **无 error** + 编译器警告 **0 条**。⚠️ **`JAVA_HOME` 必须显式指定为 `E:\Autopsy-4.22.1\jre`**：
+**通过判据**：全绿 + `lintRelease` **无 error** + 编译器警告 **0 条**。⚠️ **`JAVA_HOME` 必须显式指定为 `E:\AndroidSdk\jdk-17`**：
 默认 JDK 若是 DevEco 的 JBR 21，会因**缺 `jlink.exe`** 而失败（Autopsy JRE 有 jlink、DevEco JBR 没有）——**本轮有两路子代理据此误判"本机跑不了 Kotlin 单测"，那是错的**。
 
 **装机（覆盖安装、保留数据；设备 `3B6F5RE8GCL3LYY7` = OPPO PLC110 / API 36 / Android 16）**：
 
 ```powershell
-$env:JAVA_HOME='E:\Autopsy-4.22.1\jre'; $env:ZCODE_VERSION_CODE='187'; $env:ZCODE_VERSION_NAME='1.0.0-local.187'
-cd E:\Zcode_harmony\android-shell; .\gradlew.bat --console=plain :app:assembleRelease
+$env:JAVA_HOME='E:\AndroidSdk\jdk-17'; $env:ZCODE_VERSION_CODE='187'; $env:ZCODE_VERSION_NAME='1.0.0-local.187'
+cd E:\Zcode_harmony\android; .\gradlew.bat --console=plain :app:assembleRelease
 & 'E:\AndroidSdk\platform-tools\adb.exe' install -r app\build\outputs\apk\release\app-release.apk
 ```
 
@@ -1191,15 +1191,15 @@ if ($obj.result -and $obj.result.result) {
 
 | 知识 | 在哪 | 状态 / 怎么办 |
 | --- | --- | --- |
-| 安卓侧最详细的状态文档 `android-shell/docs/18-全仓审计-错误路线残留与清理.md`（开关史、§3.10 提前接管取证、§3.11 卡片生命周期与运行态三源）及其全部订正 | `android-shell/docs/`（**被 gitignore**，`git ls-files` = 0） | **不进任何提交**，只能手动拷贝。注意 `docs/` 里还有 519 个 Kotlin 文件（`docs/miuix/` 是 MiuiX 库源码副本，20.5 MB） |
-| **`android-shell/scratch/`** —— 含 **`audit/extension-surface.md`（857 行，remote-v4 扩展面/可观测面穷尽盘点）** 与 **`audit/platform-facts.md`（57 KB）**，另有注入层补丁草稿、4 个历史 APK、截图、通知/日志转储 | `android-shell/scratch/`（**被 gitignore**） | ⚠️ **这是本轮最大的盲区**：两份前置审计**全程没被看见**（ripgrep 默认跳过 gitignore 的文件），父代理关于"页面不支持深链""只能点 DOM"的判断**因此错了两次**。**已复制**进父 `docs/`（见下一行），**源文件仍在 `scratch/`** |
+| 安卓侧最详细的状态文档 `android/docs/18-全仓审计-错误路线残留与清理.md`（开关史、§3.10 提前接管取证、§3.11 卡片生命周期与运行态三源）及其全部订正 | `android/docs/`（**被 gitignore**，`git ls-files` = 0） | **不进任何提交**，只能手动拷贝。注意 `docs/` 里还有 519 个 Kotlin 文件（`docs/miuix/` 是 MiuiX 库源码副本，20.5 MB） |
+| **`android/scratch/`** —— 含 **`audit/extension-surface.md`（857 行，remote-v4 扩展面/可观测面穷尽盘点）** 与 **`audit/platform-facts.md`（57 KB）**，另有注入层补丁草稿、4 个历史 APK、截图、通知/日志转储 | `android/scratch/`（**被 gitignore**） | ⚠️ **这是本轮最大的盲区**：两份前置审计**全程没被看见**（ripgrep 默认跳过 gitignore 的文件），父代理关于"页面不支持深链""只能点 DOM"的判断**因此错了两次**。**已复制**进父 `docs/`（见下一行），**源文件仍在 `scratch/`** |
 | remote-v4 网页端与安卓平台事实的两份审计 | `E:\Zcode_harmony\docs\10-remote-v4-网页扩展面与可观测面穷尽盘点.md`、`E:\Zcode_harmony\docs\11-remote-v4-平台事实.md` | ✅ 已迁入（复制），但**父 `docs/` 整个目录被 gitignore** ⇒ 仍需手动拷贝 |
 | 本轮清理的**结论 + 决策台帐 + 禁区 + 配方**；真机回归判据与两个自查缺陷；未完成的调研任务书；CDP 助手 | `E:\Zcode_harmony\docs\12-安卓壳死代码清理-结论与决策档.md`、`13-安卓壳真机回归与两个自查缺陷.md`、`14-待办-remote-v4-bootstrap载荷穷举调研.md`、`docs\tools\cdp.ps1` | ✅ 已迁入（12 为**合并重写**，其余正文未删改）；**全在 gitignore 目录里 ⇒ 必须手动拷贝**。`14` 是**未完成**的调研（`bootstrap-response` 约 28 KB 载荷里还有哪些字段没被解析），**保留待做** |
 | 鸿蒙移植的逐项对照与后台行为 | `E:\Zcode_harmony\docs\09-…`、`06-…`、`07-…`、`08-…`、`01`–`05`（实况窗五篇） | 同上：**本地文件、必须手动拷贝**（本文第 5 小节已把要点抄进来了，细节仍需原篇） |
-| `.dsh-audit/`（本轮全部工作产物）：13 份分区原始审计报告（逐成员调用方分类表）、6 份功能域详情、逐符号活/死判定清单（`BATCH4-INVENTORY-4b.md` / `-4c-phaseB.md`，742 行）、50 KB 执行流水、9 份批次任务书、阶段守则（死代码分类体系、证据标准、跨语言核查清单、功能名词典） | `E:\Zcode_harmony\.dsh-audit\`（**被 gitignore**，**本轮保留、未删**——是否清掉交由后续新对话决定） | **现在仍可查某个具体 `file:line` 证据的原始出处**；主要结论与关键行号也已进 `docs/12` 与本节。其中 13 份分区报告与 6 份功能域详情**已另迁一份**到 `docs/android-shell/`（逐字校验过），所以即便将来清掉该目录，那两层仍在 |
+| `.dsh-audit/`（本轮全部工作产物）：13 份分区原始审计报告（逐成员调用方分类表）、6 份功能域详情、逐符号活/死判定清单（`BATCH4-INVENTORY-4b.md` / `-4c-phaseB.md`，742 行）、50 KB 执行流水、9 份批次任务书、阶段守则（死代码分类体系、证据标准、跨语言核查清单、功能名词典） | `E:\Zcode_harmony\.dsh-audit\`（**被 gitignore**，**本轮保留、未删**——是否清掉交由后续新对话决定） | **现在仍可查某个具体 `file:line` 证据的原始出处**；主要结论与关键行号也已进 `docs/12` 与本节。其中 13 份分区报告与 6 份功能域详情**已另迁一份**到 `docs/android/`（逐字校验过），所以即便将来清掉该目录，那两层仍在 |
 | 两处真机回归的完整日志 | 设备 `/sdcard/Android/data/com.zcode.remote/files/logs/`（另有 `.1` 轮转） | 仍在设备上；⚠️ **512 KB 轮转**，要留就得先导出 |
-| 签名材料（丢了就无法给老版本做覆盖安装） | `android-shell/scratch/*.p12` / `keystore-password.txt` / `keystore-base64.txt` | 见本文「签名密钥」一节与「交接清单」——**务必备份** |
-| 厂商文档快照 | `android-shell/docs/`（124 MB）、`android-shell/ColorOS_docs/`（87 MB） | 手动拷贝，清单见本文开头「参考库与离线资料索引」 |
+| 签名材料（丢了就无法给老版本做覆盖安装） | `android/scratch/*.p12` / `keystore-password.txt` / `keystore-base64.txt` | 见本文「签名密钥」一节与「交接清单」——**务必备份** |
+| 厂商文档快照 | `android/docs/`（124 MB）、`android/ColorOS_docs/`（87 MB） | 手动拷贝，清单见本文开头「参考库与离线资料索引」 |
 
 > **判不出的**（本节明确留白，未查证，不要当结论用）：① 本节第 5 小节末尾列的 5 条鸿蒙侧未验证项；② 本文实跑确认的三条门禁数字（JS 82/82、结构 42、资源 25）**不含 Kotlin 单测与 lint**——后两条沿用收口时的实测记录（122/0 失败、0 error/36 warning），本机 gradle 全量跑一轮耗时较长，**没有在本次文档工作中重跑**；
 > ③ ~~本 README 内部有一处版本号不一致~~ **已解决（父代理收口时统一）**：**清理轮收尾装机是 `1.0.0-local.187`**（历史口径，保留在下方各节的清理记录里），
@@ -1219,7 +1219,7 @@ if ($obj.result -and $obj.result.result) {
 | **本文上方的〈死代码清理收口与鸿蒙移植把手（2026-09-18 四批 · 自包含）〉** | **要动代码、要往鸿蒙搬、或想再审一遍"这段是不是死代码"之前先读这一节**：四批删了什么（按功能域）、**⚠️ 不可删除清单**（逐条给"为什么不能删"）、十条实测陷阱（`git HEAD` 不是基准 / grep 纪律 / 日志轮转 / "平台事实还是我们自己拍的政策"…）、**鸿蒙逐项移植把手**（含"判不出"的 5 条）、本机门禁与真机回归配方 + CDP 助手全文、盲区登记。**该节自包含**，不依赖任何本地文件 |
 | **`docs/18-全仓审计-错误路线残留与清理.md`** | **要动代码前先读**：开关史（`AUTO_TAKEOVER_ENABLED` / `SHELL_VISIBILITY_HIJACK` / `SHELL_READ_ONLY` / `controllerStreamEnabled`）各封死了什么、哪些已删、哪些刻意保留。**存活数（逐行核实，2026-09-18 之后；audit 4a 更新）：这四个里现在只剩 1 个还在代码里——`SHELL_READ_ONLY = true`（`inject.js:1176`）**；`AUTO_TAKEOVER_ENABLED` 与 `SHELL_VISIBILITY_HIJACK` 早前轮次已从代码删除（只在文档留史），`controllerStreamEnabled` 也已随 `RelayBridge` 的 controller 订阅实现一起删除（4a 轮，`docs/18` §4 留取证；**"四/三/二个开关"都是历史口径，不是现状清单**）。**"别再重做一遍已删的东西"看这份**。§3.10＝提前接管取证，§3.11＝卡片生命周期 + 运行态三源（最完整的一份） |
 | `docs/15-后台原生承载-独立设计.md` | 要**协议契约**时读（逐条 `文件:行:列`）。⚠️ 两处已被推翻：§2.6 平台结论未核验；**§4"原生必须补 window 控制面"是错的**——真凶是 controller 流那次 `rpc:listen`（更正见 `docs/18` §3.7） |
-| `../Docs/48-remote-v4-网页快照-20261015/` | **当前网页侧契约**：2026-10-15 最新已核实 3.15.3，旧 docs/05 仅用于历史审计 |
+| `../docs/android/48-remote-v4-网页快照-20261015/` | **当前网页侧契约**：2026-10-15 最新已核实 3.15.3，旧 docs/05 仅用于历史审计 |
 | `ColorOS_docs/06-Android原生Live Updates（双兼容路径）/` | 流体云（Live Updates）的**平台规则与官方 UX 规范**：提升的硬性条件、样式限制、"活动发生在过去请勿使用"等 |
 
 ### 一句话状态
@@ -1336,7 +1336,7 @@ if ($obj.result -and $obj.result.result) {
 ### 常用命令
 
 ```bash
-cd android-shell
+cd android
 python tools/check_kotlin_structure.py     # 一秒：括号配平 / 包名与目录一致 / 合并残留
 python tools/check_resources.py            # 一秒：每个 @type/name 是否都有定义
 node --test tools/inject.test.js tools/protocol.test.js   # 82 项（protocol + inject）
@@ -1381,7 +1381,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
 - **第十一/十二轮**：Tier2 原生直连（M1 探针 → M3c 事件解码）落地、真机端到端跑通一次；
   定案「桌面端推送稀疏」⇒ **主动重锚**成为"跟手"的来源。
 - **第十三/十四轮**：换方法——**先把契约从 bundle 里读穷，再动代码**；本机可编译（`E:\AndroidSdk` +
-  `E:\Autopsy-4.22.1\jre`）；页面日志接入；滚动条定案（那条 14px 条是网页自己写的）；
+  `E:\AndroidSdk\jdk-17`）；页面日志接入；滚动条定案（那条 14px 条是网页自己写的）；
   根因：壳的心跳探针从来没被 ack（`injectPayload` 包成了数据面形状，**控制帧必须顶层 `type`**）。
 - **第十五轮**：用户报的"转圈 / 要重连好几次"定罪为**壳自伤** ⇒ **只读壳**止血；可见性劫持停用
   （回前台"加载不出来"随之修好）；60 秒墙两轮实测。
@@ -1448,7 +1448,7 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
 流体云现状用 `python tools/notif_dump.py`（打印 title / text / `when`）。
 ### 工作环境（新会话必读）
 
-- **本机现在能编译（2026-09-15 起）**：`E:\AndroidSdk` + `E:\Autopsy-4.22.1\jre` + 预置 Gradle 8.9，
+- **本机现在能编译（2026-09-15 起）**：`E:\AndroidSdk` + `E:\AndroidSdk\jdk-17` + 预置 Gradle 8.9，
   出包命令见「本机开发」；`adb install -r` 直接覆盖安装，**不消耗 CI**。CI 仍然是可选通路
   （`git push origin pre` → js 检查 + `:app:testReleaseUnitTest` + APK → 滚动预发布 `android-pre`）。
   本地出包前务必先跑门禁（下面两条），因为本地编译**同样**只报类型错误、不保证行为正确。
@@ -1480,5 +1480,5 @@ MSYS_NO_PATHCONV=1 "$ADB" -s "$S" shell "L=/sdcard/Android/data/com.zcode.remote
 - **API 联网的两种姿势**：`am broadcast -n …/.DiagReceiver`（后台可调用、不碰可见性，测后台现场只能用它）
   与 `am start -n com.zcode.remote/.MainActivity`（会把应用拉到前台）。**回前台要看页面时加 `-f 0x20000000`**
   （SINGLE_TOP）：ActivityRecord 不变、页面零重载；裸 `am start` 会新建 Activity 实例 ⇒ 页面重载 + KICKED。
-- **工作区纪律**：只 stage `android-shell` 自己的改动（`git add android-shell/app ...`）；
+- **工作区纪律**：只 stage `android` 自己的改动（`git add android/app ...`）；
   并发会话会动 `entry/src/main/ets/pages/Index.ets` 与 `docs/`（提交前先看 `git diff`）。
