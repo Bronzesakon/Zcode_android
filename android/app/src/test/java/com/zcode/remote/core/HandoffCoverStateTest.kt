@@ -133,4 +133,25 @@ class HandoffCoverStateTest {
         assertTrue(state.expire(-1L))
         assertFalse(state.visible)
     }
+
+    @Test
+    fun `foreground self-kick cover releases on the fresh document or the timeout`() {
+        // 审查 P0-1 的形状：前台 KICK 若用 carrierMatched(away=true) 建罩，returning 为假，
+        // pageStarted/pagePresented/expire 全部空转，罩永久滞留。foregroundRecovery 必须可撤。
+        val state = HandoffCoverState()
+        assertTrue(state.foregroundRecovery(7L))
+        assertTrue(state.visible)
+        assertFalse("already up", state.foregroundRecovery(7L))
+        state.pageStarted()
+        state.pageReady("fresh")
+        val ticket = state.renderedCandidate("fresh")!!
+        assertTrue(state.pagePresented("fresh", ticket))
+        assertFalse(state.visible)
+
+        // 另一条出路：新文档一直不出帧时，超时也必须能撤罩。
+        val stalled = HandoffCoverState()
+        assertTrue(stalled.foregroundRecovery(8L))
+        assertTrue(stalled.expire(8L))
+        assertFalse(stalled.visible)
+    }
 }

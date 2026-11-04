@@ -1306,8 +1306,9 @@
      *     壳不动手（不盖罩、不重载，只记日志）。
      */
     var carrierWindow = {at: 0, workspace: '', session: ''};
-    /** 窗口的时间上界（5 分钟）：拨号造成的 KICK 在几秒内就到。 */
-    var CARRIER_WINDOW_MAX_MS = 300000;
+    /** 窗口的时间上界（60 秒）：拨号造成的 KICK 在几秒内就到；原生停承载后 5s 会主动
+     *  关窗，这里只是进程被杀/异常时的兜底。 */
+    var CARRIER_WINDOW_MAX_MS = 60000;
 
     /** 原生在启动承载时打开窗口，交还时关闭（at=0）。 */
     G.__zcodeShellExpectCarrier = function (at, workspace, session) {
@@ -3358,6 +3359,8 @@
     var lastPageState = '';
     var pageStateScheduled = false;
     var lastVersionGate = false;
+    /** 上次真正扫描版本闸门 modal 的时刻（毫秒）。全文档属性选择器不便宜，必须限频。 */
+    var versionGateProbedAt = 0;
 
     /**
      * 版本闸门③（TODO §3.1）：页面被「桌面版本已更新」的阻断式 modal 挡住时，
@@ -3394,13 +3397,22 @@
         pageStateScheduled = false;
         // 闸门③：状态上报这一拍顺手探一次阻断式 modal，变化时才发一帧。
         // 原生据此**同步**决定"不重载"（<300ms 的交还预算耗不起一次 JS 往返）。
-        var gate = versionGateBlocked();
-        if (gate !== lastVersionGate) {
-            lastVersionGate = gate;
-            post('versiongate', {blocked: gate});
-            diag(gate ? 'warn' : 'info',
-                gate ? '版本闸门阻断：页面停在「桌面版本已更新」，停止轻推与重载'
-                    : '版本闸门已解除');
+        //
+        // 限频：`versionGateBlocked()` 是全文档属性选择器扫描，而这个函数在每次 DOM
+        // 合并拍都会被调用（流式输出时很密）。**已阻断时每拍都扫**——那时页面被
+        // `isBlocked()` 门死、DOM 基本不动，扫描很便宜，而"解除"必须立刻上报；
+        // 未阻断时限频 1s（原生读缓存位，1s 的发现延迟不影响交还决策）。
+        var probedAt = Date.now();
+        if (lastVersionGate || probedAt - versionGateProbedAt >= 1000) {
+            versionGateProbedAt = probedAt;
+            var gate = versionGateBlocked();
+            if (gate !== lastVersionGate) {
+                lastVersionGate = gate;
+                post('versiongate', {blocked: gate});
+                diag(gate ? 'warn' : 'info',
+                    gate ? '版本闸门阻断：页面停在「桌面版本已更新」，停止轻推与重载'
+                        : '版本闸门已解除');
+            }
         }
         var state = pageStateName();
         if (!state) {
@@ -3458,7 +3470,9 @@
         if (!has) {
             // 用户真的回到了首页/工作区概览：别再把这个标记留给下一次整页导航
             // （否则刷新一次就会被拽回对话页）。
-            if (pinnedBefore()) {
+            // 但**失败态不算"用户离开"**：KICKED/失败页会把对话视图卸掉，这时清标记
+            // 等于把闸门①的前置钉死在一次 restoreChat=false 的导航上（审查注入层 P1-2）。
+            if (!pageFailure && pinnedBefore()) {
                 storeSet(PIN_CHAT_KEY, '');
             }
             return;

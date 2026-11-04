@@ -32,6 +32,29 @@ class HandoffCoverState {
         return true
     }
 
+    /**
+     * 前台自我接管的恢复遮罩（KICKED 落在承载窗口内、用户就在前台）。
+     *
+     * 与 [rendererGone] 同构：前台没有"回前台跃迁"可等，所以 `returning` 直接置真，
+     * 由新文档的 pageStarted → pageReady → renderedCandidate → pagePresented 撤罩，
+     * [expire] 是超时兜底。**绝不能**用 [carrierMatched] 建前台罩——它把 `returning`
+     * 置假，pageStarted/pagePresented/expire 全被 `!returning` 短路，罩会永久滞留并
+     * 吃掉整屏触摸（2026-11-04 审查 P0-1）。
+     */
+    fun foregroundRecovery(epoch: Long): Boolean {
+        if (visible) return false
+        visible = true
+        returning = true
+        carrierEpoch = epoch
+        sourceDocument = ""
+        activeDocument = ""
+        candidateDocument = ""
+        loadStarted = false
+        retiredDocuments.clear()
+        revision += 1
+        return true
+    }
+
     fun beginReturn(): Long? {
         if (!visible || returning) return null
         returning = true

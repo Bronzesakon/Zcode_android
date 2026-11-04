@@ -264,3 +264,34 @@
       清单见 `docs/android/MANIFEST.md`。
 - [ ] 签名材料三件套在 `android/scratch/`（p12 + 口令 + base64），备份丢失即无法覆盖安装。
 - [ ] 未验证前提：扫码 URL 是否自带 `app_version`（决定闸门是否必然触发；方案已按"不带"设计，不受阻）。
+
+## 7. 上机前独立审查（2026-11-04，两路只读代理）
+
+报告：`docs/android/pre-device-review-kotlin.md`（P0×1、P1×5、P2×9）、
+`docs/android/pre-device-review-inject.md`（P0×0、P1×3、P2×7）。以下为**已修**与**留档**。
+
+### 已修（含单测）
+
+- [x] **P0 前台 KICK 罩永久滞留**：新增 `HandoffCoverState.foregroundRecovery()`——前台建罩时
+      `returning=true`，由新文档首帧或超时撤罩；前台自我接管路径改为"建罩 + `requestPageReload`
+      + 15s 超时"（旧写法 `carrierMatched(…, away=true)` 在前台把 `returning` 置假，罩永挂并吃触摸）。
+- [x] **P1 归因窗口漏关**：新增 `stopCarrierAndCloseWindow()` 收口诊断关闭/页面自愈/手动停止三条路；
+      `clearCarrierState()` 改为 `stampCarrierStopped()`（停承载后**5s 宽限**再关页面窗口，覆盖
+      "KICKED 帧晚到"）；KICKED 归因改用更严的 `kickedIsSelfAttributed()`（运行中或停后 5s 内），
+      `carrierMayHaveKickedPage()` 保留给"点通知定位"。
+- [x] **P1 交还确认只覆盖主 socket**：`stop()` 改优雅 `close(1000)`；`stopAndAwaitClose` 同时等
+      主 socket 关闭确认**与**各工作区桥 `disposeEverything` 完成（两者都到才 `confirmed=true`）。
+- [x] **P1 渲染器重建**：`isFinishing/isDestroyed` 直接返回；恢复 URL 必须过 `RemoteUrl.isAllowed`
+      （拒 `about:blank`/错误页/一次性回调 URL），不可恢复时摘除并销毁旧 WebView 后回扫码页。
+- [x] **P1 桥残留在登录页**：`configureWebView()` 不再无条件 `addJavascriptInterface`，
+      桥由 `setBridgeAttached` 独占（重建后 `bridgeAttached=false` 与实参 false 相等的早退不再漏）。
+- [x] **注入层 P1**：版本闸门探测限频（未阻断 1s/次，已阻断每拍——那时 DOM 不动、扫描很便宜）；
+      pin 标记在**失败态**（KICKED/error）不再清除；承载窗口上限 5min→60s（原生停后 5s 主动关窗）。
+
+### 留档未修（P2 / 需真机）
+
+- 注入层 KICKED 窗口只比时间、不比 workspace/session；`__zcodeShellAfterCarrierReturn` 无调用点；
+  `desktopversion` 每帧重复上报；pin 可能跨登出/换工作区残留；`__zcodeShellExpectCarrier` 暴露在页面世界。
+- 原生 `Diagnostics` 曾把含 sid 的 href 打进日志（**预存在**，非本轮引入）——建议单独一轮做脱敏。
+- `NARROW_QUERY` 对 <3.17.1 页面偏宽（回退版本才会遇到）。
+- 真机待量：close 确认常态耗时（现已含桥）、前台自我接管罩的时序、`blur/logo` 首帧撤罩。

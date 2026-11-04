@@ -1288,6 +1288,31 @@ object ShellRuntime {
     private var carrierRanThisStint = false
 
     /**
+     * KICKED 归因的宽限：承载**停了之后**这么久内的 KICK 仍算我们造成的。
+     *
+     * 页面被我们自己顶掉时，那帧 KICKED 往往在停连接后几十~几百毫秒才到；超过这一段
+     * 就不是我们了（用户被别的设备抢走）。注入层用同一个值关窗口。
+     */
+    private val KICK_ATTRIBUTION_GRACE_MS = 5_000L
+
+    /** 最近一次承载停止的时刻（elapsedRealtime；0 = 本次进程从未停过）。 */
+    @Volatile
+    private var carrierStoppedAtMs = 0L
+
+    /**
+     * 这次 KICKED 是不是我们自己造成的（**只用于归因**，比 [carrierMayHaveKickedPage] 严）。
+     *
+     * 区别：那个用于"点通知定位"——几十分钟后仍该成立（"这次后台承载跑过"）；
+     * 这个必须在承载停掉 ~5s 后立刻失效，否则用户被别的设备抢走会被当成自我接管
+     * （2026-11-04 审查 P1-1/P1-2）。
+     */
+    private fun kickedIsSelfAttributed(): Boolean {
+        if (NativeRelayClient.isRunning()) return true
+        if (carrierStoppedAtMs <= 0L) return false
+        return SystemClock.elapsedRealtime() - carrierStoppedAtMs <= KICK_ATTRIBUTION_GRACE_MS
+    }
+
+    /**
      * 通知卡片点击定位用：**页面是否可能已被承载顶掉**（KICKED 终态）。
      *
      * 判据刻意保守——**宁可漏判，不可误判**（误判会让本来好好的页面白闪一次重载）：
@@ -1311,7 +1336,6 @@ object ShellRuntime {
         clearCarrierState()
         carrierRanThisStint = false
     }
-
     /**
      * 防误判用的 socket 生命周期观测：静默期内 socket 计数变了 ⇒ 页面在重拨，等它。
      *
@@ -1358,10 +1382,7 @@ object ShellRuntime {
         carrierEnabled = enabled
         Diagnostics.log("warn", "后台原生承载：${if (enabled) "已开启" else "已关闭"}")
         if (!enabled && NativeRelayClient.isRunning()) {
-            NativeRelayClient.stop("后台承载被关闭")
-            stopLiveProgressPolling()
-            releaseCarrierWakeLock()
-            carrierStarted = false
+            stopCarrierAndCloseWindow("后台承载被关闭")
         }
         if (!enabled) {
             // 关掉就走"没有承载"的状态，别把上一次的来路与去抖标志留给下一次。
@@ -1487,12 +1508,7 @@ object ShellRuntime {
                     "warn",
                     "后台原生承载：页面链路已恢复（最新入站帧 ${age / 1000}s 前），原生交还",
                 )
-                NativeRelayClient.stop("页面链路已恢复")
-                stopLiveProgressPolling()
-                releaseCarrierWakeLock()
-                carrierStarted = false
-                carrierStartedEarly = false
-                handbackDeferredLogged = false
+                stopCarrierAndCloseWindow("页面链路已恢复")
             } else if (carrierStarted) {
                 if (!handbackDeferredLogged) {
                     handbackDeferredLogged = true
@@ -1632,8 +1648,8 @@ object ShellRuntime {
         carrierStarted = false
         carrierStartedEarly = false
         handbackDeferredLogged = false
-        // 交还即关窗口：之后收到的 KICK 不能再算到"自我接管"头上。
-        closeCarrierWindow()
+        // 交还即记账：之后 5s 内的 KICK 仍算我们造成的（帧会晚到），再往后就不算。
+        stampCarrierStopped()
     }
 
     /**
@@ -1985,8 +2001,12 @@ object ShellRuntime {
         jsEvaluator = evaluator
     }
 
+    /** 归因窗口的关闭令牌：新窗口打开时作废上一次排队的"宽限后关闭"。 */
+    private var carrierWindowCloseToken = 0
+
     /** 承载拨号窗口开启（页面据此归因 KICKED）。只记键名/会话 id，不含凭证。 */
     private fun openCarrierWindow() {
+        carrierWindowCloseToken += 1
         val at = System.currentTimeMillis()
         evaluateJs(
             "window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(" +
@@ -1995,10 +2015,46 @@ object ShellRuntime {
         )
     }
 
-    /** 承载停掉/交还后关闭窗口，避免把之后的外部抢占误判成自我接管。 */
-    private fun closeCarrierWindow() {
+    /**
+     * 关闭归因窗口；[graceMs] > 0 时延后关闭。
+     *
+     * 不能一停就连着关：页面被我们自己顶掉时，KICKED 帧往往在停连接后几十~几百毫秒
+     * 才到；立刻关会把这一帧判成外部抢占（审查 P0-1 的触发前提）。
+     */
+    private fun closeCarrierWindowAfter(graceMs: Long = 0L) {
         if (jsEvaluator == null) return
-        evaluateJs("window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(0,'','');")
+        val token = ++carrierWindowCloseToken
+        val clearNow = {
+            if (token == carrierWindowCloseToken) {
+                evaluateJs("window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(0,'','');")
+            }
+        }
+        if (graceMs <= 0L) clearNow() else mainHandler.postDelayed(clearNow, graceMs)
+    }
+
+    /**
+     * 归因记账：承载停了 ⇒ KICKED 归因只剩 [KICK_ATTRIBUTION_GRACE_MS] 这一段，
+     * 页面侧窗口同口径宽限后关闭。
+     */
+    private fun stampCarrierStopped() {
+        carrierStoppedAtMs = SystemClock.elapsedRealtime()
+        closeCarrierWindowAfter(KICK_ATTRIBUTION_GRACE_MS)
+    }
+
+    /**
+     * 停承载的**唯一出口**（除回前台交还/通知定位那两条走 [clearCarrierState]）。
+     *
+     * 审查 P1-1：诊断开关、页面链路自愈、手动停止三条路原先各自 `stop()` 完就走，
+     * 既不关归因窗口也不记停止时刻 ⇒ 之后的外部抢占被当成自我接管。全部收口到这里。
+     */
+    private fun stopCarrierAndCloseWindow(reason: String) {
+        NativeRelayClient.stop(reason)
+        stopLiveProgressPolling()
+        releaseCarrierWakeLock()
+        carrierStarted = false
+        carrierStartedEarly = false
+        handbackDeferredLogged = false
+        stampCarrierStopped()
     }
 
     /** 原生承载原生直连 relay 的凭证（注入层移交，仅内存，不落日志）。 */
@@ -2071,7 +2127,7 @@ object ShellRuntime {
     }
 
     fun stopNativeRelayClient() {
-        NativeRelayClient.stop("手动停止")
+        stopCarrierAndCloseWindow("手动停止")
     }
 
     /**
@@ -2405,16 +2461,29 @@ object ShellRuntime {
                     mainHandler.post {
                         if (document != pageDocumentId) return@post
                         // KICKED 归因（TODO §2.3，替换旧的 KICKED_HEAL_CAP 计数）：
-                        //   落在承载 dial 窗口内 → **自我接管**，盖罩等交还后重载；
+                        //   承载正在跑或刚停 5s 内 → **自我接管**，盖罩、重载、罩到新文档就绪；
                         //   否则 → 前端被别的设备/对话抢占，壳**不动手**，官方文案照常展示。
-                        if (kind == "kicked" && carrierMayHaveKickedPage()) {
-                            if (handoffCover.carrierMatched(failureEpoch, true, document)) {
-                                notifyHandoffCover("自我接管：检测到 KICKED，立即盖上加载中遮罩")
-                            } else {
-                                Diagnostics.log(
-                                    "info",
-                                    "自我接管：KICKED 落在承载窗口内，遮罩保持到新文档就绪",
-                                )
+                        if (kind == "kicked" && kickedIsSelfAttributed()) {
+                            if (userIsAway()) {
+                                // 后台：罩在后台就盖上，回前台交还时由 beginReturn 接管生命周期。
+                                if (handoffCover.carrierMatched(failureEpoch, true, document)) {
+                                    notifyHandoffCover("自我接管：检测到 KICKED，立即盖上加载中遮罩")
+                                } else {
+                                    Diagnostics.log(
+                                        "info",
+                                        "自我接管：KICKED 落在承载窗口内，遮罩保持到新文档就绪",
+                                    )
+                                }
+                            } else if (handoffCover.foregroundRecovery(failureEpoch)) {
+                                // 前台：没有"回前台跃迁"可等，直接建一张可撤的罩，
+                                // 并确保重载（审查 P0-1：旧写法 returning=false，罩永挂）。
+                                notifyHandoffCover("自我接管：前台检测到 KICKED，盖上加载中遮罩并重载")
+                                requestPageReload("自我接管 KICKED", failureEpoch)
+                                mainHandler.postDelayed({
+                                    if (handoffCover.expire(failureEpoch)) {
+                                        notifyHandoffCover("恢复超时，露出网页原有状态")
+                                    }
+                                }, HandoffCoverState.RETURN_TIMEOUT_MS)
                             }
                             return@post
                         }

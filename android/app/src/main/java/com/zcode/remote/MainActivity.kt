@@ -288,7 +288,10 @@ class MainActivity : AppCompatActivity() {
             // The default UA is kept deliberately: the page does its own mobile
             // feature detection and a custom UA could change its behaviour.
         }
-        webView.addJavascriptInterface(WebAppBridge(prefs), BRIDGE_NAME)
+        // 桥（ZCodeShell）**不在这里挂**：它由 setBridgeAttached 独占管理，按落地 URL
+        // 在 onPageStarted / shouldOverrideUrlLoading 决定挂/摘。这里无条件挂会让
+        // 登录/授权页也拿到桥（审查 P1-5：重建后 bridgeAttached=false 与实参 false
+        // 相等，setBridgeAttached 早退，接口就留在 OAuth 文档上了）。
         if (BuildConfig.DEBUG || prefs.webViewDebugging) {
             WebView.setWebContentsDebuggingEnabled(true)
             Diagnostics.info("WebView 远程调试已启用")
@@ -452,6 +455,9 @@ class MainActivity : AppCompatActivity() {
                     "warn",
                     "渲染进程终止（crashed=${detail.didCrash()}）——重建 WebView 并恢复原 URL",
                 )
+                // Activity 已经结束/销毁时不能再往死窗口上加 WebView；返回 true 只是
+                // 阻止系统连带杀进程，不需要（也无法）重建（审查 P1-4）。
+                if (isFinishing || isDestroyed) return true
                 rebuildWebViewAfterRendererGone(view)
                 return true
             }
@@ -585,18 +591,17 @@ class MainActivity : AppCompatActivity() {
      * 路径（`config().restoreChat`），relay 的 `mobileViewState` 由承载在后台补发。
      */
     private fun rebuildWebViewAfterRendererGone(dead: WebView) {
-        val url = dead.url?.takeIf { it.isNotEmpty() } ?: prefs.remoteUrl
+        val candidate = dead.url?.takeIf { it.isNotEmpty() } ?: prefs.remoteUrl
+        // 只恢复远程页：about:blank / chrome-error:// / 一次性 OAuth 回调（带 code，
+        // 重放会得到授权失败页）都不能原样重放。校验不过就回扫码页（审查 P1-4）。
+        val url = candidate?.takeIf { RemoteUrl.isAllowed(Uri.parse(it)) }
+        detachAndDestroy(dead)
         if (url == null) {
+            Diagnostics.log("warn", "渲染进程终止时页面不是可恢复的远程页，回扫码页")
             showSetup()
             return
         }
         ShellRuntime.coverForRendererGone("渲染进程终止")
-        binding.root.removeView(dead)
-        try {
-            dead.destroy()
-        } catch (e: Exception) {
-            Diagnostics.log("warn", "销毁旧 WebView 失败: ${e.message}")
-        }
 
         val fresh = WebView(this)
         fresh.layoutParams = FrameLayout.LayoutParams(
@@ -614,6 +619,20 @@ class MainActivity : AppCompatActivity() {
         applyStatusBarSurface()
         Diagnostics.info("重建完成，重新加载: ${RemoteUrl.toDisplayString(url)}")
         webView.loadUrl(DesktopVersion.withAppVersion(url))
+    }
+
+    /** 把死掉的 WebView 从布局摘掉并销毁；重建的两个出口（可恢复 / 不可恢复）共用。 */
+    private fun detachAndDestroy(dead: WebView) {
+        try {
+            binding.root.removeView(dead)
+        } catch (e: Exception) {
+            Diagnostics.log("debug", "移除旧 WebView 失败: ${e.message}")
+        }
+        try {
+            dead.destroy()
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "销毁旧 WebView 失败: ${e.message}")
+        }
     }
 
     /**

@@ -516,20 +516,34 @@ object NativeRelayClient {
                 }
             }
         }
-        val watched = synchronized(lifecycleLock) {
-            val current = socket
-            if (current != null && lifetime.active) closeWatchers[current] = { deliver(true) }
-            current
+        // 两件事都要等：主 socket 的关闭确认 + 各工作区桥全部 dispose。
+        // 只等主 socket 是审查 P1-3 指出的"改了一半"：BridgeManager.disposeEverything
+        // 在另一个线程跑，若不等它，重载会在旧桥仍可能活着时发出（页面再被顶一次）。
+        var watched: WebSocket? = null
+        var hadBridges = false
+        synchronized(lifecycleLock) {
+            if (socket != null && lifetime.active) watched = socket
+            hadBridges = bridgeManager != null
         }
-        stop(reason)
-        if (watched == null) {
+        var remaining = 0
+        if (watched != null) remaining += 1
+        if (hadBridges) remaining += 1
+        if (remaining == 0) {
+            stop(reason)
             deliver(false)
             return
         }
+        val pending = java.util.concurrent.atomic.AtomicInteger(remaining)
+        val oneDone = { if (pending.decrementAndGet() == 0) deliver(true) }
+        val watchedSocket = watched
+        if (watchedSocket != null) {
+            synchronized(lifecycleLock) { closeWatchers[watchedSocket] = { oneDone() } }
+        }
+        stop(reason, onBridgesDisposed = if (hadBridges) ({ oneDone() }) else null)
         java.util.Timer(true).schedule(
             object : java.util.TimerTask() {
                 override fun run() {
-                    closeWatchers.remove(watched)
+                    if (watchedSocket != null) closeWatchers.remove(watchedSocket)
                     deliver(false)
                 }
             },
@@ -543,7 +557,7 @@ object NativeRelayClient {
         watcher()
     }
 
-    fun stop(reason: String) {
+    fun stop(reason: String, onBridgesDisposed: (() -> Unit)? = null) {
         synchronized(lifecycleLock) {
             if (!lifetime.active) return
             lifetime.end()
@@ -572,8 +586,11 @@ object NativeRelayClient {
                 "承载: 关闭（$reason）存活=${lasted}s 心跳=$heartbeatCount ack=$ackCount",
             )
             try {
-                // A graceful close may still flush a queued authentication proof and kick the page.
-                s?.cancel()
+                // 交还要的是"对端确认释放控制端"：优雅 close 走关闭握手（onClosed 才会
+                // 触发关闭确认），cancel() 只是本机放弃、证明不了任何事（审查 P1-3）。
+                // 排队中的 auth proof 不再放行由 lifetime.end() + stopping 先封死；
+                // 对端不应答时由 stopAndAwaitClose 的超时兜底。
+                s?.close(1000, "handback")
             } catch (e: Exception) {
                 Diagnostics.log("warn", "承载: close 异常 ${e.message}")
             }
@@ -583,6 +600,8 @@ object NativeRelayClient {
                         manager.disposeEverything(reason)
                     } catch (e: Exception) {
                         Diagnostics.log("debug", "承载: 后台清理桥失败 ${e.message}")
+                    } finally {
+                        onBridgesDisposed?.invoke()
                     }
                 }.start()
             }
