@@ -1,0 +1,124 @@
+package com.zcode.remote
+
+import android.app.Activity
+import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Bundle
+import android.os.Build
+import androidx.annotation.RequiresApi
+import androidx.core.content.ContextCompat
+import com.google.android.material.color.DynamicColors
+import com.google.android.material.color.DynamicColorsOptions
+import com.zcode.remote.core.Diagnostics
+import com.zcode.remote.core.ShellLog
+import java.util.IdentityHashMap
+
+/**
+ * Process entry point: brings up the log file (with its crash handler) and feeds
+ * app foreground transitions to [ShellRuntime], which is what turns "was the
+ * connection still alive while I was in another app?" into a measurable result.
+ *
+ * Foreground state is tracked at the Application level rather than per Activity
+ * so it stays correct if the app ever grows a second screen.
+ */
+class ZcodeRemoteApp : Application() {
+
+    override fun onCreate() {
+        super.onCreate()
+        // Material 3 推荐做法：Android 12+ 采用系统/壁纸派生的动态配色，低版本回落到
+        // 主题里的基础配色。这一步同时解决两件事——配色对比度符合无障碍标准，以及
+        // 暗色模式自动正确（基础配色是 DayNight 的，两套都齐全）。
+        //
+        // 设置页是唯一的例外：它整页是 MiuiX 调色板，而动态配色会把 colorPrimary /
+        // colorOnPrimary / colorSurfaceContainerHighest / colorOutline 这些**角色**换成
+        // 壁纸派生色——按角色取色的控件（MaterialSwitch 等）于是又变回另一套蓝，一页两种蓝。
+        // 动态配色是以 ThemeOverlay 形式套在主题**之上**的，优先级高于主题里显式写的角色值，
+        // 所以在 themes.xml 里对着盖没有用，只能在源头排除这一页。
+        DynamicColors.applyToActivitiesIfAvailable(
+            this,
+            DynamicColorsOptions.Builder()
+                // Two parameters, not one: Material's Precondition is
+                // `shouldApplyDynamicColors(Activity, @ColorScheme int)`. The
+                // scheme argument is the one it would have used, which this app
+                // has no opinion about.
+                .setPrecondition { activity, _ -> activity !is SettingsActivity }
+                .build(),
+        )
+        ShellLog.init(this)
+        ShellRuntime.init(this)
+        Diagnostics.info("ZCode 远程启动")
+
+        // 熄屏/亮屏直接驱动同一交接入口，不再等 5s 巡检才发现状态变化。
+        ContextCompat.registerReceiver(
+            this,
+            object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    ShellRuntime.onUserPresenceChanged()
+                }
+            },
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            },
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            private var startedActivities = 0
+            private val arrivalEpochs = IdentityHashMap<Activity, Long>()
+
+            @RequiresApi(Build.VERSION_CODES.Q)
+            override fun onActivityPreStarted(activity: Activity) {
+                if (startedActivities == 0) {
+                    ShellRuntime.prepareForegroundArrival("${activity.javaClass.simpleName}.preStarted")
+                        ?.let { arrivalEpochs[activity] = it }
+                }
+            }
+
+            @RequiresApi(Build.VERSION_CODES.Q)
+            override fun onActivityPreResumed(activity: Activity) {
+                ShellRuntime.prepareForegroundArrival("${activity.javaClass.simpleName}.preResumed")
+                    ?.let { arrivalEpochs[activity] = it }
+            }
+
+            override fun onActivityStarted(activity: Activity) {
+                arrivalEpochs.remove(activity)
+                startedActivities += 1
+                if (startedActivities == 1) {
+                    ShellRuntime.onAppForegroundChanged(true)
+                }
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                arrivalEpochs.remove(activity)?.let { ShellRuntime.cancelForegroundArrival(it) }
+                startedActivities = (startedActivities - 1).coerceAtLeast(0)
+                if (startedActivities == 0) {
+                    Diagnostics.info("应用进入后台，保活服务继续运行")
+                    ShellRuntime.onAppForegroundChanged(false)
+                }
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+            override fun onActivityResumed(activity: Activity) {
+                arrivalEpochs.remove(activity)
+                // 仅 paused 的返回没有 onStart，resume 仍需结束“正在返回”阶段。
+                ShellRuntime.confirmForegroundArrival()
+            }
+            override fun onActivityPaused(activity: Activity) = Unit
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+            override fun onActivityDestroyed(activity: Activity) {
+                arrivalEpochs.remove(activity)?.let { ShellRuntime.cancelForegroundArrival(it) }
+            }
+        })
+    }
+
+    override fun onTerminate() {
+        // Only reached in emulated processes, but it keeps the log tidy.
+        ShellLog.markProcessExit("onTerminate")
+        super.onTerminate()
+    }
+}

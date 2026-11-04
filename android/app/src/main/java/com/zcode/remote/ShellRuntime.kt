@@ -1,0 +1,2598 @@
+package com.zcode.remote
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import com.zcode.remote.core.CarrierHandback
+import com.zcode.remote.core.ConversationRecoveryPolicy
+import com.zcode.remote.core.CompletionEvent
+import com.zcode.remote.core.Diagnostics
+import com.zcode.remote.core.InjectionReadiness
+import com.zcode.remote.core.HandoffState
+import com.zcode.remote.core.HandoffCoverState
+import com.zcode.remote.core.NotifyState
+import com.zcode.remote.core.Prefs
+import com.zcode.remote.core.PreviewSettle
+import com.zcode.remote.core.RelayCreds
+import com.zcode.remote.core.RelayWire
+import com.zcode.remote.core.SurvivalVerdict
+import com.zcode.remote.core.Tier2Probe
+import com.zcode.remote.core.TaskSnapshot
+import com.zcode.remote.core.TaskStatus
+import com.zcode.remote.core.TaskStore
+import com.zcode.remote.notify.Notifier
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Process-wide state for the shell: the task store, the notifier and the
+ * foreground service that keeps the process (and therefore the WebView's relay
+ * socket) alive while the app is backgrounded.
+ *
+ * A plain singleton rather than a bound service: there is exactly one Activity
+ * and one WebView, so a Binder round trip would add nothing. Bridge callbacks
+ * arrive on the WebView's JavaBridge thread, so the few things that must be
+ * ordered against the main thread (throttled notification updates) go through a
+ * main-thread Handler.
+ */
+object ShellRuntime {
+
+    /** The reference client throttles ongoing updates to ~900 ms. */
+    private const val ONGOING_THROTTLE_MS = 900L
+
+    private lateinit var appContext: Context
+    private lateinit var prefs: Prefs
+
+    /**
+     * 通知层。它拿到的是 [appContext]，也就是 `init()` 里的 `context.applicationContext`：
+     * 进程级对象，**任何 Activity 都不会被它留住**（`init()` 先做 applicationContext 转换，
+     * 再 new 这个 Notifier；且 `init()` 有幂等闸，只可能赋值一次）。
+     *
+     * 所以 lint 那条 `StaticFieldLeak`（"static reference to Notifier which has field context
+     * pointing to Context"）是**误报**：它只看见"静态字段 → Notifier → Context"这条链，
+     * 看不见那个 Context 是 Application。抑制只挂在这个字段上——不关检查、不进 baseline。
+     */
+    @SuppressLint("StaticFieldLeak")
+    private lateinit var notifier: Notifier
+
+    /**
+     * Main-thread handler for everything this class schedules.
+     *
+     * Asynchronous on API 28+, because an ordinary message posted to the main
+     * looper is NOT delivered while the window is invisible: the Choreographer's
+     * sync barrier starves it (measured earlier on this device — a dispatch due
+     * at +15s arrived 3m26s late, at the instant the app returned to the
+     * foreground). The pump's own timer was made asynchronous for that reason;
+     * this handler schedules the JS evaluation the pump triggers, so it is the
+     * same hazard one hop later.
+     *
+     * Note on the evidence: a 2026-09-11 field round logged 39 pump dispatches
+     * with a 0-tick verdict, which first looked like this starvation. It was not
+     * — see `SurvivalVerdict`. The 15.00s cadence of the injected layer's own
+     * perf reports proves the evaluation was running. This change is made on the
+     * starvation risk above, not on that reading.
+     */
+    private val mainHandler: Handler =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Handler.createAsync(Looper.getMainLooper())
+        } else {
+            Handler(Looper.getMainLooper())
+        }
+
+    val store = TaskStore()
+
+    // Coalescing state for ongoing notifications. Both fields are touched from
+    // whichever thread the bridge callback arrives on, so they are guarded.
+    private val lock = Any()
+    private var pendingRemovedIds = LinkedHashSet<Int>()
+    private var latestRunning: List<TaskStore.RunningNotification> = emptyList()
+
+    /**
+     * 还没交给通知层的完成事件（2026-09-17）。它们和 [pendingRemovedIds] 一样要累积：
+     * 「完成」的落地形态是**同一条卡片记录改状态**（见 `Notifier.syncRunningTasks`），
+     * 所以这两件事必须在同一次 flush 里一起到，否则会先撤卡再补状态（就是那个闪烁）。
+     */
+    private var pendingCompleted: List<CompletionEvent> = emptyList()
+    private var pendingFlush: Runnable? = null
+    private var lastPublishAt = 0L
+
+    private var serviceRunning = false
+
+    /**
+     * 注入层就绪位。**持有一个 [InjectionReadiness] 实例**，而不是自己留一个字段：
+     * 这段状态搬进 core 就是为了能在纯 JVM 上单测（本 `object` 一初始化就要
+     * `Looper.getMainLooper()`，单测碰不得）。"进程内唯一"没有变——本 `object` 只有一个
+     * 实例，与 [store] 同一种持有方式。
+     *
+     * ⚠️ 它的清除点是 [onPageStarted]，而它的调用者是 `MainActivity` 的
+     * `onPageStarted` 回调（曾经那里没有调用者，就绪位因此永久 latch 在 `true`；
+     * 见 [InjectionReadiness] 的类注释）。
+     */
+    private val injectionReadiness = InjectionReadiness()
+
+    /** 上一行上报过的注入层订阅状态摘要（去重；见 [onStatus]）。 */
+    private var lastInjectStatusLine = ""
+
+    // ---------------------------------------------------------- liveness probe
+    //
+    // §8 step 4 of the migration doc is the milestone that decides whether this
+    // whole approach stands: background the app for half an hour and check that
+    // frames are still arriving. That test cannot be run without a device, so
+    // rather than asserting it, the shell measures it and reports one verdict
+    // line into the log. `pairAcks` is the decisive counter: the desktop answers
+    // every heartbeat, so a non-zero count across a background window proves the
+    // link is alive even when no task happened to be running — task deltas alone
+    // are silent on a quiet desktop, which is how this test usually gets
+    // misread as a failure.
+
+    /** Liveness counters as reported by the injected script. */
+    data class Liveness(
+        val inboundFrames: Int,
+        val pairAcks: Int,
+        val socketsOpened: Int,
+        val socketsClosed: Int,
+        /**
+         * Heartbeat ticks the injected layer ran while the app was backgrounded,
+         * and how long after going background the first one came. The delay is
+         * what makes the verdict decidable: a heartbeat that really runs in the
+         * background starts ticking at once, whereas a link that only came back
+         * with the foreground produces its "background" ticks in one burst at the
+         * very end of the window — identical counters, opposite meaning.
+         */
+        val backgroundTicks: Int,
+        val backgroundFirstTickDelayMs: Long,
+        /** Uptime timestamp of the most recent inbound frame (0 = none yet). */
+        val lastInboundAtElapsed: Long,
+        val paired: Boolean,
+        val socketState: Int,
+        /**
+         * 页面**最近一次收到会话帧**（topic 前缀 `conversation/`）距今多少毫秒
+         * （−1 = 本客户端生命周期内一帧都没见过）。
+         *
+         * 这是"**页面还在不在跟某个会话**"的唯一现成判据：概览页（没进任何任务）永远收不到，
+         * 而进了任务哪怕 agent 静默，首屏快照/轮次帧也会到。承载的**提前接管**用它
+         * （见 [maybeStartNativeCarrier]）：页面后台 + 有在跑任务 + 这个值大 ⇒ 卡片没人喂。
+         *
+         * 注意实现里**不要**在这段注释里写那个 topic 前缀的通配写法：Kotlin 的块注释可嵌套，
+         * 一个斜杠加星号会把后面的注释一起吃掉（161 编译失败过一次）。
+         */
+        val convFrameAgoMs: Long = -1,
+    )
+
+    @Volatile
+    private var liveness: Liveness? = null
+
+    private var backgroundStartedAt = 0L
+    private var backgroundFrameBase = 0
+    private var backgroundAckBase = 0
+    private var backgroundTickBase = 0
+
+    /** Set on return to foreground; the next liveness report resolves it. */
+    @Volatile
+    private var verdictPending = false
+
+    /** Age of the newest inbound frame, or null if nothing ever arrived. */
+    fun lastInboundAgeMs(): Long? {
+        val snapshot = liveness ?: return null
+        if (snapshot.lastInboundAtElapsed <= 0) return null
+        return SystemClock.elapsedRealtime() - snapshot.lastInboundAtElapsed
+    }
+
+    private fun onLiveness(data: JSONObject) {
+        val receivedAt = SystemClock.elapsedRealtime()
+        val ago = data.optLong("lastInboundAgoMs", -1)
+        liveness = Liveness(
+            inboundFrames = data.optInt("inboundFrames"),
+            pairAcks = data.optInt("pairAcks"),
+            socketsOpened = data.optInt("socketsOpened"),
+            socketsClosed = data.optInt("socketsClosed"),
+            backgroundTicks = data.optInt("backgroundTicks"),
+            backgroundFirstTickDelayMs = data.optLong("backgroundFirstTickDelayMs", -1),
+            lastInboundAtElapsed = if (ago >= 0) receivedAt - ago else 0,
+            paired = data.optBoolean("paired"),
+            socketState = data.optInt("socketState", -1),
+            convFrameAgoMs = data.optLong("convFrameAgoMs", -1),
+        )
+        // 这里**不再**用注入层自述的链路静默（lastInboundAgoMs）触发接管：
+        // 桌面端安静不等于渲染器死了；接管只认"页面链路判死"（见 maybeStartNativeCarrier）。
+        // A background window just closed and this is the first fresh reading:
+        // this is the milestone-4 verdict.
+        if (verdictPending && backgroundStartedAt == 0L) {
+            verdictPending = false
+            val current = liveness ?: return
+            val frames = current.inboundFrames - backgroundFrameBase
+            val acks = current.pairAcks - backgroundAckBase
+            // Delta against the base recorded when the window opened, exactly like
+            // frames/acks. Reading the page's absolute counter was the bug: a
+            // foreground flap at the moment of return zeroed it (see
+            // SurvivalVerdict).
+            val ticks = (current.backgroundTicks - backgroundTickBase).coerceAtLeast(0)
+            val firstDelay = current.backgroundFirstTickDelayMs
+            Diagnostics.info(
+                SurvivalVerdict.describe(
+                    duration = formatDuration(backgroundEndedAt - backgroundStartedForVerdict),
+                    ticks = ticks,
+                    firstTickDelayMs = firstDelay,
+                    pumpDispatches = pumpDispatchesForVerdict,
+                    frames = frames,
+                    acks = acks,
+                )
+            )
+        }
+    }
+
+    private var backgroundStartedForVerdict = 0L
+    private var backgroundEndedAt = 0L
+
+    // --------------------------------- 回前台视图恢复：判据（档 0）+ 动作（档 3）
+    //
+    // 缘起（2026-09-19 调研，全文见 `Docs/21-回前台对话恢复-页面机制与真机事实.md`）：
+    // 「回前台后当前对话没回来」这件事在日志里**曾经是隐形的**——三道回前台兜底
+    // （KICKED 自愈 / healDeadLinkOnResume / afterCarrierReturn）全都只在"页面已彻底失败"
+    // 时动手，而假死形态的页面**看起来完全健康**（socket OPEN、有帧、paired=true），
+    // 于是全部判"无需介入"，一行日志都不留。
+    //
+    // 现在这一节做两件事：
+    //   * **档 0（判据）**：退后台那一刻采一次视图快照，回前台立即首判 + 500ms 复判，
+    //     按形态打判据行。跨进程落盘（见 [readViewAtLeave]）。
+    //   * **档 3（动作）**：仅当判出 S3（离开时在对话 + 12s 仍未回对话视图）时，
+    //     调注入层的 `__zcodeShellRecoverConversation` 钉 `history.state` 并重载一次。
+    //     ⚠️ **这是壳体对页面的第七处写入面**（原六处见 README「实现要点」14），
+    //     合规性论证与"为什么是最小充分动作"见注入层那个函数的注释 +
+    //     `android-shell/scratch/PROOF-RESULTS.md`（三个真机对照实验）。
+    //
+    // 两个必须记住的时序事实（都是真机实测，别"优化"掉）：
+    //   ① **采样必须在退后台那一刻做**：原生承载一配对，页面就 dispose 掉会话并退出
+    //      对话视图（23:59:05 dispose → 23:59:14 体征已 `chat:false`）。等回前台再读，
+    //      "用户离开时在不在对话里"这个事实已经丢了。
+    //   ② **不能依赖周期体征通道**：`页面体征`/`页面开销` 只在后台由原生泵驱动
+    //      （前台 30 分钟窗口实测各 0 条）⇒ 这里走的是**按需求值 + 桥回传**。
+
+    /**
+     * 退后台那一刻的视图快照。
+     *
+     * **必须跨进程存活**（真机 2026-09-19 22:32 实测踩到）：档 0 要抓的假死形态
+     * 恰恰是「进程被杀 + 回前台」——进程一死，内存里的"离开时在不在对话里"随之消失，
+     * 判据只剩一行「未采到快照」，**观测不到它要观测的东西**。所以走 [Prefs.viewAtLeave]
+     * 落盘；读出来时顺手做时效校验（超过 [VIEW_LEAVE_MAX_AGE_MS] 的旧记录不判，
+     * 免得把几天前的一次离开拿来对今天这一次）。
+     */
+    private fun readViewAtLeave(): JSONObject? {
+        val raw = prefs().viewAtLeave ?: return null
+        return try {
+            val root = JSONObject(raw)
+            val at = root.optLong("at", 0L)
+            val age = System.currentTimeMillis() - at
+            if (at <= 0L || age < 0L || age > VIEW_LEAVE_MAX_AGE_MS) {
+                Diagnostics.log(
+                    "debug",
+                    "回前台视图判据：离开快照已过期（${age / 1000}s 前），本轮不判",
+                )
+                return null
+            }
+            root.optJSONObject("snap")
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "回前台视图判据：离开快照解析失败 ${e.message}")
+            null
+        }
+    }
+
+    private fun clearViewAtLeave() {
+        prefs().viewAtLeave = null
+    }
+
+    /** 离开快照的时效上限：超过它就不判（只记一行），避免拿旧记录对本次。 */
+    private const val VIEW_LEAVE_MAX_AGE_MS = 2 * 60 * 60 * 1000L
+
+    /**
+     * 回前台首判（立即）的结果：true = 那一刻已经回到对话视图。
+     *
+     * 为什么要记住它：12s 复判要能说清"是慢恢复还是真没恢复"。
+     * 只留最后一次读数的话，一个 +6s 才回来的健康页面会被报成"没回来"（真机 00:27 就是这个形状）。
+     */
+    private var viewReturnedAtFirstCheck = false
+
+    /** 首判窗（切换后立即读取）。 */
+    private const val VIEW_RETURN_CHECK_MS = 0L
+
+    /** 复判窗：500ms 后仅恢复丢失的路由，网页渲染时间不计入交接。 */
+    private const val VIEW_RETURN_LATE_MS = HandoffState.RETURN_CHECK_MS
+
+    /** 快照采集的排队重试（注入层 boot 需要时间，冷启动那条路尤其）。 */
+    private const val VIEW_SNAPSHOT_RETRY_MS = 600L
+    private const val VIEW_SNAPSHOT_MAX_ATTEMPTS = 40
+
+    /**
+     * 本次回到前台的真实时刻（`SystemClock.elapsedRealtime()`），0 = 还没回。
+     *
+     * **为什么必须记**：3s / 12s 两个采样点都可能因"注入层还没 boot"而顺延
+     * （冷启动那条路实测能顺延到十几秒）。若只按计划时刻给读数贴标签，一个 20s 才采到的
+     * 快照会被写成"首判3s=未回"——**那是假数据**，而这一档存在的全部意义就是提供可信读数。
+     * 所以日志里报的是**实际用时**，不是计划用时。
+     */
+    private var foregroundReturnedAt = 0L
+
+    /** 离开时的会话 id（`conversation/sess_xxx` 去掉前缀），空 = 那一刻没在跟会话。 */
+    private fun sessionOf(snap: JSONObject?): String =
+        snap?.optString("sessionId").orEmpty().substringAfterLast('/')
+
+    /**
+     * 采一帧视图快照。`phase` = "leave"（退后台那一刻）/ "return" / "return_late"。
+     *
+     * 走注入层的 `__zcodeShellReportViewSnapshot`，快照经桥的 `viewsnap` 事件回传
+     * （`evaluateJavascript` 那条通道是单向的，拿不回值——见 [evaluateJs]）。
+     *
+     * **注入未就绪时排队重试**：冷启动/页面重载后注入层要 boot 完才认这个接口，
+     * 而那正是"进程被杀 + 回前台"这一档的常态。不重试的话判据只剩"未采到快照"，
+     * 档 0 就白做了。重试上限与 `dispatchJsDiag` 同口径（40 × 600ms），
+     * 因为这是同一类"等新文档 boot"的问题。
+     */
+    private fun requestViewSnapshot(phase: String, attempt: Int = 0, epoch: Long = handoff.epoch) {
+        if (!handoff.isCurrent(epoch, phase == "leave")) return
+        if (!injectionReadiness.isReady()) {
+            if (attempt >= VIEW_SNAPSHOT_MAX_ATTEMPTS) {
+                Diagnostics.log(
+                    "warn",
+                    "视图快照($phase)：注入层始终未就绪，放弃采集（第 $attempt 次）",
+                )
+                return
+            }
+            mainHandler.postDelayed(
+                { requestViewSnapshot(phase, attempt + 1, epoch) },
+                VIEW_SNAPSHOT_RETRY_MS,
+            )
+            return
+        }
+        evaluateJs(
+            "window.__zcodeShellReportViewSnapshot && " +
+                "window.__zcodeShellReportViewSnapshot(${org.json.JSONObject.quote(phase)}, $epoch);",
+        )
+        // 记下这一帧的**实际**采集时刻（顺延后也要如实反映，见 foregroundReturnedAt）。
+        if (phase == "return") {
+            viewAtFirstActualMs = if (foregroundReturnedAt > 0L) {
+                SystemClock.elapsedRealtime() - foregroundReturnedAt
+            } else {
+                -1L
+            }
+        } else if (phase == "return_late") {
+            viewAtLateActualMs = if (foregroundReturnedAt > 0L) {
+                SystemClock.elapsedRealtime() - foregroundReturnedAt
+            } else {
+                -1L
+            }
+        }
+    }
+
+    /** 首判那一帧的实际用时（ms，−1 = 未知）；顺延后如实反映，见 [foregroundReturnedAt]。 */
+    private var viewAtFirstActualMs = -1L
+
+    /** 复判那一帧的实际用时（ms，−1 = 未知）。 */
+    private var viewAtLateActualMs = -1L
+
+    private fun onViewSnapshot(phase: String, snap: JSONObject?) {
+        when (phase) {
+            "leave" -> {
+                if (snap == null) return
+                // 落盘（跨进程），见 readViewAtLeave 的注释。
+                try {
+                    prefs().viewAtLeave = JSONObject()
+                        .put("at", System.currentTimeMillis())
+                        .put("snap", snap)
+                        .toString()
+                } catch (e: Exception) {
+                    Diagnostics.log("warn", "视图快照落盘失败: ${e.message}")
+                }
+                val sid = sessionOf(snap)
+                Diagnostics.log(
+                    "info",
+                    "视图快照(离开)：chat=${snap.optBoolean("chat")} rows=${snap.optInt("rows", -1)}" +
+                        " historyChat=${snap.optBoolean("historyChat")}" +
+                        " 会话=${if (sid.isEmpty()) "无" else sid}" +
+                        "（最近会话帧 ${convAgoText(snap.optLong("convAgoMs", -1L))}）",
+                )
+                // **离开时页面在对话里 ⟹ 上一次恢复（若有）已经成功** ⟹ 清掉计数。
+                //
+                // 为什么必须在这里也清一次（真机 2026-09-20 16:43 实测踩到）：清零原本只写在
+                // 回前台 500ms 判据窗的"已回到对话视图"那一支，而那条路要求**先有一次回前台**。
+                // 于是这个真实序列会卡住：恢复成功 → 用户就在对话里读 → 没切前后台（判据不跑、
+                // 计数没清）→ 退后台、进程被杀 → 回前台 → S3 判出，却被"距上次恢复不足 5 分钟"
+                // 的**陈旧闸门**挡下（实测现场 `距上次 246s < 5 分钟`），用户白等。
+                // 判据是页面自述的事实（"我现在在对话视图里"），比任何推断都硬。
+                if (snap.optBoolean("chat")) {
+                    resetConversationRecovery()
+                }
+            }
+            // 首判：只记结果，不出结论（结论在复判那一拍给，才分得清"慢"与"没回来"）。
+            "return" -> viewReturnedAtFirstCheck = snap?.optBoolean("chat") == true
+            // 复判：这一拍才下结论，并且消费掉本轮的离开态快照。
+            "return_late" -> {
+                val leave = readViewAtLeave()
+                clearViewAtLeave()
+                val atFirstCheck = viewReturnedAtFirstCheck
+                viewReturnedAtFirstCheck = false
+                reportViewReturn(leave, snap, atFirstCheck)
+            }
+            else -> Unit
+        }
+    }
+
+    /**
+     * 回前台判据行：**只判定与记账，不动页面**（档 0 的全部内容）。
+     *
+     * 形态（见 Docs/19 §4 的判据矩阵）：
+     *   * 离开时不在对话里 → 不适用（用户本来就在概览页，没有"该回来的对话"）；
+     *   * 离开在对话里 + 回来还在对话里 → **S1 已恢复**；
+     *   * 离开在对话里 + 3s 未回但 12s 回了 → **慢恢复**（健康，别误报成假死）；
+     *   * 离开在对话里 + 12s 仍未回 → **S3 候选**（本档最想抓的那一类）。
+     *     再用 `historyChat` 区分：为真说明页面还有路由记忆，为假说明连路由状态都没了
+     *     （进程被杀过的典型形状）。
+     *
+     * @param atFirstCheck 首判（立即）那一刻是否已在对话视图。
+     */
+    private fun reportViewReturn(leave: JSONObject?, now: JSONObject?, atFirstCheck: Boolean) {
+        if (leave == null) {
+            Diagnostics.log("debug", "回前台视图判据：离开时未采到快照，本轮不判（只记录）")
+            return
+        }
+        val leaveChat = leave.optBoolean("chat")
+        val sid = sessionOf(leave)
+        if (!leaveChat) {
+            Diagnostics.log(
+                "debug",
+                "回前台视图判据：离开时不在对话视图（chat=false），本轮不适用",
+            )
+            return
+        }
+        val who = if (sid.isEmpty()) "无" else sid
+        if (now == null) {
+            Diagnostics.log(
+                "warn",
+                "回前台视图判据：离开时在对话（会话=$who），但复判时未采到快照" +
+                    "——页面可能已重载或注入未就绪（只记录）",
+            )
+            return
+        }
+        if (now.optBoolean("chat")) {
+            // **这是档 3 计数唯一的清零点**，语义 = "用户确实回到了对话视图"。
+            //
+            // ⚠️ 别改成"配对成功即清零"（2026-09-20 真机实测踩到）：第一次恢复重载后
+            // 页面**重新配对成功**，而配对成功只说明"链路活了"，**不说明用户回到了对话**。
+            // 那次现场：`对话恢复：链路已恢复，连续计数清零（原 1 次）` 之后 20 秒，
+            // 第二次 S3 又打出「第 1/2 次」——限流形同虚设。
+            // 判据必须是"页面自述在对话视图里"（真机两形态都验过），不是"链路通了"。
+            resetConversationRecovery()
+            Diagnostics.log(
+                "info",
+                "回前台视图判据：**已回到对话视图**（离开时会话=$who · 现在=" +
+                    "${sessionOf(now).ifEmpty { "无" }} · rows=${now.optInt("rows", -1)} · " +
+                    "首判${fmtMs(viewAtFirstActualMs)}=${if (atFirstCheck) "已回" else "未回"}）" +
+                    "——S1/S2 形态，无需干预",
+            )
+            return
+        }
+        if (atFirstCheck) {
+            // 3s 时在、12s 时不在：中途又被带离（例如页面自己重载后落 home）。
+            Diagnostics.log(
+                "warn",
+                "回前台视图判据：首判（${fmtMs(viewAtFirstActualMs)}）时还在对话、" +
+                    "复判（${fmtMs(viewAtLateActualMs)}）时已离开（离开时会话=$who · " +
+                    "现在 chat=false · historyChat=${now.optBoolean("historyChat")}" +
+                    " rows=${now.optInt("rows", -1)}）——页面在中途被带离，档 0 只记录",
+            )
+            return
+        }
+        // 路由已经指向 chat 时，剩余时间属于网页自己的渲染/恢复，壳不重复重载它。
+        if (now.optBoolean("historyChat")) {
+            Diagnostics.info("快速交接：聊天路由已保留，等待网页自身恢复（不额外重载）")
+            return
+        }
+        val historyChat = now.optBoolean("historyChat")
+        val hint = if (historyChat) {
+            "页面仍有路由记忆(historyChat=true)"
+        } else {
+            "**路由记忆也没了(historyChat=false)**——进程被杀过的典型形状，页面自己回不来"
+        }
+        Diagnostics.log(
+            "warn",
+            "回前台视图判据：**复判（${fmtMs(viewAtLateActualMs)}）仍未回到对话视图**" +
+                "（离开时会话=$who · 现在 chat=false" +
+                " historyChat=$historyChat · rows=${now.optInt("rows", -1)}" +
+                " 最近会话帧 ${convAgoText(now.optLong("convAgoMs", -1L))}）——$hint",
+        )
+        // 判据成立 ⇒ 主动恢复一次（档 3）。
+        //
+        // **为什么在这里才动手**：这是本壳唯一"页面看起来健康、但确实回不到用户离开的地方"
+        // 的形态。三道回前台兜底（KICKED 自愈 / healDeadLinkOnResume / afterCarrierReturn）
+        // 都只在"页面已彻底失败"时动手，对这个形态全部判"无需介入"——所以在档 3 之前，
+        // 它只能等用户自己点进任务（真机实测卡了 5 分 46 秒）。
+        //
+        // 动作 = 钉 `history.state.zcodeMobilePage='chat'` + 重载一次，在注入层的
+        // `__zcodeShellRecoverConversation` 里执行。三个真机对照实验证明这是**最小充分**
+        // 的动作：只钉不喂任务即可落到正确会话，见 `android-shell/scratch/PROOF-RESULTS.md`。
+        //
+        // ⚠️ **只在这一档动手**：上面的"3s 时在、12s 时不在"那一档仍只记录——
+        // 页面那时已经呈现出对话，中途离开更可能是用户自己的动作（例如按了返回），
+        // 此时重载会把用户硬拽回去。这是刻意的边界，不是遗漏。
+        //
+        // ⚠️ **限流在原生侧做**（真机 16:28 实测踩到）：注入层的计数走 `sessionStorage`、
+        // 闸门走内存变量 `lastResumeHealAt`，而 S3 的定义就是"进程被杀"——**进程一死
+        // 两道限流同时归零**，连续触发会变成"每次回前台都闪一次"。
+        // 所以闸门落在 [Prefs.conversationRecovery]（跨进程落盘），注入层只负责执行。
+        if (!allowConversationRecovery()) return
+        val reason = "离开时在对话($who) / ${fmtMs(viewAtLateActualMs)} 复判 chat=false" +
+            (if (historyChat) " / historyChat=true" else " / historyChat=false")
+        recordConversationRecovery(reason)
+        evaluateJs(
+            "window.__zcodeShellRecoverConversation && " +
+                "window.__zcodeShellRecoverConversation(${org.json.JSONObject.quote(reason)});",
+        )
+    }
+
+    /**
+     * 档 3 的跨进程闸门：判据本体在 [ConversationRecoveryPolicy]（纯函数、有单测钉着），
+     * 这里只负责读盘、记账、把结论写成日志。
+     *
+     * 返回 false 时**不静默**——打一行带原因的日志，否则"为什么这次没恢复"无法从日志判读。
+     */
+    private fun allowConversationRecovery(): Boolean {
+        val decision = ConversationRecoveryPolicy.decide(
+            ConversationRecoveryPolicy.decode(prefs().conversationRecovery),
+            System.currentTimeMillis(),
+        )
+        if (!decision.allowed) {
+            // 两种拦法各自的措辞不同（到顶 vs 限流），级别也不同——看日志的人要能一眼分开。
+            val capped = decision.reason.contains("上限")
+            Diagnostics.log(
+                if (capped) "error" else "warn",
+                "对话恢复被${if (capped) "拦下" else "限流跳过"}（${decision.reason}）",
+            )
+            return false
+        }
+        return true
+    }
+
+    private fun recordConversationRecovery(reason: String) {
+        val now = System.currentTimeMillis()
+        val next = ConversationRecoveryPolicy.afterRecovery(
+            ConversationRecoveryPolicy.decode(prefs().conversationRecovery),
+            now,
+        )
+        try {
+            prefs().conversationRecovery = ConversationRecoveryPolicy.encode(next)
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "对话恢复记账失败: ${e.message}")
+        }
+        Diagnostics.log(
+            "warn",
+            "对话恢复：钉住路由状态后重载一次（第 ${next.count}/" +
+                "${ConversationRecoveryPolicy.CAP} 次）· 判据=$reason",
+        )
+    }
+
+    /**
+     * **确认"用户确实在对话视图里"** ⟹ 清掉连续恢复计数。两个调用点、同一个语义：
+     *
+     *   * [reportViewReturn] 的"已回到对话视图"那一支（回前台 500ms 判据）；
+     *   * [onViewSnapshot] 的 `leave` 分支——**离开时页面在对话里**，说明上一次恢复
+     *     （若有）已经成功。
+     *
+     * ⚠️ **别改成"配对成功即清零"**（真机 2026-09-20 16:38 实测踩到）：第一次恢复重载后
+     * 页面**重新配对成功**，而配对成功只说明"链路活了"，**不说明用户回到了对话**。
+     * 那次现场：清零之后 20 秒，第二次 S3 又打出「第 1/2 次」——限流形同虚设。
+     *
+     * ⚠️ **也别只留回前台那一支**（同一天 16:43 踩到）：那条路要求先有一次回前台。
+     * 于是「恢复成功 → 用户就在对话里读 → 没切前后台（判据不跑、计数没清）→ 退后台、
+     * 进程被杀 → 回前台」这个真实序列会被**陈旧闸门**挡下（现场 `距上次 246s < 5 分钟`），
+     * 用户白等。`leave` 那一支补的就是这个洞。
+     *
+     * 判据一律是**页面自述的事实**（"我现在在对话视图里"），不是任何推断。
+     */
+    private fun resetConversationRecovery() {
+        val rec = ConversationRecoveryPolicy.decode(prefs().conversationRecovery)
+        if (rec.count == 0) return
+        prefs().conversationRecovery = null
+        Diagnostics.log("info", "对话恢复：已确认回到对话视图，连续计数清零（原 ${rec.count} 次）")
+    }
+
+    /** 实际用时的日志写法（−1 = 未知；顺延过就如实报，不贴计划值）。 */
+    private fun fmtMs(ms: Long): String = if (ms < 0L) "?" else "${ms / 1000.0}s"
+
+    /**
+     * Records the background window and, on return, writes the milestone-4
+     * verdict to the log. This is the line to read after leaving the app in the
+     * background for 30 minutes.
+     *
+     * Also the switch for the heartbeat pump: the injected layer's own timer
+     * cannot run while the app is backgrounded, so the heartbeat is driven from
+     * here for exactly as long as the app is away.
+     */
+    fun onAppForegroundChanged(foreground: Boolean) {
+        appIsForeground = foreground
+        if (foreground) {
+            handoff.confirmForegroundArrival()
+        } else {
+            handoff.cancelForegroundArrival(handoff.epoch)
+        }
+        onUserPresenceChanged()
+    }
+
+    /** Called before onStart/onResume; it does not falsify the Activity started count. */
+    fun prepareForegroundArrival(reason: String, reloadExistingPage: Boolean = true): Long? {
+        if (!screenIsInteractive()) return null
+        if (handoff.foregroundArrivalPending) return handoff.epoch
+        if (!handoff.prepareForegroundArrival()) return null
+        Diagnostics.info("提前交还：$reason（正式前台计数尚未更新）")
+        onUserPresenceChanged(reloadExistingPage)
+        return if (handoff.foregroundArrivalPending) handoff.epoch else null
+    }
+
+    fun cancelForegroundArrival(token: Long) {
+        if (!handoff.cancelForegroundArrival(token)) return
+        Diagnostics.info("提前交还：返回被取消，恢复实际前后台判据")
+        onUserPresenceChanged()
+    }
+
+    fun confirmForegroundArrival() {
+        if (!handoff.foregroundArrivalPending) return
+        handoff.confirmForegroundArrival()
+        onUserPresenceChanged()
+    }
+
+    /** Lifecycle and screen broadcasts share one transition and cancellation token. */
+    fun onUserPresenceChanged(reloadExistingPage: Boolean = true) {
+        val foreground = !userIsAway()
+        val epoch = handoff.transition(!foreground) ?: return
+        handoffChangedAt = SystemClock.elapsedRealtime()
+        // "已离开"在这里同步给 store，与接管闸门同源：started 计数、提前返回状态和屏幕交互性。
+        // 屏幕广播立即驱动切换，5s 看门狗继续兜底。
+        syncAwayStateToStore()
+        if (foreground) {
+            handoffCover.beginReturn()?.let { carrierEpoch ->
+                mainHandler.postDelayed({
+                    if (handoffCover.expire(carrierEpoch)) notifyHandoffCover("恢复超时，露出网页原有状态")
+                }, HandoffCoverState.RETURN_TIMEOUT_MS)
+            }
+            // 档 0 观测：记下"回到前台"的真实时刻——后面两帧采样都会顺延（等注入层 boot），
+            // 日志要报**实际用时**而不是计划时刻（见 foregroundReturnedAt）。
+            foregroundReturnedAt = SystemClock.elapsedRealtime()
+            viewAtFirstActualMs = -1L
+            viewAtLateActualMs = -1L
+            // 首判立即采样，复判 500ms；已有聊天路由时让网页自行渲染。
+            // 冷启动在 document-start 恢复路由，注入未就绪属于网页加载耗时。
+            mainHandler.postDelayed({ requestViewSnapshot("return", epoch = epoch) }, VIEW_RETURN_CHECK_MS)
+            mainHandler.postDelayed({ requestViewSnapshot("return_late", epoch = epoch) }, VIEW_RETURN_LATE_MS)
+            // 回前台清掉"提前接管候选"：下一次退后台重新从头观察（避免拿上一轮的计时直接动手）。
+            earlyTakeoverSince = 0L
+            // socket 指纹基线也清掉：下一次退后台的第一拍**重新采基线**，不许把"页面在前台
+            // 期间开的 socket"当成"刚刚在重拨"（那会白等 20s，见 maybeStartNativeCarrier）。
+            lastSocketMarkForStall = -1L
+            lastSocketChangeAt = 0L
+            val restoreAfterCarrier = Tier2Probe.isRunning() || carrierHandedBack || carrierRanThisStint
+            // 成功；重连/重载后注入层 runtime 是新的（状态回默认）。
+            // 4b（2026-09-18）起没有"僵尸档"了：页面自己回不来时，靠注入层的 KICKED 终态自愈
+            // （healKickedOnForeground，在 __zcodeShellSetAppForeground 里）+ 回前台死链兜底
+            // （healDeadLinkOnResume）+ 页面自己的重连梯子；承载交还那条路另有下方的一次兜底重载。
+            if (Tier2Probe.isRunning()) {
+                Tier2Probe.stop("回前台交还")
+                carrierHandedBack = true
+                Diagnostics.log(
+                    "warn",
+                    "后台原生承载：回前台交还完成——页面可见性恢复后 Chromium 网络栈复活，" +
+                        "立即触发网页重载，不等待 JS 终态或 8s 观察窗",
+                )
+            }
+            clearCarrierState()
+            stopLiveProgressPolling()
+            stopHeartbeatPump()
+            carrierHandedBack = false
+            if (!reloadExistingPage) {
+                // 新 Activity 会创建 WebView 并 loadUrl，不先加载再补一次 reload。
+                carrierRanThisStint = false
+                Diagnostics.info("提前交还：新 WebView 使用首次加载恢复，不额外重载")
+            } else if (restoreAfterCarrier || pageReloadExpected) {
+                requestPageReload("回前台交还原生承载", epoch)
+            } else {
+                evaluateJs("window.__zcodeShellSetAppForeground && window.__zcodeShellSetAppForeground(true);")
+            }
+            val startedAt = backgroundStartedAt
+            val endedAt = SystemClock.elapsedRealtime()
+            backgroundStartedAt = 0L
+            if (startedAt <= 0) return
+            if (endedAt - startedAt < VERDICT_MIN_BACKGROUND_MS) return
+            backgroundStartedForVerdict = startedAt
+            backgroundEndedAt = endedAt
+            pumpDispatchesForVerdict = pumpDispatches
+            // Resolved by the first fresh liveness report, so the numbers are
+            // measured after the renderer resumed rather than cached before it
+            // froze.
+            verdictPending = true
+            requestLivenessReport()
+        } else {
+            dismissHandoffCover("开始新的后台窗口")
+            // 档 0 观测：**在退后台那一刻**采视图快照。这一帧是整个判据的地基——
+            // 原生承载一配对，页面就会 dispose 掉会话并退出对话视图（真机 23:59:05 dispose
+            // → 23:59:14 体征已 chat:false），等回前台再读就再也问不出"用户离开时在不在对话里"。
+            //
+            // 排在 `__zcodeShellSetAppForeground(false)` 之前：那一句只是告诉注入层前后台状态，
+            // 不影响 DOM；但排在它前面语义更直白——这是"离开前最后一眼"。
+            requestViewSnapshot("leave")
+            evaluateJs("window.__zcodeShellSetAppForeground && window.__zcodeShellSetAppForeground(false);")
+            startHeartbeatPump()
+            backgroundStartedAt = SystemClock.elapsedRealtime()
+            // 新一次后台：复位"本次后台承载跑过"，避免把**上一次**后台（或前台）的承载记到
+            // 这一次头上——那会让正常回前台也去安排兜底重载（见 [carrierRanThisStint]）。
+            carrierRanThisStint = false
+            mainHandler.postDelayed({ maybeStartHandoffCarrier(epoch) }, HandoffState.START_DELAY_MS)
+            val snapshot = liveness
+            backgroundFrameBase = snapshot?.inboundFrames ?: 0
+            backgroundAckBase = snapshot?.pairAcks ?: 0
+            backgroundTickBase = snapshot?.backgroundTicks ?: 0
+            // 只上报一次 liveness：它是"渲染器是否已冻结"的判据。真正的接管由
+            // pump 里的 maybeStartNativeCarrier 按"页面链路判死"触发（见其注释）。
+            requestLivenessReport()
+        }
+    }
+
+    // ------------------------------------------------- M4 活进展（流体云跟手）
+    //
+    // 桌面端对远端的推送是稀疏的（真机逐 10s 统计：页面拿到快照后整段只有心跳
+    // 帧、入站字符数为 0），会话索引的 preview 又只在轮次边界变。所以在**壳自己
+    // 持有连接**的后台时段，由原生订阅每个在跑任务的对话详情（已验证的取快照
+    // 路径），把最新一行（流式正文 / 正在跑的工具）喂给通知与流体云；每隔
+    // [LIVE_REANCHOR_EVERY_POLLS] 拍重挂一次订阅，逼桌面端再推一份快照——最坏
+    // 也只慢一个重挂周期，不会回到"停在上一轮开头"那种几十分钟级的滞后。
+    //
+    // 不用 conversationRowsRangeV4 拉取：真机实测它**即便在订阅建立之后**仍然
+    // 每次 20s 超时（桌面端根本不回这个包），是条死路。
+    //
+    // 前台时段不做：那时连接在页面手里（单控制端互斥），订不了也拉不了。
+    private const val LIVE_PROGRESS_POLL_MS = 12_000L
+
+    /**
+     * 每这么多拍轮换一次（12s × 1 = **12s**，2026-09-17 用户拍板调快）。
+     *
+     * 这个值决定**卡片更新节奏**，不是交接耗时：桌面端同一时刻只服务一座桥，所以
+     * "每 N 秒轮换一次" ⇒ 每座桥被服务 N 秒、静默 N 秒 ⇒ 单卡的更新间隔 ≈ 2N。
+     *
+     * - `2`（24s 轮换）：单卡间隔 ~24–40s，每 24s 一次握手（151 已验收：0 失败、卡片零抽动）；
+     * - `1`（12s 轮换，**现行**）：单卡间隔 ~12–20s，更接近"对话轮之间几秒一条正文"的观感；
+     *   代价是回收/重订频率翻倍（每 12s 一次）。
+     * - 更早的 `4`（48s）实测"卡片肉眼可见地半分钟不动"，已否决。
+     *
+     * ⚠️ **本值是唯一把两种节奏分开的旋钮**（2026-09-18 复核）：命中模的那一拍走**贵**的
+     * 整轮重挂（`Tier2Probe.reanchorProgress()`：回收桥 + 重新握手 + resync，最坏 ~6s），
+     * 不命中的拍只做**便宜**的每拍重订会话（`subscribeProgress`）。所以它不是普通调参，
+     * 而是"两种工作模式的开关"，并且是两条**跨文件**约束的因子：
+     *   1. `core/RelayBridge.kt` 的 `ROTATE_MIN_STARVE_MS`（主动轮换门槛）**必须小于轮换拍长**
+     *      （= [LIVE_PROGRESS_POLL_MS] × 本值）——否则门槛吃掉拍长：2026-09-17 实测拍长 12s
+     *      而门槛还是 15s 时，"每两拍才轮换一次，实际节奏仍是 24s"（见那里的推导）；
+     *   2. 一轮重挂的最坏耗时必须塞进 [LIVE_PROGRESS_POLL_MS] 的 12s 预算，否则桥上那面
+     *      `reanchorInFlight` 会**静默丢掉这一拍**（`RelayBridge.kt` 把 conv resync 超时从 8s
+     *      收紧到 4s、等帧窗口从 3s 到 2s，正是按这条预算算的）。
+     *
+     * ⚠️ **绝不要改这个值。** 现行 `1` ⇒ 每拍都命中模（取模恒真、`reanchor` 恒 true），
+     * 也就是"每拍重挂"；而且**用户侧看不出区别**——正因为看不出，才要把它冻在这里：
+     * 任何 >1 的取值都只会把节奏拉慢（`4` 已实测否决），方向是更快、不是更慢。
+     */
+    private const val LIVE_REANCHOR_EVERY_POLLS = 1
+
+    @Volatile
+    private var livePolling = false
+
+    @Volatile
+    private var livePolls = 0
+
+    @Volatile
+    private var livePollInFlight = false
+
+    @Volatile
+    private var liveEpoch = 0L
+
+    private val liveProgressThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "zcode-live-progress").apply { isDaemon = true }
+    }
+
+    private val liveProgressPoller = object : Runnable {
+        override fun run() {
+            if (!userIsAway()) {
+                return
+            }
+            if (!livePolling) {
+                return
+            }
+            val refs = store.runningTaskRefs()
+            // ⚠️ 计数写在 in-flight 守卫**之前**：上一拍还没回来时本拍会被 `livePollInFlight`
+            // 挡掉，但计数已经加过——这一拍等于被**吃掉**了。今天 [LIVE_REANCHOR_EVERY_POLLS]
+            // = 1（取模恒真、每拍都重挂）所以看不出来；一旦把它调大，被守卫挡掉的拍会推迟下一次
+            // 重挂，实际轮换周期比"每 N 拍"更长。**本批只记录、不修**（改调度写法风险高于收益）。
+            livePolls += 1
+            if (refs.isNotEmpty() && !livePollInFlight) {
+                val reanchor = livePolls % LIVE_REANCHOR_EVERY_POLLS == 0
+                val epoch = liveEpoch
+                livePollInFlight = true
+                liveProgressThread.execute {
+                    try {
+                        if (epoch != liveEpoch || !userIsAway() || !Tier2Probe.isRunning()) return@execute
+                        if (reanchor) {
+                            Tier2Probe.reanchorProgress()
+                        }
+                        for ((key, sessionId) in refs) {
+                            if (epoch != liveEpoch) break
+                            Tier2Probe.subscribeProgress(key, sessionId)
+                        }
+                    } finally {
+                        livePollInFlight = false
+                    }
+                }
+            }
+            mainHandler.postDelayed(this, LIVE_PROGRESS_POLL_MS)
+        }
+    }
+
+    /**
+     * 正文推送的**静默窗**（2026-09-18 真机 bug）：agent 的正文是**分块**到达的，
+     * 现场是 `活进展 …：第五百三十`（半截词）先上了卡片、46ms 后才补成
+     * `第五百三十四次回复，时间09:56:36`；而通知更新本身有 900ms 节流
+     * （[ONGOING_THROTTLE_MS]），于是那半截词在卡片上停了将近一秒——用户看到的就是
+     * "顿号之后停一下才出来"。所以推送前先等这份文本安静 [PreviewSettle.SETTLE_MS]，
+     * 连续流式输出时最多拖 [PreviewSettle.MAX_WAIT_MS]（卡片仍然跟手）。
+     */
+    private val previewPending = HashMap<String, Runnable>()
+    private val previewPublishedAt = HashMap<String, Long>()
+
+    private fun schedulePreview(
+        key: String,
+        sessionId: String,
+        text: String,
+        tag: String,
+        allowed: () -> Boolean,
+    ) {
+        val id = "$key|$sessionId"
+        previewPending.remove(id)?.let { mainHandler.removeCallbacks(it) }
+        val runnable = Runnable {
+            previewPending.remove(id)
+            if (!allowed()) return@Runnable
+            previewPublishedAt[id] = SystemClock.elapsedRealtime()
+            val update = store.applyLivePreview(key, sessionId, text)
+            if (update.running.isNotEmpty()) {
+                Diagnostics.log("debug", "$tag $key：${text.replace('\n', ' ').take(60)}")
+                applyUpdate(update)
+            }
+        }
+        previewPending[id] = runnable
+        val now = SystemClock.elapsedRealtime()
+        mainHandler.postDelayed(runnable, PreviewSettle.delayFor(previewPublishedAt[id] ?: 0L, now))
+    }
+
+    private fun pushLivePreview(key: String, sessionId: String, text: String) {
+        val epoch = liveEpoch
+        schedulePreview(key, sessionId, text, "活进展") {
+            epoch == liveEpoch && userIsAway() && livePolling
+        }
+    }
+
+    /**
+     * 网页自带对话流送来的正文 → 覆盖该会话的活进展，让流体云 / 常驻通知跟手。
+     *
+     * 与 [pushLivePreview]（原生接管那条路）的三点不同：
+     *   1. **不需要接管**——数据来自页面那条 socket，前台后台都在，也不涉及第二条
+     *      连接，因此不会触发单控制端互斥（用户看到的 KICKED）；
+     *   2. 不要求 `livePolling`，也不清 livePreviews（页面重新供数时以会话索引为准）；
+     *   3. 工作区要用 sessionId 反查——对话流只给 `conversation/sess_…`。
+     */
+    private fun onConversationText(sessionId: String, text: String) {
+        val key = store.runningTaskRefs().firstOrNull { it.second == sessionId }?.first
+        if (key == null) {
+            // 没有在跑的任务要显示这句正文，丢掉即可（任务列表仍走会话索引更新）。
+            return
+        }
+        val head = RelayWire.progressHeadOf(text)
+        if (head.isEmpty()) return
+        // 同一条静默窗：分块到达的正文不该有半截词先上卡片。
+        schedulePreview(key, sessionId, head, "页面正文") { true }
+    }
+
+    private fun startLiveProgressPolling() {
+        if (livePolling) return
+        livePolling = true
+        liveEpoch += 1
+        livePollInFlight = false
+        val epoch = liveEpoch
+        Tier2Probe.progressSink = { key, sessionId, text ->
+            if (epoch == liveEpoch) pushLivePreview(key, sessionId, text)
+        }
+        // 会话流自带的运行态（turnHeader.state）：两条运行态源之一，与另一条**互为冗余**、
+        // 按"谁后到谁算数"判定；它按会话生效、只覆盖承载已订阅的工作区（详见下方 controller 流说明）。
+        // （原先的第三源＝**壳自己订**的 `controller/tasks-index` 已于 4a 轮删除，见下方承载开关的 KDoc。）
+        Tier2Probe.turnStateSink = turn@{ key, sessionId, running ->
+            if (epoch != liveEpoch || !userIsAway()) return@turn
+            mainHandler.post {
+                if (epoch != liveEpoch || !userIsAway() || !livePolling) return@post
+                val update = store.applyConversationRunState(key, sessionId, running)
+                // **只有真的变了才发布。** `applyConversationRunState` 在相位没变时返回的是
+                // 四个列表全空的 Update（TaskStore 用"全空"表示"什么都没变"），无条件交给
+                // applyUpdate 就会被当成"当前运行集为空"发布出去：已发布的运行集被抹成 0 →
+                // 流体云卡片被系统收回 → 下一拍再提升就是"重建"。真机 2026-09-16 19:43 起
+                // 每 ~24s 一次且与桥回收同拍，因为**新桥的第一帧必然重报一次 turnState，
+                // 而相位并没有变**。另两条路（pushLivePreview / onConversationText）
+                // 本来就是这么防的——这里漏了。
+                if (update.running.isEmpty() && update.removedIds.isEmpty()) return@post
+                Diagnostics.log(
+                    "debug",
+                    "会话运行态：${if (running) "在跑" else "结束"} · $sessionId",
+                )
+                applyUpdate(update)
+            }
+        }
+        Tier2Probe.runningSessionsProvider = { key ->
+            store.runningTaskRefs().filter { it.first == key }.map { it.second }
+        }
+        mainHandler.post(liveProgressPoller)
+    }
+
+    /** 交还前台：停止拉取/订阅，并把活进展清掉（此后以页面供的会话索引为准）。 */
+    private fun stopLiveProgressPolling() {
+        livePolling = false
+        liveEpoch += 1
+        Tier2Probe.progressSink = null
+        Tier2Probe.turnStateSink = null
+        Tier2Probe.runningSessionsProvider = null
+        mainHandler.removeCallbacks(liveProgressPoller)
+        // 静默窗里挂着的待推正文一并丢掉：交还之后它们不该再落到卡片上。
+        for (pending in previewPending.values) mainHandler.removeCallbacks(pending)
+        previewPending.clear()
+        previewPublishedAt.clear()
+        store.clearLivePreviews()
+    }
+
+    // ------------------------------------------------------------ heartbeat pump
+    //
+    // The injected layer's own interval cannot be relied on while the app is
+    // backgrounded: the renderer throttles a hidden page's timers, so the tick
+    // stops and the desktop stops hearing from us. Driving the same tick from
+    // here keeps the pairing warm.
+    //
+    // Open question, measured but not yet explained: the page's own relay client
+    // reconnects on its own while backgrounded. Its ack watchdog is 30s and
+    // `applyPairStatus` re-arms it on ANY `pair_status_ack` (no id correlation),
+    // so the pump's probe *should* pin it — but a screen-off window still showed
+    // the page calling `close()` every ~95–120s (`code=1005 clean=true`, from the
+    // page's own bundle), while the pump was demonstrably ticking and acks were
+    // arriving every ~14s. Do not assume the probe covers it.
+    //
+    // Two properties are load-bearing and easy to undo by simplifying:
+    //
+    //  * Both hops are asynchronous (see `mainHandler`): the pump's own timer AND
+    //    the JS evaluation it triggers, since either sync hop is starved by the
+    //    Choreographer's sync barrier while the window is invisible.
+    //  * None of this helps if the platform gives the process no execution at
+    //    all: with ColorOS's default battery policy the app is frozen/killed
+    //    while backgrounded (o-kill/o-stop at importance=FOREGROUND_SERVICE, and
+    //    a 15s dispatch still not delivered after 10 minutes). The per-app
+    //    "allow full background behaviour" switch is what makes the pump real.
+
+    /**
+     * How often the pump drives one heartbeat tick.
+     *
+     * Ten seconds, matching the page's own `heartbeatIntervalMs` — the pump is
+     * standing in for a timer the renderer no longer runs while hidden, so it has
+     * to keep at least that cadence. Fifteen was not enough: the page's ack
+     * watchdog is 30s, re-armed on every ack, and the field log showed single
+     * cycles where our probe's ack did not land (windows with `链路 ack 0`). Two
+     * of those in a row is a 30s ack gap, which is exactly what makes the watchdog
+     * fire — and its callback closes the socket, which is the reconnect the user
+     * sees. Cheap to be early: one more `evaluateJavascript` per 30s.
+     */
+    private const val PUMP_INTERVAL_MS = 10_000L
+
+    /**
+     * 退后台之后的**首拍**延迟（2026-09-18）。它只做两件事：给 socket 指纹采基线、
+     * 判断要不要提前接管。等满一个整拍只会让卡片的正文晚 10s 出现（用户："后台冒出来的
+     * 流体云都得等 20s 体感"）。3s 足够让可见性切换稳定下来，又比 10s 快得多。
+     */
+    private const val PUMP_FIRST_TICK_MS = HandoffState.START_DELAY_MS
+
+    /** Every Nth dispatch is logged; the first one always is. */
+    private const val PUMP_LOG_EVERY = 20
+
+    @Volatile
+    private var appIsForeground = true
+
+    /**
+     * 注入层启动时对一次表（`WebAppBridge.config()` 的 `foreground` 字段）：原生的前后台
+     * 权威状态。文档若在后台期间被重载（自愈/兜底重载都可能），注入层的启动默认值
+     * `true` 会让它在真后台里自认前台——KICKED 被误判成"前台被顶→不自动干预"，自愈
+     * 链路就此短路（2026-09-27 17:07 现场的一环）。
+     */
+    fun isAppForeground(): Boolean = appIsForeground
+
+    fun isUserPresent(): Boolean = !userIsAway()
+
+    init {
+        // 配对成功与应用回前台的竞态处置（Tier2Probe 在 OkHttp 线程上回调，转主线程）。
+        Tier2Probe.isForegroundNow = { !userIsAway() }
+        Tier2Probe.foregroundConflict = {
+            val conflictEpoch = handoff.epoch
+            mainHandler.post {
+                // Tier2 has already stopped synchronously on its callback thread.
+                // Do not let a queued conflict recover a later foreground window.
+                if (!handoff.isCurrent(conflictEpoch, false) || userIsAway()) return@post
+                Diagnostics.log("warn", "后台原生承载：配对竞态——应用已回前台，交还并重载页面一次")
+                carrierHandedBack = true
+                // 页面已被这次配对踢进 KICKED 终态，重载是唯一恢复手段；此时壳在前台，
+                // 原生直接重载（等效用户手动重启，只是快 7 秒）。
+                clearCarrierState()
+                stopLiveProgressPolling()
+                // A confirmed native match can kick a page AFTER the ordinary return
+                // reload. It is a new fault, so allow its one recovery in this epoch.
+                pageReloadEpoch = -1L
+                requestPageReload("原生配对与回前台竞态", conflictEpoch)
+            }
+        }
+    }
+
+    @Volatile
+    private var heartbeatPumpRunning = false
+
+    private val handoff = HandoffState()
+    private var handoffChangedAt = 0L
+
+    private var pumpDispatches = 0
+    private var pumpDispatchesForVerdict = 0
+
+    private val pumpRunnable = object : Runnable {
+        override fun run() {
+            if (userIsAway()) {
+                if (jsEvaluator != null) {
+                    pumpDispatches += 1
+                    evaluateJs("window.__zcodeShellHeartbeat && window.__zcodeShellHeartbeat();")
+                    if (pumpDispatches == 1 || pumpDispatches % PUMP_LOG_EVERY == 0) {
+                        Diagnostics.log("debug", "后台心跳泵 #$pumpDispatches 次发令")
+                    }
+                }
+                // 页面链路判死 ⇒ 把连接交给原生（Chromium 的网络栈在后台会整体死掉，
+                // 页面侧自救无效；见 `maybeStartNativeCarrier` 的取证）。
+                maybeStartNativeCarrier()
+                mainHandler.postDelayed(this, PUMP_INTERVAL_MS)
+            } else {
+                heartbeatPumpRunning = false
+            }        }
+    }
+
+    private fun startHeartbeatPump() {
+        if (heartbeatPumpRunning) return
+        heartbeatPumpRunning = true
+        mainHandler.removeCallbacks(pumpRunnable)
+        pumpDispatches = 0
+        // **第一拍早一点**（2026-09-18）：退后台之后要不要接管，用户最直观的感受就是
+        // "卡片多久才有正文"。等满一个 10s 拍纯属浪费（第一拍本来就是采基线 + 判候选）。
+        mainHandler.postDelayed(pumpRunnable, PUMP_FIRST_TICK_MS)
+        Diagnostics.log(
+            "debug",
+            "后台心跳泵已启动（首拍 ${PUMP_FIRST_TICK_MS}ms，之后每 ${PUMP_INTERVAL_MS / 1000}s）",
+        )
+    }
+
+    private fun stopHeartbeatPump() {
+        heartbeatPumpRunning = false
+        mainHandler.removeCallbacks(pumpRunnable)
+        if (pumpDispatches > 0) {
+            Diagnostics.log("debug", "后台心跳泵已停止，本次共发出 $pumpDispatches 次")
+        }
+    }
+
+    /**
+     * Asks the injected layer to report its counters right now. [onLiveness] is
+     * what actually writes the verdict, so this call is fire-and-forget.
+     */
+    fun requestLivenessReport() {
+        evaluateJs("window.__zcodeShellReportLiveness && window.__zcodeShellReportLiveness();")
+    }
+
+    // ------------------------------------------------- 后台承载（方案 B 落地）
+    //
+    // 真机定案（2026-09-16 00:00–00:05，v131）：
+    //
+    //   退后台约 60–70s 后，**Chromium 的网络栈整体停止工作**，而 App 的网络没事：
+    //     · 页面那条 relay socket 停在 `readyState=1(OPEN)`、`paired=true`，
+    //       双向零帧持续 22 分钟（`收帧 0 / 发帧 0 / 链路 ack 0`，而壳每 10s 仍在
+    //       发顶层 pair_status_query——`探针 1` 却连 ack 都没有）；
+    //     · 同一刻页面里新建的 `fetch` **76 秒既不成功也不失败**（挂住）；
+    //     · 同一刻**原生 Java 侧**：`原生网络自检 裸TCP=ok 67ms · HTTPS=HTTP 200 276ms`；
+    //     · 同一刻原生 WebSocket：1 秒内 `★配对成功（matched）` + 开桥 + 订阅索引。
+    //   结论：**不是平台掐了 App 的网络，是 Chromium 的网络栈在后台死了**。
+    //   于是页面侧任何自救（重拨 / 合成 online / 重载）都不可能成功——这也是此前
+    //   注入层两轮"救后台"全部无效的原因；只有把连接的**承载**换成原生才行。
+    //
+    // 为什么不会 KICK 页面：判据是"入站帧静默 ≥35s"，此刻页面那条连接早已是僵尸
+    // （服务端那侧也失效），而且它的网络栈是死的——**KICKED 帧根本送不到页面**，
+    // 页面不会进终态。回前台时原生先交还（见 [onAppForegroundChanged]），页面自己
+    // 的 `recoverConnection` 在可见性恢复、Chromium 网络栈复活后重拨，
+    // 所以**回前台不需要重载页面**（这条要真机验收）。
+
+    /**
+     * 失速门槛：注入层自述"最早一帧入站是多久以前"超过它，就认定页面那条链路已死。
+     *
+     * 35s = 3 个泵周期 + 余量：健康的后台窗口里每 10s 都有入站帧（数据帧或我们
+     * 探针的 ack），连续三窗一帧都没有，只可能是链路断了。
+     */
+    private const val STALL_SILENCE_MS = 35_000L
+
+    /** 页面刚动过 socket（重拨中）后的静默期：见 [lastSocketMarkForStall]。 */
+    private const val CARRIER_REQUIET_AFTER_SOCKET_MS = 20_000L
+
+    /**
+     * **提前接管**的两个参数（2026-09-17）。
+     *
+     * 页面链路活着也可能"没人喂卡片"——真机现场：停在**工作区概览页**退后台，页面自己
+     * 一个会话订阅都没有，卡片只能显示会话索引的轮次级文案，要等到 ~100s 后链路判死才由
+     * 原生接上。于是加一条更早的触发：后台 + 有在跑任务 + [页面最近没有 conversation 帧]。
+     *
+     * - [EARLY_TAKEOVER_CONV_SILENCE_MS]：多久没收到会话帧（topic 前缀 `conversation/`）就算"没人看"。
+     *   30s 是"agent 一轮思考/工具调用的典型静默"与"概览页永远没有帧"之间的折中。
+     * - [EARLY_TAKEOVER_DEBOUNCE_MS]：条件连续成立这么久才动手，避开"用户正在切页面"的瞬态。
+     */
+    private const val EARLY_TAKEOVER_CONV_SILENCE_MS = 30_000L
+
+    private const val EARLY_TAKEOVER_DEBOUNCE_MS = 10_000L
+
+    /**
+     * 多工作区覆盖一次最多开几座桥。
+     *
+     * **单源**（2026-09-17）：直接引用 `Tier2Probe.DEFAULT_MAX_COVERAGE`——两处各写一个 5
+     * 曾经过：改了 Tier2 忘了改这里，"日志说 5 座、实际开 3 座"。现在编译器兜底。
+     *
+     * **成本取舍，不是平台限制**：每座桥 = 桌面端一条常驻会话 + 每轮一次回收握手；
+     * 轮换已与 N、M 都无关（`RelayBridge.reanchorProgress` 每轮 ≤6s + ~3s），所以抬高它
+     * 不会让轮询互相冲突。3 → **5**（2026-09-17）为鸿蒙侧 5 并发实验；**产品真实天花板是 2**
+     * （ColorOS 只提升 2 张流体云卡）。
+     */
+    private const val MULTI_WS_COVERAGE_CAP = Tier2Probe.DEFAULT_MAX_COVERAGE
+
+    /**
+     * 后台承载总开关。
+     *
+     * **默认开启**（2026-09-16 01:20 恢复）。曾经在 00:52 临时改成 false，因为那时发现
+     * "原生配对会让桌面端 4.3 秒后拆掉自己的 window host"。**那个问题已定位并修掉，
+     * 而且不在原生配对本身**：真凶是原生桥对 `zcode-agent.onDynamicControllerFrame`
+     * 的那次 `rpc:listen`——它让桌面端 host 进程当场 `uncaughtException` 并自毁
+     * （桌面端日志：`[rpc:listen] … onDynamicControllerFrame FAIL` → `uncaughtException`
+     * → `disposing host resources` → `unregistered host` + `host process exited with code 1`）。
+     * 关掉那条流之后真机复验：原生配对 + 开桥，桌面端 host **稳定存活、无 uncaughtException**，
+     * 桥也开在正确的工作区上。
+     * （那条流本身已于 4a 轮**随订阅实现一起删除**：`RelayBridge` 里的
+     * `subscribeControllerTasks` / `onControllerWire` / `resyncController` / `unsubscribeController`
+     * 与开关 `controllerStreamEnabled` 都没了——"别再打开"从此不是靠开关，而是**没有代码可打开**。
+     * 取证见 `docs/18` §4。）
+     *
+     * 之所以关得起：运行态**不止这一条源**，今天是**两条**，判定规则是"**最新报到的那条
+     * 说了算**"（`TaskStore.phaseOverlay`，2026-09-18 起，`docs/18` §3.11 B/D）——
+     * ① ~~本条（壳自己订 `controller/tasks-index`）~~：**4a 轮已删**（它会崩桌面端 host）；
+     * ② 会话流的 `turnHeader.state`（`applyConversationRunState`）：按会话生效，只覆盖承载
+     *    已经订阅的那些工作区，"别的工作区在跑"它天生看不见；
+     * ③ **页面自己订的同一条 `controller/tasks-index`**（`controllertasks` →
+     *    `TaskStore.applyLiveTasks`，2026-09-18 加）：唯一**全局**的一条，"任务正在别的
+     *    工作区里跑"只有靠它才进得来。现存两条各记报到时刻、互为冗余，底下再垫
+     *    `sessions-index` 的持久态。
+     *（编号沿用 `docs/18` §3.11 B 的历史叫法：① 是本轮删掉的那条，现存的是 ②③。）
+     *
+     * 配套两处（同轮真机定案）：① 只开**页面自己正在显示**的那个工作区的桥
+     * （`pageWorkspaceKey`）——扫全部工作区会让桌面端每次新建再拆 host；
+     * ② 配对后照页面顺序补 `mobile-diagnostic` / `mobile-view-state-update` /
+     * `bootstrap-request` 三帧（见 `Tier2Probe.sendBootstrapThenCoverage`）。
+     */
+    @Volatile
+    private var carrierEnabled = true
+
+    /**
+     * 页面当前显示的工作区/任务（由注入层从页面自己的 `workspace-bridge-open` 帧里取，见
+     * `pagews` 事件）。后台原生承载**只**为它开桥——与页面自己的行为一致，也是真机定案：
+     * 扫全部工作区会触发桌面端拆 host（docs/16 §8/§10）。
+     */
+    @Volatile
+    private var pageWorkspaceKey = ""
+
+    @Volatile
+    private var pageWorkspaceTaskId = ""
+
+    /**
+     * 多工作区覆盖开关（adb：`multi_ws_on` / `multi_ws_off`），**默认关**。
+     *
+     * 打开后承载不再只开页面工作区一座桥，而是 **page 工作区 ∪ 有在跑任务的工作区**
+     * （上限 [MULTI_WS_COVERAGE_CAP]）。为什么默认关：这是 `docs/17` 的下一个方向，
+     * 桌面端能否同时服务多座桥**还没验证过**（旧证据被 host 之死污染），所以先做成开关，
+     * 真机验证通过再谈改默认（`docs/17` §7.5 的原话）。
+     */
+    @Volatile
+    private var multiWorkspaceCoverage = false
+
+    /**
+     * `coverage_ws:<k1>,<k2>` 诊断指令的显式覆盖清单：**优先于开关**，专供 E1 做干净 A/B
+     * （不必真起第二个任务，也不必改开关默认值）。
+     */
+    @Volatile
+    private var coverageOverride: List<String> = emptyList()
+
+    private var carrierStarted = false
+
+    /**
+     * 本次承载是**提前接管**起来的（接管那一刻页面链路本来是活的）。
+     *
+     * 为什么必须记住它：反向不变式「页面链路一旦自己活了，原生立刻交还」是用
+     * `lastInboundAgeMs` 判"活了"的——这在**判死**路径上成立（那时页面已静默 35s，
+     * 之后再来帧一定是它自己回来了），但对**提前接管**不成立：桌面端在配对成功时会给
+     * 页面发一帧 `KICKED`，页面随即 `dispose` 掉 socket（真机 2026-09-17 22:48:51.7：
+     * `socket.close() … X2t.dispose ← at Object.onFailure`），而**这一帧本身**就刷新了
+     * `lastInboundAt`。于是 10s 后 `age=16s < 35s` ⇒ 壳把连接交还给一个**已经进终态**的
+     * 页面、同一次调用里又立刻接管回来（22:49:01 现场：多一次解配对/重配对 + 桥拆建，
+     * 只因 20s socket 守卫凑巧挡住才没连续抖）。判定见 [CarrierHandback]。
+     */
+    private var carrierStartedEarly = false
+
+    /** 上面那条"暂不交还"的日志每次承载只写一行（每拍一行会把日志淹掉）。 */
+    private var handbackDeferredLogged = false
+
+    /** 刚刚交还过（前台分支读一次并清掉）：在"回前台交还"这条路径上安排"页面没恢复才重载"的兜底。 */
+    private var carrierHandedBack = false
+
+    /**
+     * 自上次回前台以来，壳**启动过原生承载**（回前台读一次并清掉）。
+     *
+     * 为什么需要它（2026-09-18 真机缺陷，父代理在回归中撞出）：
+     * 原实现只在 [carrierHandedBack] 这一条路径上安排兜底，即"回前台那一刻 `Tier2Probe.isRunning()`
+     * 仍为真"。可承载完全可能在**后台期间**就被停掉（诊断 `tier2_stop`/`carrier_off`、探针自停、
+     * 任何非"回前台交还"的路径），那时 `isRunning()` 已是 false ⟹ **兜底永不安排**；
+     * 而注入层那条 KICKED 自愈（`healKickedOnForeground`）要求页面**亲眼看见** KICKED 帧——
+     * 页面若在接管前就已 `dispose` 掉 socket（真机 19:54:33 `socket.close() … X2t.dispose`），
+     * 那一帧它永远收不到 ⟹ **两条路同时失效，页面被彻底留下，只能 force-stop 重启**。
+     * 原生一定知道"这次后台承载跑过"，所以由它兜住这一格。
+     */
+    private var carrierRanThisStint = false
+
+    /**
+     * 通知卡片点击定位用：**页面是否可能已被承载顶掉**（KICKED 终态）。
+     *
+     * 判据刻意保守——**宁可漏判，不可误判**（误判会让本来好好的页面白闪一次重载）：
+     *   * 承载**此刻在跑** ⟹ 它必然把页面顶掉了（单控制端互斥）；或
+     *   * **本次后台承载跑过**（[carrierRanThisStint]）⟹ 页面很可能在后台期间被顶过。
+     * 只在这两种情况下，`MainActivity` 才走"预设任务 + 交还 + 重载"那条路。
+     */
+    fun carrierMayHaveKickedPage(): Boolean = Tier2Probe.isRunning() || carrierRanThisStint
+
+    /**
+     * 通知卡片点击定位用：**把承载交还给页面**，并清掉与它相关的状态。
+     *
+     * 为什么这一步不能省（2026-09-18 父代理用 CDP 实测）：单控制端互斥下，只要原生承载还在配对，
+     * 页面重载后**自己也会被再顶一次**、又回到 KICKED 终态 —— 那重载就白做了。
+     */
+    fun handBackCarrierForLocate() {
+        if (Tier2Probe.isRunning()) {
+            Tier2Probe.stop("通知点击定位：先交还")
+            Diagnostics.log("warn", "定位：先停掉原生承载，把连接还给页面")
+        }
+        clearCarrierState()
+        carrierRanThisStint = false
+    }
+
+    /**
+     * 防误判用的 socket 生命周期观测：静默期内 socket 计数变了 ⇒ 页面在重拨，等它。
+     *
+     * 现场（2026-09-16 02:21，回前台那一下）：页面自己 `recoverConnection → reconnectNow`
+     * 已经打出 `relay socket open (#2)`，但注入层的"入站帧年龄"还是旧值（`inboundAgo=622s`，
+     * 因为新 socket 还没收到第一帧），承载于是误判"链路已死"并接管——**把刚恢复的页面 KICK 了**。
+     * 20s 是"重拨 + 首帧到达"的经验窗口（真机那次 ~6s 就恢复了）。
+     */
+    private var lastSocketMarkForStall = -1L
+    private var lastSocketChangeAt = 0L
+
+    /** 提前接管候选的首次观察时刻（0 = 当前不是候选）：见 [EARLY_TAKEOVER_DEBOUNCE_MS]。 */
+    private var earlyTakeoverSince = 0L
+
+    /**
+     * 4c：本次可信窗口是否已经记过"因陈旧而放行"那行日志。
+     *
+     * 为什么需要它：闸门那段随心跳泵**每拍**（约 10s）跑一次，逐拍记会把日志刷爆。
+     * 与注入层"按跃迁记一行"同一口径（[TaskStore] 的 `staleSince` 也只记一次）。
+     */
+    private var staleGateLogged = false
+
+    /**
+     * **socket 生命周期**的指纹：页面真的重拨了，它一定变。
+     *
+     * ⚠️ **不要再把入站帧计数混进来**（2026-09-17 真机抓到的：它把"提前接管"整个挡死）。
+     * 旧写法是 `socketsOpened*1e6 + socketsClosed*1e3 + (inboundFrames % 1000)`，而
+     * `inboundFrames % 1000` **每收到一帧就变** ⇒ 只要页面还在收帧，[lastSocketChangeAt]
+     * 每拍都被刷新 ⇒ `sinceSocketChange < CARRIER_REQUIET_AFTER_SOCKET_MS` 恒成立 ⇒
+     * `maybeStartNativeCarrier` 每次都在第一道守卫 return。判死路径看不出来（那时本来就没帧、
+     * 这一项恒定），但**提前接管发生在页面活着、帧一直在流的时候**，于是永远走不到判据。
+     * 这道守卫的本名与注释都是"页面刚开过新 socket（重拨中）"，所以只该看 socket 计数。
+     */
+    private fun nudgeMark(): Long {
+        val snapshot = liveness ?: return -1L
+        return snapshot.socketsOpened * 1_000_000L + snapshot.socketsClosed.toLong()
+    }
+
+    /** 会话帧年龄的日志写法（三处共用：候选、提前接管、暂不交还）。−1 = 从未见过。 */
+    private fun convAgoText(agoMs: Long): String = if (agoMs < 0) "从未" else "${agoMs / 1000}s 前"
+
+    /** 开关（adb：`carrier_on` / `carrier_off`）。 */
+    fun setCarrierEnabled(enabled: Boolean) {
+        carrierEnabled = enabled
+        Diagnostics.log("warn", "后台原生承载：${if (enabled) "已开启" else "已关闭"}")
+        if (!enabled && Tier2Probe.isRunning()) {
+            Tier2Probe.stop("后台承载被关闭")
+            stopLiveProgressPolling()
+            releaseCarrierWakeLock()
+            carrierStarted = false
+        }
+        if (!enabled) {
+            // 关掉就走"没有承载"的状态，别把上一次的来路与去抖标志留给下一次。
+            carrierStartedEarly = false
+            handbackDeferredLogged = false
+        }
+    }
+
+    /**
+     * 承载这一轮要开哪些工作区的桥（多工作区方向，见 `docs/17`）。
+     *
+     * 优先级：诊断覆盖清单 > 【**有在跑任务的工作区**（无条件）】∪ 页面工作区（多工作区开关打开时）
+     * ∪ **发现链**"有活动任务的工作区"，上限 [MULTI_WS_COVERAGE_CAP]。
+     *
+     * **为什么"有在跑任务的工作区"不再受开关管**（2026-09-18 真机）：那是**卡片的本体**。
+     * 开关（内存态，重启即丢）关着、页面又停在别的工作区时，桥会开在页面那个工作区上：
+     * 现场是 `Tier2: 只开页面当前工作区的桥：E:\MiMo…`，而任务在
+     * `C:\Users\wdn32\.zcode\workspace\default` 里跑 —— 运行集对、卡片在，但**没人订阅那条
+     * 对话**，卡片正文只能落到工作区名（用户看到的就是 `default` 三个字母）。
+     * 多工作区**开关**留给"页面工作区也要覆盖"这件事，以及诊断 A/B。
+     *
+     * **发现链**（2026-09-17 加，见 `docs/18` §3.7）＝从**已经在收的**两处响应解析出来的活动工作区
+     * （`bootstrap-response.result.tasks` 必填 / `workspace-list-response.result.tasks` 可选）。
+     * 有了它，不再要求用户先把每个工作区在手机上打开一遍——壳自己就知道谁在跑。
+     */
+    private fun carrierCoverageTargets(): List<String> {
+        if (coverageOverride.isNotEmpty()) return coverageOverride
+        val out = LinkedHashSet<String>()
+        if (multiWorkspaceCoverage && pageWorkspaceKey.isNotEmpty()) out.add(pageWorkspaceKey)
+        // **这里不读发现链**（2026-09-17 删掉那行 `Tier2Probe.discoveredCoverage()`）：
+        // 本函数在**承载启动前**算，而发现链的数据（bootstrap/workspace-list 的 tasks）
+        // 要配对之后才有——那一刻它必然是空表，留着只会让后人误以为"发现链已经并进来了"。
+        // 真正的并入点在 `Tier2Probe.startCoverage()`（日志行 `Tier2: 发现链给出 …`）。
+        for ((key, _) in store.runningTaskRefs()) {
+            if (out.size >= MULTI_WS_COVERAGE_CAP) break
+            if (key.isNotEmpty()) out.add(key)
+        }
+        if (out.isNotEmpty()) {
+            Diagnostics.log(
+                "info",
+                "承载覆盖目标（启动前）：${out.size} 座（page=${pageWorkspaceKey.ifEmpty { "未知" }} · " +
+                    "store 在跑 ${store.runningTaskRefs().size} 个；发现链由配对后的 Tier2 并入）",
+            )
+        }
+        return out.take(MULTI_WS_COVERAGE_CAP)
+    }
+
+    /**
+     * 后台原生承载：把连接交给原生。
+     *
+     * 只判"完全没有任何入站帧"——健康链路上壳的探针一定有 ack（真机健康窗
+     * `链路 ack 1~5/10s`），连 ack 都没有就不是"桌面端安静"，是链路已死。
+     */
+    private fun maybeStartNativeCarrier() {
+        // 4c（Q15 加固要求）：进闸门的第一件事，就是把"用户是否已离开"按**闸门自己的
+        // 判据**（[userIsAway]）重新同步给 store。这样"窗口武装了但闸门不在判定"（或反过来）
+        // 的错位在**判定这一拍**不可能存在——两者用的是同一份读数、同一个函数。
+        syncAwayStateToStore()
+        if (!userIsAway()) return
+        if (handoff.ownsAwayWindow && Tier2Probe.isRunning()) return
+        maybeStartHandoffCarrier(handoff.epoch)
+        if (Tier2Probe.isRunning()) return
+        if (!carrierEnabled) return
+        val age = lastInboundAgeMs() ?: return
+        val now = SystemClock.elapsedRealtime()
+
+        // 防误判：页面**刚刚**开过新 socket（重拨中）时不要接管。
+        //
+        // 现场（2026-09-16 02:21，回前台那一下）：页面自己 `recoverConnection → reconnectNow`
+        // 已经打出 `relay socket open (#2)`，但注入层的"入站帧年龄"还是旧值（`inboundAgo=622s`，
+        // 因为新 socket 还没收到第一帧），承载于是误判"链路已死"并接管——**把刚恢复的页面 KICK 了**
+        // （日志：`页面连接被顶掉（relay 返回 KICKED，应用在后台）`）。
+        // 判据：socket 生命周期计数在静默期内变过 ⇒ 页面在自救，等它；要求"最近 20s 没动过 socket"。
+        //
+        // ⚠️ **第一次观测只是基线**（2026-09-18 用户报"后台冒出卡片要等 20s 体感"）：
+        // 页面在**前台**期间开的那些 socket，在下一次退后台的第一拍才会被我们第一次看到；
+        // 旧写法把它当成"刚动过 socket"⇒ 白等 20s。真机实测：09:27:58 HOME → 09:28:28 才出候选
+        // （20s 守卫 + 10s 首拍），而页面那一刻根本没在重拨。所以 -1（未知）时只记基线、不开窗；
+        // 回前台时把基线清掉，下一次退后台重新采一次。
+        val socketMark = nudgeMark()
+        if (socketMark != lastSocketMarkForStall) {
+            if (lastSocketMarkForStall != -1L) lastSocketChangeAt = now
+            lastSocketMarkForStall = socketMark
+        }
+        val sinceSocketChange = now - lastSocketChangeAt
+        if (sinceSocketChange < CARRIER_REQUIET_AFTER_SOCKET_MS) {
+            if (age >= STALL_SILENCE_MS) {
+                Diagnostics.log(
+                    "info",
+                    "后台原生承载：页面 ${sinceSocketChange / 1000}s 前刚动过 socket（在重拨），本轮不接管",
+                )
+            }
+            return
+        }
+
+        if (age < STALL_SILENCE_MS) {
+            // Tier2 可能已经自己停了（配对失败 / 桌面端拒桥 / 桌面端离线），而标志留在 true：
+            // 那会让下面"提前接管暂不交还"的分支把一个并不存在的承载一直当成在跑，于是永远不重试。
+            // 先把标志与实际对齐——对齐之后 age 仍 <35s，会照常重新走判据/接管。
+            if (carrierStarted && !Tier2Probe.isRunning()) {
+                carrierStarted = false
+                carrierStartedEarly = false
+                handbackDeferredLogged = false
+            }
+            // 页面链路自己活着（或已恢复）⇒ 原生必须让位，绝不能两条连着。
+            // **例外**：这一次承载是【提前接管】起来的，而页面还没回到"在跟会话"——见 [CarrierHandback]。
+            // 提前接管后桌面端会给页面发 KICKED、页面自己 dispose 掉 socket，而**那一帧本身**就把
+            // age 拉回 <35s；照旧判"已恢复"就会把连接交还给一个已经进终态的页面（真机 22:49:01）。
+            val page = liveness
+            val pageIsServing = page != null && CarrierHandback.pageIsServing(
+                socketState = page.socketState,
+                paired = page.paired,
+                convFrameAgoMs = page.convFrameAgoMs,
+                convSilenceMs = EARLY_TAKEOVER_CONV_SILENCE_MS,
+            )
+            val handBack = CarrierHandback.shouldHandBack(
+                pageLinkAlive = true,
+                startedEarly = carrierStartedEarly,
+                pageIsServing = pageIsServing,
+            )
+            if (carrierStarted && handBack) {
+                Diagnostics.log(
+                    "warn",
+                    "后台原生承载：页面链路已恢复（最新入站帧 ${age / 1000}s 前），原生交还",
+                )
+                Tier2Probe.stop("页面链路已恢复")
+                stopLiveProgressPolling()
+                releaseCarrierWakeLock()
+                carrierStarted = false
+                carrierStartedEarly = false
+                handbackDeferredLogged = false
+            } else if (carrierStarted) {
+                if (!handbackDeferredLogged) {
+                    handbackDeferredLogged = true
+                    Diagnostics.log(
+                        "info",
+                        "后台原生承载：提前接管暂不交还（页面最近 " +
+                            "${convAgoText(page?.convFrameAgoMs ?: -1L)}收到会话帧 · " +
+                            "socket=${page?.socketState ?: -1} paired=${page?.paired ?: false}）" +
+                            "——age<${STALL_SILENCE_MS / 1000}s 只说明收到过帧，不说明页面在跟会话",
+                    )
+                }
+                return
+            }
+            // **提前接管**（2026-09-17 用户拍板，真机现场：停在**工作区概览页**退后台）：
+            // 页面链路活着 ≠ 有人在喂卡片。概览页**没有任何会话订阅** ⇒ 谁都不拉正文，
+            // 卡片只能显示会话索引的轮次级文案、看起来"冻住"，一直要等到 ~100s 后的
+            // 链路判死才由原生接上（用户实测的"后台卡片不更新"就是它）。
+            // 判据只用现成的两件事：① 有在跑任务（否则接管也没内容可推）；
+            // ② 页面**最近没有收到任何 conversation 帧**（`convFrameAgoMs`：概览页永远没有；
+            //    进了任务哪怕 agent 静默也有首屏快照/轮次帧 ⇒ 不误判成"没人看"）。
+            // 连拍两拍（≈10s）才动手，避开"用户正在切页面"的瞬态。
+            // 代价：页面那条连接会被顶掉、进 KICKED 终态 ⇒ 回前台由兜底重载修（既有路径）。
+            val runningRefs = store.runningTaskRefs()
+            val convAgo = liveness?.convFrameAgoMs ?: -1L
+            val nobodyWatching = convAgo < 0 || convAgo > EARLY_TAKEOVER_CONV_SILENCE_MS
+            // 4c（Q13 第二句 / Q15）：存在"处于可信窗口内的陈旧工作区"时，**"没有在跑任务"
+            // 这个前提本身就不可信**——缺口吞掉的正是"有新任务开始"（见核心库 TaskStore 的
+            // staleSince 注释）。此时不许仅凭 runningRefs.isEmpty() 关闸，否则后台卡片会一直
+            // 不更新，正是用户报的那个痛点。
+            val staleHold = store.staleGateHold()
+            if (!staleHold.holds) {
+                staleGateLogged = false
+            } else if (runningRefs.isEmpty() && !staleGateLogged) {
+                // 每个可信窗口只记一行（这段每拍都跑，逐拍记会把日志刷爆）。
+                staleGateLogged = true
+                Diagnostics.log(
+                    "warn",
+                    "后台原生承载：因陈旧而放行——" + staleHold.workspaceKeys.joinToString(" | ") +
+                        " 的会话清单漏过增量，本轮不因『没有在跑任务』关闸" +
+                        "（陈旧保护还剩 ${staleHold.remainingMs / 1000}s）",
+                )
+            }
+            if ((runningRefs.isEmpty() && !staleHold.holds) || !nobodyWatching) {
+                earlyTakeoverSince = 0L
+                return
+            }
+            // **从来没收到过会话帧（−1）＝ 这个页面生命周期内压根没在看任何任务**：
+            // 观察窗是为了避开"用户正在切页面"的瞬态，而"从没看过"不存在这种瞬态，
+            // 白等 10s 只会让卡片多空 10s（用户 2026-09-18 的"体感 20s"里有这 10s）。
+            if (convAgo >= 0) {
+                if (earlyTakeoverSince == 0L) {
+                    earlyTakeoverSince = now
+                    Diagnostics.log(
+                        "info",
+                        "后台原生承载：候选提前接管（页面最近 " + convAgoText(convAgo) +
+                            " 收到会话帧 · ${runningRefs.size} 个在跑任务），" +
+                            "观察 ${EARLY_TAKEOVER_DEBOUNCE_MS / 1000}s 后动手",
+                    )
+                    return
+                }
+                if (now - earlyTakeoverSince < EARLY_TAKEOVER_DEBOUNCE_MS) return
+            }
+            Diagnostics.log(
+                "warn",
+                "后台原生承载：**提前接管**——页面活着但最近 " + convAgoText(convAgo) +
+                    " 收到会话帧（没人喂卡片），且有 ${runningRefs.size} 个在跑任务；" +
+                    "页面连接会被顶掉，回前台由兜底重载恢复",
+            )
+        } else {
+            earlyTakeoverSince = 0L
+        }
+        if (carrierStarted || Tier2Probe.isRunning()) return
+        val creds = relayCreds
+        if (creds == null) {
+            Diagnostics.log("warn", "后台原生承载：等待页面移交 relay 凭证")
+            return
+        }
+        if (age >= STALL_SILENCE_MS) {
+            Diagnostics.log(
+                "warn",
+                "后台原生承载：入站帧静默 ${age / 1000}s（门槛 ${STALL_SILENCE_MS / 1000}s，" +
+                    "Chromium 网络栈已死）——原生接管 relay 连接并订阅在跑会话，推到流体云",
+            )
+        }
+        startNativeCarrier(creds, early = age < STALL_SILENCE_MS)
+    }
+
+    // ------------------------------------------------- 承载期间的 wake lock
+    //
+    // 为什么需要：承载走通之后，瓶颈从"Chromium 网络栈在后台死掉"变成"**熄屏后 CPU 睡眠**"。
+    // 前台服务（specialUse）只保证**进程**活着，不保证 **CPU 醒着**：CPU 一睡，原生的
+    // 12s 心跳与上游帧读取都会停，桌面端约 60s 后就判死——那就等于在锁屏场景下白做。
+    // docs/15 §7.1 的官方基线里正有这一条：`PARTIAL_WAKE_LOCK`「even after the user
+    // presses the power button」。
+    //
+    // 纪律：**只在这两种条件同时成立时持有**——① 应用在后台或熄屏（`userIsAway()`）
+    // 且 ② 原生承载在跑。前台一律不持有；交还/停止/失败路径都会释放（见
+    // [releaseCarrierWakeLock] 与 `clearCarrierState`）。
+
+    private var carrierWakeLock: android.os.PowerManager.WakeLock? = null
+
+    private fun acquireCarrierWakeLock() {
+        if (carrierWakeLock?.isHeld == true) return
+        try {
+            val pm = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            val lock = pm.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                "zcode-remote:carrier",
+            )
+            lock.setReferenceCounted(false)
+            lock.acquire()
+            carrierWakeLock = lock
+            Diagnostics.log("info", "后台原生承载：已持有 PARTIAL_WAKE_LOCK（熄屏下心跳才能继续跑）")
+        } catch (e: Exception) {
+            // 权限没给 / 系统拒绝都不致命：承载照跑，只是熄屏后可能被 CPU 睡眠拖住。
+            Diagnostics.log("warn", "申请 wake lock 失败（熄屏可能被挂起）: ${e.message}")
+        }
+    }
+
+    private fun releaseCarrierWakeLock() {
+        val lock = carrierWakeLock ?: return
+        carrierWakeLock = null
+        try {
+            if (lock.isHeld) {
+                lock.release()
+                Diagnostics.log("info", "后台原生承载：已释放 wake lock")
+            }
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "释放 wake lock 失败: ${e.message}")
+        }
+    }
+
+    /** 交还时清账（由 [onAppForegroundChanged] 的前台分支调用）。 */
+    private fun clearCarrierState() {
+        handoff.releaseCarrier()
+        releaseCarrierWakeLock()
+        carrierStarted = false
+        carrierStartedEarly = false
+        handbackDeferredLogged = false
+    }
+
+    /**
+     * 原生网络自检（**不经 Chromium**）：先裸 TCP 连 relay host 的 443，再发一次 HTTPS GET。
+     *
+     * 为什么要原生再做一遍：墙内的页面 `fetch` 76 秒既不成功也不失败（真机 2026-09-15
+     * 23:54:43→23:55:59），那既可能是"平台把 App 的网络掐了"，也可能是"Chromium 的
+     * 网络栈在后台停了"。裸 TCP 是纯 Java 侧的判据，两者一分就清楚：
+     *   · 裸 TCP 也连不上 ⇒ 包被丢了，App 在后台整体没网（换谁承载连接都救不了）；
+     *   · 裸 TCP 秒连、只有那条 relay 连接死 ⇒ 只是那条连接坏了，重拨即可。
+     */
+    fun nativeNetProbe(tag: String) {
+        val raw = try {
+            prefs.remoteUrl
+        } catch (e: Exception) {
+            null
+        }
+        val host = try {
+            android.net.Uri.parse(raw.orEmpty()).host
+        } catch (e: Exception) {
+            null
+        } ?: "zcode.z.ai"
+        Thread {
+            val tcpStart = SystemClock.elapsedRealtime()
+            val tcp = try {
+                java.net.Socket().use { socket ->
+                    socket.connect(java.net.InetSocketAddress(host, 443), 5000)
+                    "ok ${SystemClock.elapsedRealtime() - tcpStart}ms"
+                }
+            } catch (e: Exception) {
+                "失败 ${SystemClock.elapsedRealtime() - tcpStart}ms ${e.javaClass.simpleName}: ${e.message}"
+            }
+            val httpStart = SystemClock.elapsedRealtime()
+            val http = try {
+                val conn = java.net.URL("https://$host/remote/v4?__zcprobe=${System.currentTimeMillis()}")
+                    .openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("Cache-Control", "no-store")
+                val code = conn.responseCode
+                conn.disconnect()
+                "HTTP $code ${SystemClock.elapsedRealtime() - httpStart}ms"
+            } catch (e: Exception) {
+                "失败 ${SystemClock.elapsedRealtime() - httpStart}ms ${e.javaClass.simpleName}: ${e.message}"
+            }
+            Diagnostics.log("warn", "原生网络自检[$tag] host=$host 裸TCP=$tcp · HTTPS=$http")
+        }.start()
+    }
+
+    /**
+     * 推动页面走它自己的恢复路径。这是本版唯一的"写页面连接"动作，**如今只能由 adb
+     * 手动触发**（`nudge_now` / `nudge_close`，见 [runNativeDiag]）——原来那条"后台失速
+     * 自动推动"的联动已删，所以它是**取证诊断件**，不是自动恢复路径。
+     */
+    fun nudgePageRecovery(reason: String, mode: String = "event") {
+        if (jsEvaluator == null) {
+            Diagnostics.log("warn", "恢复推动跳过（JS 求值通道未就绪）：$reason")
+            return
+        }
+        evaluateJs(
+            "window.__zcodeShellNudgeRecover && window.__zcodeShellNudgeRecover(" +
+                JSONObject.quote(mode) + ");",
+        )
+    }
+
+    /**
+     * 背景可调用的原生命令（adb broadcast 走 [DiagReceiver]，不经 Activity——
+     * `am start` 会把退到后台的应用拉回前台，正好毁掉要测的后台现场）。
+     *
+     * @return true 表示这条命令由原生侧处理完毕，调用方不必再转给注入层。
+     */
+    fun runNativeDiag(cmd: String): Boolean {
+        // 带参指令走前缀匹配（下面的 `when` 只做精确匹配）。
+        if (cmd.startsWith("coverage_ws:")) {
+            val list = cmd.substringAfter(':').split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            coverageOverride = list
+            Diagnostics.log(
+                "warn",
+                "多工作区覆盖：诊断覆盖清单已设为 " +
+                    (if (list.isEmpty()) "(空)" else list.joinToString()) + "（${list.size} 座）",
+            )
+            return true
+        }
+        if (cmd == "coverage_ws_clear") {
+            coverageOverride = emptyList()
+            Diagnostics.log("warn", "多工作区覆盖：已清空诊断覆盖清单")
+            return true
+        }
+        when (cmd) {
+            // Tier2 原生直连实验（保留原语义）。
+            "tier2_test" -> {
+                startTier2Probe(60_000L)
+                return true
+            }
+            "tier2_stop" -> {
+                stopTier2Probe()
+                return true
+            }
+            "tier2_takeover" -> {
+                startTier2TakeoverForTest(90_000L)
+                return true
+            }
+            // 后台原生承载的开关与手动触发。
+            "carrier_on" -> {
+                setCarrierEnabled(true)
+                return true
+            }
+            "carrier_off" -> {
+                setCarrierEnabled(false)
+                return true
+            }
+            // 多工作区覆盖（docs/17 的方向）：默认关，验证通过再谈改默认。
+            "multi_ws_on" -> {
+                multiWorkspaceCoverage = true
+                Diagnostics.log(
+                    "warn",
+                    "多工作区覆盖：已开启（page ∪ 在跑任务，上限 $MULTI_WS_COVERAGE_CAP）",
+                )
+                return true
+            }
+            "multi_ws_off" -> {
+                multiWorkspaceCoverage = false
+                Diagnostics.log("warn", "多工作区覆盖：已关闭（只开页面工作区）")
+                return true
+            }
+            "carrier_now" -> {
+                Diagnostics.log("warn", "后台原生承载（adb 手动触发）")
+                val creds = relayCreds
+                if (creds == null) {
+                    Diagnostics.log("warn", "后台原生承载：凭证未就绪")
+                } else {
+                    val age = lastInboundAgeMs()
+                    val targets = carrierCoverageTargets()
+                    Diagnostics.log(
+                        "warn",
+                        "后台原生承载：手动接管（页面入站帧 " +
+                            (if (age == null) "未知" else "${age / 1000}s 前") + "，" +
+                            (if (targets.isEmpty()) "覆盖=页面工作区" else "覆盖=${targets.joinToString()}") + "）",
+                    )
+                    carrierStarted = true
+                    acquireCarrierWakeLock()
+                    Tier2Probe.start(
+                        creds,
+                        durationMs = 0L,
+                        onlyWorkspace = pageWorkspaceKey,
+                        onlyTaskId = pageWorkspaceTaskId,
+                        coverageWorkspaces = targets,
+                        coverageIsDiagnostic = coverageOverride.isNotEmpty(),
+                    )
+                    startLiveProgressPolling()
+                }
+                return true
+            }
+            "nudge_now" -> {
+                Diagnostics.log("warn", "恢复推动（adb 手动触发）")
+                nudgePageRecovery("adb", "event")
+                return true
+            }
+            "nudge_close" -> {
+                Diagnostics.log("warn", "恢复推动（adb 手动触发，close 档）")
+                nudgePageRecovery("adb-close", "close")
+                return true
+            }
+            "net_probe" -> {
+                nativeNetProbe("adb")
+                return true
+            }
+            // WebView 远程调试（CDP）开关：验收"造流"要用它——adb 的 input text 进不了
+            // WebView 的输入框（真机实测两次），而 CDP 的 Input.insertText 是渲染器认的
+            // 真实输入。这是**测试通道**，用完记得关（设置页里也有同一个开关）。
+            "wvdebug_on" -> {
+                try {
+                    prefs.webViewDebugging = true
+                    android.webkit.WebView.setWebContentsDebuggingEnabled(true)
+                    Diagnostics.log(
+                        "warn",
+                        "WebView 远程调试已开启（CDP）——adb forward 后可用 tools/cdp.mjs 驱动页面",
+                    )
+                } catch (e: Exception) {
+                    Diagnostics.log("warn", "开启 WebView 远程调试失败: ${e.message}")
+                }
+                return true
+            }
+            "wvdebug_off" -> {
+                try {
+                    prefs.webViewDebugging = false
+                    Diagnostics.log("warn", "WebView 远程调试开关已关闭（重启应用后生效）")
+                } catch (e: Exception) {
+                    Diagnostics.log("warn", "关闭 WebView 远程调试失败: ${e.message}")
+                }
+                return true
+            }
+            "stall_state" -> {
+                val age = lastInboundAgeMs()
+                Diagnostics.log(
+                    "info",
+                    "后台承载状态：开关=$carrierEnabled 已接管=$carrierStarted " +
+                        "Tier2在跑=${Tier2Probe.isRunning()} " +
+                        "多工作区=$multiWorkspaceCoverage 覆盖=${carrierCoverageTargets().joinToString()} " +
+                        "入站帧=${if (age == null) "未知" else "${age / 1000}s 前"}",
+                )
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * 把指令转给注入层（`__zcodeShellDiag`）。注入脚本要等页面 boot 完才就绪，
+     * 所以这里自带重试（最多 40 次 × 600ms）——**这是两条 adb 通道共用的那一份口径**：
+     * 后台通道（[DiagReceiver]）直接调它，前台通道（`MainActivity.runDiagCommand`）
+     * 也不例外地委派过来，两处不再各留一份，避免漂移。
+     */
+    fun dispatchJsDiag(cmd: String, attempt: Int = 0) {
+        if (jsEvaluator == null) {
+            Diagnostics.log("warn", "诊断指令无处执行（JS 求值通道未就绪）：$cmd")
+            return
+        }
+        if (!isInjectedReady()) {
+            if (attempt >= 40) {
+                Diagnostics.log("warn", "放弃诊断指令（注入脚本未就绪）：$cmd")
+                return
+            }
+            mainHandler.postDelayed({ dispatchJsDiag(cmd, attempt + 1) }, 600L)
+            return
+        }
+        evaluateJs(
+            "window.__zcodeShellDiag && window.__zcodeShellDiag(" + JSONObject.quote(cmd) + ");",
+        )
+    }
+
+    /**
+     * Only one Activity owns the WebView, so it registers a tiny evaluator here
+     * instead of the runtime holding a reference to a view (which would leak the
+     * Activity across a configuration change).
+     */
+    @Volatile
+    private var jsEvaluator: ((String) -> Unit)? = null
+
+    private var pageReloader: (() -> Unit)? = null
+    private var pageReloadEpoch = -1L
+    private var pageReloadExpected = false
+
+    fun expectPageReload() {
+        pageReloadExpected = true
+    }
+
+    fun setPageReloader(reloader: (() -> Unit)?) {
+        pageReloader = reloader
+    }
+
+    private fun requestPageReload(reason: String, epoch: Long) {
+        if (!handoff.isCurrent(epoch, false) || pageReloadEpoch == epoch) return
+        if (pageReloader == null) return
+        pageReloadEpoch = epoch
+        // 不加延时；让同一生命周期事务内的新 Intent 有机会提供通知定位目标。
+        mainHandler.post {
+            if (!handoff.isCurrent(epoch, false) || userIsAway()) return@post
+            val reloader = pageReloader ?: return@post
+            Diagnostics.info("快速交接：开始网页重载（切换后 ${SystemClock.elapsedRealtime() - handoffChangedAt}ms）· $reason")
+            reloader()
+        }
+    }
+
+    /** The next document restores the known chat route before the page's bootstrap. */
+    fun shouldRestoreChatOnLoad(): Boolean =
+        !userIsAway() && readViewAtLeave()?.optBoolean("chat") == true
+
+    private fun maybeStartHandoffCarrier(epoch: Long) {
+        if (!handoff.isCurrent(epoch, true) || !userIsAway() || !carrierEnabled) return
+        if (Tier2Probe.isRunning()) return
+        if (store.runningTaskRefs().isEmpty() && !store.staleGateHold().holds) return
+        val creds = relayCreds ?: return
+        if (!handoff.claimCarrier(epoch)) return
+        Diagnostics.info("快速交接：开始原生接管（切换后 ${SystemClock.elapsedRealtime() - handoffChangedAt}ms）")
+        startNativeCarrier(creds, early = true)
+    }
+
+    private fun startNativeCarrier(creds: RelayCreds, early: Boolean) {
+        val carrierEpoch = handoff.epoch
+        carrierStarted = true
+        carrierStartedEarly = early
+        carrierRanThisStint = true
+        handbackDeferredLogged = false
+        acquireCarrierWakeLock()
+        Tier2Probe.start(
+            creds,
+            durationMs = 0L,
+            onlyWorkspace = pageWorkspaceKey,
+            onlyTaskId = pageWorkspaceTaskId,
+            coverageWorkspaces = carrierCoverageTargets(),
+            coverageIsDiagnostic = coverageOverride.isNotEmpty(),
+            onPaired = {
+                mainHandler.post {
+                    if (!handoff.isCurrent(carrierEpoch, true) || !userIsAway() || !Tier2Probe.isRunning()) return@post
+                    if (handoffCover.carrierMatched(carrierEpoch, true, pageDocumentId)) {
+                        notifyHandoffCover("本轮后台原生配对确认，显示 logo")
+                    }
+                }
+            },
+            onKicked = {
+                mainHandler.post {
+                    if (handoffCover.carrierKicked(carrierEpoch)) {
+                        notifyHandoffCover("原生连接也被踢出，保留网页冲突提示")
+                    }
+                }
+            },
+        )
+        startLiveProgressPolling()
+    }
+
+    fun setJsEvaluator(evaluator: ((String) -> Unit)?) {
+        jsEvaluator = evaluator
+    }
+
+    /** Tier2 原生直连 relay 的凭证（注入层移交，仅内存，不落日志）。 */
+    @Volatile
+    private var relayCreds: RelayCreds? = null
+
+    /**
+     * 用户是否已经离开（接管的前置条件）：应用在后台，**或屏幕已熄灭**。
+     *
+     * 屏幕熄灭这一条是 2026-09-13 真机补上的：应用名义上还在前台时原生泵不
+     * 启动，而熄屏会让渲染器定时器整体挂起——注入层连"我停了"都报不出来，
+     * 流体云随之定格（日志停在熄屏那一刻）。后台与熄屏必须同等对待。
+     */
+    private fun screenIsInteractive(): Boolean {
+        val power = appContext.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        return power?.isInteractive != false
+    }
+
+    private fun userIsAway(): Boolean =
+        !screenIsInteractive() || (!appIsForeground && !handoff.foregroundArrivalPending)
+
+    /**
+     * 4c（Q15 用户追加裁定）：把"用户是否已离开"这个**闸门自己的口径**同步给 [store]。
+     *
+     * 为什么必须是 [userIsAway] 而不是别的事件：接管闸门的前置条件就是它（后台**或熄屏**），
+     * 而"陈旧读数可信窗口"只在闸门真正在判定的那段时间里才有意义。若换一个更窄的信号
+     * （典型错误：拿 `MainActivity.onPause` 打点——它在本应用里连"退到后台"都不等于：
+     * 前后台由 [ZcodeRemoteApp] 的 Application 级 started 计数决定，**开设置页也会
+     * onPause**，那时闸门压根不在判定），就会出现"窗口武装了但闸门不在判定"的错位，
+     * 保护是假的。
+     *
+     * 三个调用点全部取自同一个 [userIsAway]（见各自注释），所以两侧永远同源。
+     */
+    private fun syncAwayStateToStore() {
+        store.setBackgrounded(userIsAway())
+    }
+
+    /** Tier1 静默看门狗：每 5s 一跳，前台/后台/熄屏都在岗。 */
+    private val tier1Watchdog = object : Runnable {
+        override fun run() {
+            try {
+                val away = userIsAway()
+                // 4c（Q15）：把**同一个** [away] 值同步给 store。这一跳是熄屏/亮屏唯一的
+                // 观察点（屏幕状态没有生命周期回调），也是"回前台提前收窗口"的兜底拍。
+                // 有意复用这里的局部量、而不是再调一次 [syncAwayStateToStore]：下面 if/else
+                // 判的就是这个值，两边必须是同一份读数。
+                store.setBackgrounded(away)
+                onUserPresenceChanged()
+            } catch (e: Exception) {
+                Diagnostics.log("warn", "Tier1 看门狗异常: ${e.message}")
+            }
+            mainHandler.postDelayed(this, 5_000L)
+        }
+    }
+
+    fun startTier1Watchdog() {
+        mainHandler.removeCallbacks(tier1Watchdog)
+        mainHandler.postDelayed(tier1Watchdog, 5_000L)
+    }
+
+    /** 诊断指令 tier2_test：原生直连探针跑一轮（默认 60s 自动关闭）。 */
+    fun startTier2Probe(durationMs: Long = 60_000L) {
+        val c = relayCreds
+        if (c == null) {
+            Diagnostics.log("warn", "Tier2: 凭证未就绪（页面还没移交 relaycreds），稍后重试")
+            return
+        }
+        carrierRanThisStint = true
+        Tier2Probe.start(c, durationMs)
+    }
+
+    fun stopTier2Probe() {
+        Tier2Probe.stop("手动停止")
+    }
+
+    /**
+     * 诊断指令 tier2_takeover：接管语义（桥覆盖 + 会话事件）跑固定时长后自动交还。
+     * 诊断命令会伴随页面重载，凭证由页面重新移交——等它到达再启动（最多 5 次）。
+     */
+    fun startTier2TakeoverForTest(autoStopMs: Long = 90_000L, attempt: Int = 1) {
+        if (relayCreds == null) {
+            Diagnostics.log("info", "Tier2: 等待凭证重发（第 $attempt 次，页面重载中）")
+            if (attempt > 5) {
+                Diagnostics.log("warn", "Tier2: 凭证始终未到，放弃启动接管验证")
+                return
+            }
+            mainHandler.postDelayed({
+                startTier2TakeoverForTest(autoStopMs, attempt + 1)
+            }, 2_000L)
+            return
+        }
+        val c = relayCreds ?: run {
+            Diagnostics.log("warn", "Tier2: 凭证未就绪，无法启动接管验证")
+            return
+        }
+        carrierRanThisStint = true
+        Tier2Probe.startTakeoverForTest(c, autoStopMs)
+    }
+
+    fun evaluateJs(script: String) {
+        val evaluator = jsEvaluator
+        if (evaluator == null) {
+            Diagnostics.log("debug", "尚无 WebView，跳过脚本执行")
+            return
+        }
+        mainHandler.post {
+            try {
+                evaluator(script)
+            } catch (e: Exception) {
+                Diagnostics.log("warn", "执行注入脚本失败: ${e.message}")
+            }
+        }
+    }
+
+    // ------------------------------------------------------- page state -> bar
+    //
+    // The main screen has no app bar, so the strip behind the status bar must
+    // carry the remote page's top-surface colour. The injected layer reports the
+    // state and theme by NAME (see inject.js section 6); only the Activity can
+    // paint, and it is not always alive, so the report is dropped when it is not.
+
+    private val handoffCover = HandoffCoverState()
+    @Volatile
+    private var pageDocumentId = ""
+    private var handoffCoverListener: ((Boolean) -> Unit)? = null
+    private var handoffPresentationListener: ((String, Long) -> Unit)? = null
+
+    fun setHandoffCoverListener(listener: ((Boolean) -> Unit)?) {
+        handoffCoverListener = listener
+        listener?.invoke(handoffCover.visible)
+    }
+
+    fun setHandoffPresentationListener(listener: ((String, Long) -> Unit)?) {
+        handoffPresentationListener = listener
+    }
+
+    fun onHandoffPagePresented(document: String, ticket: Long) {
+        if (handoffCover.pagePresented(document, ticket)) notifyHandoffCover("新文档首帧已绘制，交回网页自身展示")
+    }
+
+    fun onHandoffPageStarted() {
+        handoffCover.pageStarted()
+    }
+
+    fun dismissHandoffCover(reason: String) {
+        if (handoffCover.clear()) notifyHandoffCover(reason)
+    }
+
+    private fun notifyHandoffCover(reason: String) {
+        Diagnostics.info("交接过渡：$reason")
+        handoffCoverListener?.invoke(handoffCover.visible)
+    }
+
+    private fun onHandoffPresentation(data: JSONObject) {
+        val document = data.optString("documentId")
+        val presentation = data.optString("presentation")
+        mainHandler.post {
+            if (document != pageDocumentId) return@post
+            if (presentation == "logo" || presentation == "page") {
+                handoffCover.renderedCandidate(document)?.let { ticket ->
+                    handoffPresentationListener?.invoke(document, ticket)
+                }
+            }
+        }
+    }
+
+    /** (page state token, theme token) -> the Activity that paints the strip. */
+    @Volatile
+    private var pageStateListener: ((String, String) -> Unit)? = null
+
+    fun setPageStateListener(listener: ((String, String) -> Unit)?) {
+        pageStateListener = listener
+    }
+
+    private fun onPageState(state: String, theme: String) {
+        if (state.isEmpty()) return
+        try {
+            pageStateListener?.invoke(state, theme)
+        } catch (e: Exception) {
+            // A listener that throws must not break the WebView's JS bridge.
+            Diagnostics.log("warn", "应用页面状态失败: ${e.message}")
+        }
+    }
+
+    /** One-line readout for the settings screen. */
+    fun livenessSummary(): String {
+        val snapshot = liveness ?: return "尚未收到注入层数据（网页可能还没加载完）"
+        val ageMs = lastInboundAgeMs()
+        val ageText = when {
+            ageMs == null -> "从未收到帧"
+            ageMs < 5000 -> "刚刚"
+            else -> "${formatDuration(ageMs)}前"
+        }
+        val link = when {
+            snapshot.socketState != 1 && snapshot.socketState != -1 -> "socket 未连接"
+            ageMs != null && ageMs > STALE_READOUT_MS -> "链路可能已断"
+            snapshot.paired -> "已配对"
+            else -> "未配对"
+        }
+        return "最近收帧 $ageText · 累计 ${snapshot.inboundFrames} 帧 · " +
+            "配对确认 ${snapshot.pairAcks} 次 · 重连 ${snapshot.socketsClosed} 次 · $link"
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return when {
+            hours > 0 -> "$hours 小时 $minutes 分"
+            minutes > 0 -> "$minutes 分 $seconds 秒"
+            else -> "$seconds 秒"
+        }
+    }
+
+    /** Shortest background window that produces a meaningful verdict. */
+    private const val VERDICT_MIN_BACKGROUND_MS = 60_000L
+
+    /** A quiet link for longer than this is called out in the readout. */
+    private const val STALE_READOUT_MS = 120_000L
+
+    fun init(context: Context) {
+        if (::appContext.isInitialized) return
+        appContext = context.applicationContext
+        prefs = Prefs(appContext)
+        notifier = Notifier(appContext)
+        notifier.ensureChannels()
+        startTier1Watchdog()
+    }
+
+    fun prefs(): Prefs = prefs
+
+    fun notifier(): Notifier = notifier
+
+    // ------------------------------------------------------------ bridge input
+
+    /**
+     * Entry point for everything the injected script reports. Never throws: a
+     * malformed message must not break the WebView's JS bridge.
+     */
+    fun onBridgeMessage(json: String) {
+        try {
+            val root = JSONObject(json)
+            when (root.optString("event")) {
+                "sessions" -> onSessions(root.optJSONObject("data"))
+                "status" -> onStatus(root.optJSONObject("data"))
+                "liveness" -> root.optJSONObject("data")?.let { onLiveness(it) }
+                "diag" -> {
+                    val data = root.optJSONObject("data") ?: return
+                    Diagnostics.log(data.optString("level", "info"), data.optString("message", ""))
+                }
+                "pagelog" -> {
+                    // The page's own log sink (window.zcode.log). In the
+                    // production build this is the ONLY outlet the page's
+                    // lifecycle events have — console is short-circuited — so
+                    // before this sink existed the page's account of "I broke /
+                    // I'm retrying" was silently dropped (docs/05 audit).
+                    val data = root.optJSONObject("data") ?: return
+                    val args = data.optJSONArray("args")
+                    val parts = ArrayList<String>(args?.length() ?: 0)
+                    for (i in 0 until (args?.length() ?: 0)) {
+                        val part = args!!.optString(i)
+                        if (part.isNotEmpty()) parts.add(part)
+                    }
+                    Diagnostics.log(
+                        data.optString("level", "info"),
+                        "页面: " + parts.joinToString(" ").take(600),
+                    )
+                }
+                "convtext" -> {
+                    // 网页自己那条对话流里的"最新一段 AI 正文"——注入层从**页面自带的**
+                    // 订阅里解出来（见 zcode-protocol.js 的 _trackConversationText）。
+                    // 它走的是页面那条 socket，所以前后台都能用，也不涉及第二条连接
+                    // → 不会再触发单控制端互斥（KICKED）。会话索引的 preview 只在
+                    // 轮次边界变，流式进度只能靠这条补上。
+                    val data = root.optJSONObject("data") ?: return
+                    val text = data.optString("text")
+                    if (text.isEmpty()) return
+                    val sessionId = data.optString("topic").substringAfterLast('/')
+                    if (sessionId.isEmpty()) return
+                    onConversationText(sessionId, text)
+                }
+                "pagews" -> {
+                    // 页面**自己**正在显示的工作区（来自它自己的 workspace-bridge-open 帧）。
+                    // 后台原生承载只该为这一个开桥：真机 2026-09-16 定案——扫全部工作区会让
+                    // 桌面端把 host 收掉（docs/16 §8/§10）。这是凭证无关的键名，可以进日志。
+                    val data = root.optJSONObject("data") ?: return
+                    val key = data.optString("key")
+                    if (key.isEmpty()) return
+                    pageWorkspaceKey = key
+                    pageWorkspaceTaskId = data.optString("taskId")
+                    Diagnostics.log("info", "页面当前工作区（原生承载的唯一目标）：$key")
+                }
+                "viewsnap" -> {
+                    // 档 0 观测（2026-09-19）：页面在"离开前台/回到前台"那一刻的视图快照。
+                    // 为什么需要它、以及两个时序坑（接管会让页面退出对话视图、前台期间
+                    // 壳零周期性观测），见 [onAppForegroundChanged] 里 onViewSnapshot 的注释。
+                    val data = root.optJSONObject("data") ?: return
+                    if (data.optLong("epoch", -1L) != handoff.epoch) return
+                    onViewSnapshot(data.optString("phase"), data.optJSONObject("snap"))
+                }
+                "controllertasks" -> {
+                    // 第三条源：**页面自己订的** `controller/tasks-index`（全局运行态整表）。
+                    // 为什么必须有它：壳原来的两条腿是「页面正在听的那一个工作区的
+                    // sessions-index」+「已订阅会话的 turnHeader.state」，于是用户在**别的**
+                    // 工作区里继续跑任务时，壳里 `runningTaskRefs()` 是空的（真机 2026-09-18
+                    // 09:14：页面 7 个工作区 41 个任务、任务正在 default 里跑，壳只看到 MiMo
+                    // 的 2 个已完成）。这条帧页面本来就收，解析复用 `ControllerTasksState`。
+                    // 纯被动：不产生任何协议写入，缺口也不重同步（页面自己会补快照）。
+                    val data = root.optJSONObject("data") ?: return
+                    onPageControllerFrame(data)
+                }
+                "pagevitals" -> {
+                    // DOM 体征快照（注入层 postPageVitals 上报）。4b（2026-09-18）后 why 只有三种：
+                    // stalled（卡态边沿，心跳立刻一帧）/ periodic（挂在后台心跳上，每 60s 一帧）/
+                    // giveup（§5b 末档记账）。旧值 arm / cancel 已随看门狗决策机器删除，别再按它们检索。
+                    val data = root.optJSONObject("data") ?: return
+                    Diagnostics.log(
+                        "debug",
+                        "页面体征(${data.optString("why")}): ${data.optJSONObject("vitals")}",
+                    )
+                }
+                "relaycreds" -> {
+                    // Tier2（原生直连 relay）凭证：注入层移交，仅驻内存。
+                    // 任何日志路径都不得打印这些字段（sid/hash/mid 红线）。
+                    val data = root.optJSONObject("data") ?: return
+                    val wsUrl = data.optString("url")
+                    val deviceSid = data.optString("deviceSid")
+                    val passHash = data.optString("passHash")
+                    if (wsUrl.isEmpty() || deviceSid.isEmpty() || passHash.isEmpty()) {
+                        Diagnostics.log("warn", "Tier2: relaycreds 字段不全，忽略")
+                        return
+                    }
+                    if (Tier2Probe.isRunning()) {
+                        Diagnostics.log("debug", "Tier2: 接管期间忽略页面凭证刷新")
+                        return
+                    }
+                    relayCreds = RelayCreds(
+                        wsUrl = wsUrl,
+                        deviceSid = deviceSid,
+                        passHash = passHash,
+                        deviceMid = data.optString("deviceMid").ifBlank { null },
+                    )
+                    Tier2Probe.sessionsSink = { update -> acceptNativeSessions(update) }
+                    mainHandler.post { maybeStartHandoffCarrier(handoff.epoch) }
+                    Diagnostics.log("info", "Tier2: relay 凭证已接收（仅内存）")
+                }
+                "pagestate" -> {
+                    // Which visual state the page is in, and which theme it
+                    // resolved for itself. Names only — the colour table lives in
+                    // core/PageBarColor.kt and the Activity applies it.
+                    val data = root.optJSONObject("data") ?: return
+                    onPageState(data.optString("state"), data.optString("theme"))
+                    onHandoffPresentation(data)
+                }
+                "pagefailure" -> {
+                    val data = root.optJSONObject("data") ?: return
+                    val failureEpoch = handoff.epoch
+                    val document = data.optString("documentId")
+                    mainHandler.post {
+                        if (document != pageDocumentId) return@post
+                        var unownedConflict = false
+                        if (failureEpoch == handoff.epoch && data.optString("kind") == "kicked" &&
+                            !carrierStarted && !Tier2Probe.isRunning()) {
+                            // A conflict known before our own attempt is not ours to mask.
+                            unownedConflict = handoffCover.carrierKicked(handoff.epoch)
+                        }
+                        if (handoffCover.pageFailed(document, data.optBoolean("foreground")) || unownedConflict) {
+                            notifyHandoffCover("网页报告 ${data.optString("kind")}，保留原有提示")
+                        }
+                    }
+                }
+                "ready" -> {
+                    val data = root.optJSONObject("data") ?: return
+                    pageDocumentId = data.optString("documentId")
+                    val document = pageDocumentId
+                    mainHandler.post { handoffCover.pageReady(document) }
+                    onPageReloaded()
+                    injectionReadiness.markReady()
+                    Diagnostics.log(
+                        "info",
+                        "注入脚本已就绪 (href=${data.optString("href").ifEmpty { "?" }})",
+                    )
+                }
+                else -> Unit
+            }
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "无法解析注入脚本消息: ${e.message}")
+        }
+    }
+
+    /** Tier2 原生任务事件入口（M3c）：更新形状与注入层 post('sessions') 同构。 */
+    fun acceptNativeSessions(update: JSONObject) {
+        onSessions(update)
+    }
+
+    /**
+     * 页面自己订的 `controller/tasks-index`（第三条源，2026-09-18）。
+     *
+     * 状态机用的是 [ControllerTasksState]（snapshot / deltas / 缺口判定都有单测；
+     * 原先 Tier2 侧那份**壳自己订**的订阅已于 4a 轮删除，这个状态机现在只服务本页路径），
+     * 所以这里只做三件事：喂帧、把整表投影交给 [TaskStore.applyLiveTasks]、发布。
+     *
+     * **不设 `userIsAway()` 门槛**：前台的页面本来就在收这条流，而"用户正在别的客户端上
+     * 跑任务、手机上却什么都没有"恰恰是前台现场。也**不做重同步**——只读壳不写页面协议；
+     * 缺口丢弃即可，页面自己的订阅很快会补一份快照。
+     */
+    private val pageControllerTasks = com.zcode.remote.core.ControllerTasksState()
+
+    private var lastPageLiveRunning = -1
+
+    private fun onPageControllerFrame(wire: JSONObject) {
+        if (!pageControllerTasks.applyWire(wire)) return
+        val tasks = pageControllerTasks.liveTasks()
+        val running = tasks.count { it.phase in com.zcode.remote.core.NotifyState.RUNNING_PHASES }
+        if (running != lastPageLiveRunning) {
+            lastPageLiveRunning = running
+            val keys = tasks.filter { it.phase in com.zcode.remote.core.NotifyState.RUNNING_PHASES }
+                .map { it.workspaceKey }
+                .distinct()
+                .joinToString(" | ")
+            Diagnostics.log(
+                "info",
+                "页面运行态：${tasks.size} 个任务 · 在跑 $running 个" +
+                    (if (keys.isEmpty()) "" else "（$keys）"),
+            )
+        }
+        applyUpdate(store.applyLiveTasks(tasks))
+    }
+
+    private fun onSessions(data: JSONObject?) {
+        if (data == null) return
+        val key = data.optString("key")
+        if (key.isEmpty()) return
+        val array: JSONArray = data.optJSONArray("sessions") ?: JSONArray()
+        val tasks = ArrayList<TaskSnapshot>(array.length())
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val sessionId = item.optString("sessionId")
+            if (sessionId.isEmpty()) continue
+            tasks.add(
+                TaskSnapshot(
+                    sessionId = sessionId,
+                    title = item.optString("title"),
+                    phase = item.optString("phase"),
+                    preview = item.optString("preview"),
+                    pendingInteractionId = item.optString("pendingInteractionId"),
+                    lastActivityAt = item.optLong("lastActivityAt"),
+                )
+            )
+        }
+        logPhaseHistogram(key, tasks)
+        val update = store.applyWorkspace(
+            key = key,
+            title = data.optString("title"),
+            path = data.optString("workspacePath"),
+            identity = data.optString("workspaceIdentity"),
+            source = data.optString("source"),
+            tasks = tasks,
+            // 4c（Q13/Q15）：注入层两个新字段，缺字段 = false（老载荷语义不变）。
+            // `staleOnly=true` 是"仅标记帧"——TaskStore 只记陈旧、**不落地这份冻结的旧列表**
+            // （它自己会再判一次 `stale || staleOnly`，这里漏写也不会造成降级）。
+            stale = data.optBoolean("stale"),
+            staleOnly = data.optBoolean("staleOnly"),
+        )
+        applyUpdate(update)
+    }
+
+    /** Last phase histogram logged per workspace, so the line is written on change only. */
+    private val lastPhaseHistogram = HashMap<String, String>()
+
+    /**
+     * What each workspace actually reports, phase by phase.
+     *
+     * This exists because of a real question the phone raised on 2026-09-12: the
+     * remote page showed a task as 运行中 while the shell had no running-task
+     * notification for it. Whether that is a phase we do not classify as running,
+     * a task the sessions-index carries outside its `sessions` array, or a frame
+     * we never see at all, is not answerable from the outside — `RUNNING_PHASES`
+     * is a guess about someone else's protocol, and this line is what turns it
+     * into something checkable. Deduped per workspace so it stays a change log.
+     */
+    private fun logPhaseHistogram(key: String, tasks: List<TaskSnapshot>) {
+        val counts = LinkedHashMap<String, Int>()
+        for (task in tasks) {
+            val phase = task.phase.ifEmpty { "(空)" }
+            counts[phase] = (counts[phase] ?: 0) + 1
+        }
+        val line = tasks.size.toString() + " 个任务 · " +
+            counts.entries.joinToString(" / ") { "${it.key}×${it.value}" }
+        if (lastPhaseHistogram[key] == line) return
+        lastPhaseHistogram[key] = line
+        Diagnostics.log("debug", "工作区相位 $key：$line")
+    }
+
+    private fun onStatus(data: JSONObject?) {
+        if (data == null) return
+        // 2026-09-17：`active` 字段随 D7「订阅所有工作区」开关一起删除——注入层现在
+        // **恒被动**（只读壳契约），这个字段只会永远是 false，留着就是误导。去重因此
+        // 改成对整行摘要做，让"变化"进 info 档、重复的 reason 仍留在 debug 档。
+        // 4c（2026-09-18）：`bridges` 字段随**桥路由子系统**一并移除。它统计的是"壳自己开着的桥数"，
+        // 而只读壳下 `_bridges` 恒空 ⟹ 它**结构性恒 0**，是一个永远报 0 的假指标。
+        // 注入层的 `_emitStatus` 已不再产出该字段；这里若继续读，只会拿到默认值 0 并**照旧打印
+        // `bridges=0`**——那正是"假指标"最坏的形态（看起来有读数，其实恒零）。
+        val passive = data.optInt("passive", 0)
+        val reason = data.optString("reason")
+        val line = "订阅状态 passive=$passive" +
+            (if (reason.isEmpty()) "" else " ($reason)")
+        if (line != lastInjectStatusLine) {
+            lastInjectStatusLine = line
+            Diagnostics.info(line)
+        } else if (reason.isNotEmpty()) {
+            Diagnostics.log("debug", line)
+        }
+    }
+
+    private fun applyUpdate(update: TaskStore.Update) {
+        // Completions and attention go out immediately: they are the reason the
+        // app exists, and a delay would be user-visible.
+        for (event in update.completed) {
+            notifier.notifyCompleted(event)
+            Diagnostics.info("任务完成: ${event.task.displayTitle}")
+        }
+        for (event in update.attention) {
+            notifier.notifyAttention(event)
+            Diagnostics.info("任务等待确认: ${event.task.displayTitle}")
+        }
+        // The ongoing list also changes on every preview delta (several times a
+        // second). A completion or attention event, by contrast, changes the
+        // list in a way the user is actively watching for — publish those at
+        // once and let only the chatter be throttled.
+        val urgent = update.completed.isNotEmpty() || update.attention.isNotEmpty()
+        // 观察窗到期要回来一趟（见 [scheduleCompletionFlush]）：任务结束后不再有新帧，这一拍
+        // 就是「已完成」唯一能出现的时机。放在这里的顺序无关紧要，但**必须在提前 return 之前**。
+        scheduleCompletionFlush(update.nextFlushAtMs)
+        // **空更新（"无变化"）绝不能发布**：TaskStore 用"四个列表全空"表示什么都没变，
+        // 而 [enqueueOngoing] 把 `running` 当作**当前运行集**——一个空列表会把已发布的
+        // 运行集抹成 0（流体云卡片随之被系统收回，下一拍再提升即"重建"）。
+        // 真正的"运行集变空"一定带 removedIds（见 TaskStore.buildUpdate），不会被这条挡住。
+        if (!urgent && update.running.isEmpty() && update.removedIds.isEmpty()) return
+        if (update.running.isNotEmpty()) {
+            mainHandler.post { maybeStartHandoffCarrier(handoff.epoch) }
+        }
+        enqueueOngoing(update, throttled = !urgent)
+    }
+
+    /** 观察窗到期时回来算一次（见 [NotifyState.COMPLETION_HOLD_MS]）。 */
+    private val completionFlush = Runnable { applyUpdate(store.flushDueCompletions()) }
+
+    private fun scheduleCompletionFlush(atMs: Long) {
+        mainHandler.removeCallbacks(completionFlush)
+        if (atMs <= 0L) return
+        mainHandler.postDelayed(completionFlush, (atMs - System.currentTimeMillis()).coerceAtLeast(0L))
+    }
+
+    /**
+     * Coalesces ongoing-notification updates.
+     *
+     * Removals are accumulated (union) while the running list is replaced by the
+     * newest — a trailing publish must not lose the cancellation that an
+     * intermediate update requested, which is the bug this shape exists to
+     * prevent. Completion events are accumulated for the same reason, and because
+     * the card is not cancelled but *changed state*: the two must reach the
+     * notifier together (see [pendingCompleted]).
+     */
+    private fun enqueueOngoing(update: TaskStore.Update, throttled: Boolean) {
+        synchronized(lock) {
+            pendingRemovedIds.addAll(update.removedIds)
+            if (update.completed.isNotEmpty()) pendingCompleted = pendingCompleted + update.completed
+            latestRunning = update.running
+            val elapsed = System.currentTimeMillis() - lastPublishAt
+            pendingFlush?.let { mainHandler.removeCallbacks(it) }
+            pendingFlush = null
+            if (throttled && elapsed < ONGOING_THROTTLE_MS) {
+                val runnable = Runnable { flushOngoing() }
+                pendingFlush = runnable
+                mainHandler.postDelayed(runnable, ONGOING_THROTTLE_MS - elapsed)
+                return
+            }
+        }
+        flushOngoing()
+    }
+
+    private fun flushOngoing() {
+        // Returning a triple keeps the critical section from having to assign
+        // declarations that are read outside it.
+        val snapshot = synchronized(lock) {
+            pendingFlush = null
+            val running = latestRunning
+            val removed = pendingRemovedIds.toList()
+            val completed = pendingCompleted
+            pendingRemovedIds.clear()
+            pendingCompleted = emptyList()
+            lastPublishAt = System.currentTimeMillis()
+            Triple(running, removed, completed)
+        }
+        if (snapshot.second.isNotEmpty()) {
+            // 这里**只报事实**（这一拍谁离开了运行集）。"撤回"与否由通知层决定——走进
+            // 完成态的那张卡是不撤的（原地改状态），所以那句话只能由 Notifier 打，
+            // 否则日志会写着"卡片撤回"而卡片其实还在（真机 2026-09-18 09:40 读到过）。
+            val after = snapshot.first.joinToString(" ") { "#" + it.id }
+            Diagnostics.log(
+                "debug",
+                "运行集移除 id=${snapshot.second.joinToString(" ")}" +
+                    "（移除后运行集 ${snapshot.first.size} 个：$after）",
+            )
+        }
+        notifier.syncRunningTasks(
+            TaskStore.Update(
+                running = snapshot.first,
+                removedIds = snapshot.second,
+                completed = snapshot.third,
+                attention = emptyList(),
+            )
+        )
+        updateServiceNotification(snapshot.first)
+    }
+
+    /** Keeps the foreground service notification in step with the task list. */
+    fun updateServiceNotification(running: List<TaskStore.RunningNotification> = currentRunning()) {
+        if (!serviceRunning) return
+        val text = if (running.isEmpty()) {
+            appContext.getString(R.string.keepalive_text_idle)
+        } else {
+            Notifier.runningBody(running)
+        }
+        notifier.postServiceNotification(notifier.buildServiceNotification(running.size, text))
+    }
+
+    private fun currentRunning(): List<TaskStore.RunningNotification> = store.runningNotifications()
+
+    // --------------------------------------------------------------- lifecycle
+
+    /**
+     * Starts the foreground service. Must be called while the app is in the
+     * foreground: Android 12+ refuses a background start.
+     */
+    fun ensureServiceRunning(context: Context) {
+        if (serviceRunning) return
+        val intent = Intent(context, KeepAliveService::class.java)
+        try {
+            // minSdk = 26（= O）⇒ 版本判断恒真，前台服务版永远是对的那条。
+            context.startForegroundService(intent)
+            serviceRunning = true
+            Diagnostics.info("后台保活服务已启动")
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "启动保活服务失败: ${e.message}")
+        }
+    }
+
+    fun onServiceCreated() {
+        serviceRunning = true
+    }
+
+    fun onServiceDestroyed() {
+        serviceRunning = false
+        Diagnostics.log("warn", "保活服务被系统销毁")
+    }
+
+    fun isServiceRunning(): Boolean = serviceRunning
+
+    /**
+     * Called when the page (re)loads: the injected layer starts from scratch.
+     *
+     * 调用者：`MainActivity` 的 `WebViewClient.onPageStarted`。**这条调用不能删**——
+     * 就绪位与 [lastInjectStatusLine] 都只在这里清，缺了它两者会跨页面加载一直留着
+     * （修复前的 bug：这里零调用者，就绪位永久 `true`，见 [InjectionReadiness]）。
+     */
+    fun onPageStarted() {
+        injectionReadiness.reset()
+        lastInjectStatusLine = ""
+        pageReloadExpected = false
+        if (!userIsAway()) carrierRanThisStint = false
+    }
+
+    /** Called when a fresh page has finished loading and re-subscribed. */
+    fun onPageReloaded() {
+        val update = store.reset()
+        notifier.syncRunningTasks(update)
+        updateServiceNotification(emptyList())
+    }
+
+    fun isInjectedReady(): Boolean = injectionReadiness.isReady()
+}
