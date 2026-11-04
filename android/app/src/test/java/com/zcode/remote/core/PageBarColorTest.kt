@@ -32,6 +32,13 @@ class PageBarColorTest {
     private val HEADER_DARK = 0xFF202020.toInt()
     private val SURFACE_LIGHT = 0xFFECECEE.toInt()
     private val SURFACE_DARK = 0xFF2B2B2B.toInt()
+    // D4：登录/授权面的专用表（照鸿蒙现值，用户已确认观感无问题）。
+    private val AUTH_BIGMODEL = 0xFFF7F8FA.toInt()
+    private val AUTH_CONSENT_LIGHT = 0xFFF8F8F8.toInt()
+    private val AUTH_CONSENT_DARK = 0xFF161616.toInt()
+    private val AUTH_LOGIN_LIGHT = 0xFFF5F6F8.toInt()
+    private val AUTH_LOGIN_LIGHT_NARROW = 0xFFFFFFFF.toInt()
+    private val AUTH_LOGIN_DARK = 0xFF141618.toInt()
 
     @Test
     fun `every state has a light and a dark surface`() {
@@ -78,10 +85,80 @@ class PageBarColorTest {
     @Test
     fun `the status bar icons invert against the surface`() {
         // Light surface -> dark icons (isAppearanceLightStatusBars = true).
-        assertTrue(PageBarColor.appearanceLightStatusBars(PageTheme.LIGHT))
-        assertFalse(PageBarColor.appearanceLightStatusBars(PageTheme.DARK))
-        // Before the page has said anything, the system theme is the best guess.
-        assertTrue(PageBarColor.appearanceLightStatusBars(null))
+        assertTrue(PageBarColor.appearanceLightStatusBars(dark = false))
+        assertFalse(PageBarColor.appearanceLightStatusBars(dark = true))
+    }
+
+    @Test
+    fun `D8 the icons follow the resolved surface, not the page theme`() {
+        // The bug: system dark + pageTheme == null (every login page) painted #171717
+        // and then asked for dark icons. The resolved `dark` is the single input now.
+        val systemDark = true
+        val state = PageBarState.AUTH_BIGMODEL
+        val dark = PageBarColor.darkFor(state, theme = null, systemDark = systemDark)
+        // bigmodel is a fixed light surface even in system dark -> dark icons, light strip.
+        assertFalse(dark)
+        assertTrue(PageBarColor.appearanceLightStatusBars(dark))
+        assertEquals(AUTH_BIGMODEL, PageBarColor.resolve(state, dark))
+        // A normal page with no theme falls back to the system, and the icons agree.
+        val bootDark = PageBarColor.darkFor(PageBarState.BOOT_SHELL, null, systemDark)
+        assertTrue(bootDark)
+        assertFalse(PageBarColor.appearanceLightStatusBars(bootDark))
+        // A page that reports a theme wins over the system.
+        assertFalse(PageBarColor.darkFor(PageBarState.BOOT, PageTheme.LIGHT, systemDark))
+    }
+
+    @Test
+    fun `D4 the eight login surfaces carry their own light and dark bit`() {
+        val auth = PageBarState.entries.filter { it.token.startsWith("auth-") }
+        assertEquals("八个 auth-* 状态名，与鸿蒙口径一致", 8, auth.size)
+        assertEquals(
+            listOf(
+                "auth-bigmodel", "auth-zai-consent-light", "auth-zai-consent-dark",
+                "auth-zai-login-light", "auth-zai-login-light-narrow", "auth-zai-login-dark",
+                "auth-zcode-light", "auth-zcode-dark",
+            ),
+            auth.map { it.token },
+        )
+        // The auth names ignore the `dark` flag: a system night switch must not repaint
+        // a page that follows the *web* theme.
+        assertEquals(AUTH_CONSENT_LIGHT, PageBarColor.resolve(PageBarState.AUTH_ZAI_CONSENT_LIGHT, dark = true))
+        assertEquals(AUTH_CONSENT_DARK, PageBarColor.resolve(PageBarState.AUTH_ZAI_CONSENT_DARK, dark = false))
+        assertEquals(AUTH_LOGIN_LIGHT, PageBarColor.resolve(PageBarState.AUTH_ZAI_LOGIN_LIGHT, dark = true))
+        assertEquals(AUTH_LOGIN_LIGHT_NARROW, PageBarColor.resolve(PageBarState.AUTH_ZAI_LOGIN_LIGHT_NARROW, dark = true))
+        assertEquals(AUTH_LOGIN_DARK, PageBarColor.resolve(PageBarState.AUTH_ZAI_LOGIN_DARK, dark = false))
+        assertEquals(AUTH_CONSENT_LIGHT, PageBarColor.resolve(PageBarState.AUTH_ZCODE_LIGHT, dark = true))
+        assertEquals(AUTH_CONSENT_DARK, PageBarColor.resolve(PageBarState.AUTH_ZCODE_DARK, dark = false))
+    }
+
+    @Test
+    fun `D5 the URL gives the login page its initial surface`() {
+        assertEquals(
+            PageBarState.AUTH_BIGMODEL,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.BIGMODEL, dark = true, narrow = true),
+        )
+        assertEquals(
+            PageBarState.AUTH_ZAI_CONSENT_DARK,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.ZAI_CONSENT, dark = true, narrow = false),
+        )
+        assertEquals(
+            PageBarState.AUTH_ZAI_LOGIN_LIGHT,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.ZAI_LOGIN, dark = false, narrow = false),
+        )
+        // ≤512px: the card turns pure white (the narrow variant of the same page).
+        assertEquals(
+            PageBarState.AUTH_ZAI_LOGIN_LIGHT_NARROW,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.ZAI_LOGIN, dark = false, narrow = true),
+        )
+        // Dark wins over narrow: there is no narrow dark variant.
+        assertEquals(
+            PageBarState.AUTH_ZAI_LOGIN_DARK,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.ZAI_LOGIN, dark = true, narrow = true),
+        )
+        assertEquals(
+            PageBarState.AUTH_ZCODE_DARK,
+            PageBarColor.authStateFor(RemoteUrl.AuthSurface.ZCODE, dark = true, narrow = false),
+        )
     }
 
     @Test

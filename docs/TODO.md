@@ -46,11 +46,16 @@
 
 ### 2.2 最小功能集（承载拔）
 
-- [ ] 给 `NativeRelayClient` 补 **ws2/token 认证**（注入层移交页面实际使用的 URL + token；保留 legacy 回退）。
-- [ ] **交还不变式**：停承载 → 确认 socket close → 才允许页面重载/重拨（见 2.3）。
+- [x] 给 `NativeRelayClient` 补 **ws2/token 认证**（注入层移交页面实际使用的 URL + token；保留 legacy 回退）。
+      → 2026-11-04：`RelayCreds.authToken` + `tokenMode`；`auth_init` 无 `role`、`client_ts` 用秒；
+      `auth_challenge` 在 token 模式忽略；`auth_ack` 校验 `device_sid`；心跳 10s → **5s**。
+      `inject.js` 的凭证移交不再要求 `hash`（3.17.1 链接没有它）。
+- [x] **交还不变式**：停承载 → 确认 socket close → 才允许页面重载/重拨（见 2.3）。
+      → `NativeRelayClient.stopAndAwaitClose()`（local cancel 的 `onClosed/onFailure` 即确认，
+      250ms 超时放行）。
 - [ ] 判死：入站帧静默 ≥35s（3 个泵周期 + 余量），保留“页面刚动过 socket 等它 20s”护栏。
 - [ ] **不得重开** `controller/tasks-index` 的原生订阅（曾致桌面端 host 崩溃；运行态第三条源只走页面转发）。
-- [ ] `onRenderProcessGone`（纳入本拔，见 2.5）。
+- [x] `onRenderProcessGone`（纳入本拔，见 2.5）。
 
 ### 2.3 接管时机 / 交还顺序 / KICKED 归因（2026-11-04 拍板）
 
@@ -68,7 +73,9 @@
 
 **交还顺序**（回前台）：先停承载 → **等 `NativeRelayClient` 的 socket close 确认**
 （状态机 `NATIVE_OWNED → RELEASED`）→ 再 `reload`；**不用固定延时**。
-- [ ] 目标：回前台到 reload 开始 **<300ms**；同时**优化现有交还路径代码缩短耗时**（用户明确要求）。
+- [x] 目标：回前台到 reload 开始 **<300ms**；同时**优化现有交还路径代码缩短耗时**（用户明确要求）。
+      → 2026-11-04：`stopAndAwaitClose` 把 reload 挂在关闭确认上（超时 250ms 放行），
+      并打一行「socket 已确认关闭/超时放行，等待 Nms」——**真机计时待验收**。
 
 **KICKED 归因**（用户自定义语义，替换旧的 `KICKED_HEAL_CAP=2` 计数）：
 
@@ -82,6 +89,12 @@
 > 外部归因时页面自愈是官方设计，壳不得干预。
 > **新版 kicked 页面在自我归因路径上不得上屏**（2026-11-04 用户明确要求）。
 
+> **2026-11-04 落地**：注入层删除 `KICKED_HEAL_CAP`/`KICKED_HEAL_STORE`/`healKickedOnForeground`
+> （不再自己 reload）；改为 `__zcodeShellExpectCarrier(at, workspace, session)` 的拨号窗口
+> （原生 `startNativeCarrier` 开、`clearCarrierState` 关，窗口 5 分钟硬上限），窗口内**只记日志**，
+> 窗口外记「外部抢占，壳不动手」。原生 `pagefailure(kind=kicked)`：`carrierMayHaveKickedPage()`
+> 为真 → `handoffCover.carrierMatched()` **即刻盖罩**且不再 `pageFailed` 撤罩。
+
 ### 2.4 多工作区：先验证“能否并行”，不预设轮换
 
 **已核实的事实**：Rust 能开多座桥，但**没有任何服务权/轮换策略**（全仓 0 命中）；
@@ -89,6 +102,9 @@
 （出处 `docs/18` §3.3、`docs/android/31` §A）——3.17.1 是否仍如此**未验证**。
 
 - [ ] **实验卡（并行订阅可行性）**——本实验决定实现形态，先做实验再写策略：
+      → **开关已就位（2026-11-04）**：`carrier_parallel_on` / `carrier_parallel_off`（adb / DiagReceiver）：
+      开覆盖（page ∪ 在跑工作区，≤5）+ `BridgeManager.rotateEnabled=false`，每 12s 打一行
+      `parallel coverage: N bridges · <工作区>=<收帧年龄>`。实验本身**待真机**（需桌面端有在跑任务）。
   - **做法**：承载配对成功后，立即为在跑任务所在工作区**全部开桥**（≤5）并**同时**订阅各桥会话；
     不引入 12s 轮换（观察窗 ≥10 分钟）。
   - **判据**：① 每座桥是否都能持续收到 snapshot/增量（按桥分别统计入站帧）；
@@ -101,8 +117,12 @@
 
 ### 2.5 onRenderProcessGone（本拔内做）
 
-- [ ] `onRenderProcessGone` 返回 `true`（阻止应用被杀）→ 盖上 logo 罩 → 重建 WebView，
+- [x] `onRenderProcessGone` 返回 `true`（阻止应用被杀）→ 盖上 logo 罩 → 重建 WebView，
       加载原 URL + 钉 `history.state` + relay `mobileViewState`；不闪失败页、不落冷启动。
+      → 2026-11-04：`MainActivity.rebuildWebViewAfterRendererGone()` 移除并销毁旧实例、
+      在根布局第 0 层插入新 WebView、重装 document-start 与桥后按原 URL（带 `app_version`）加载；
+      罩走 `HandoffCoverState.rendererGone()`（15s 超时），新文档首个 logo/页面帧撤罩。
+      `history.state` 由同一条 document-start 路径（`config().restoreChat`）钉。
 
 ### 2.6 验收（真机）
 
@@ -123,16 +143,19 @@
 `location.replace()` 改 URL（**清空 `history.state`**），已就绪则弹「桌面版本已更新」modal 并
 停止一切 relay 发送（`isBlocked()` 把壳的轻推门死 ⇒ 重载会变对话框循环）。
 
-- [ ] ① **document-start 重钉 `history.state`**：闸门 replace 会抹掉 `pinChatRoute` 预设，重钉救回
+- [x] ① **document-start 重钉 `history.state`**：闸门 replace 会抹掉 `pinChatRoute` 预设，重钉救回
       （需确认 `restoreChat` 为真，见报告 §4.1）。
-- [ ] ② **让壳的 URL 带上 `app_version`**（治本）——**优先做"持久化跟随页面最终 URL"**：
-      页面 `Pir()` 自己 `location.replace()` 出的 URL 就带正确值，壳把它回写 `Prefs` 即可，
-      **不自己拼参数、不猜 `desktopAppVersion`**（用户 2026-11-04 质疑"一定要加吗"，
-      结论：不是必须加，跟随更省）。
-      前提待代理 A 结论：壳是否会读到/更新页面 replace 后的 URL；**若壳不更新持久化值**，
-      才退回"学到 `desktopAppVersion` 后写进下次加载的 URL"。
-- [ ] ③ **重载前探测** `dialog[aria-labelledby="remote-version-title"]`，命中即判「版本闸门阻断」，
+      → 2026-11-04：改用 `sessionStorage['zcodeShellPinChat']` 记住"离开时在对话页"，
+      不再依赖那一刻的 `config().restoreChat`（它可能已被消费掉）；页面回到首页时清标记。
+- [x] ② **让壳的 URL 带上 `app_version`（装载时拼参数）**——**已定方案**（用户 2026-11-04 批准）：
+      从页面 bootstrap 帧学到 `desktopAppVersion` 后，只在加载/重载时把它拼进请求 URL；
+      **不写回 `Prefs`、不新增 URL 监听、拿不到值就不猜**。
+      → `core/DesktopVersion`（内存单值 + 纯字符串拼接，已存在则替换）+ 注入层
+      `bootstrap-response → post('desktopversion')`。
+- [x] ③ **重载前探测** `dialog[aria-labelledby="remote-version-title"]`，命中即判「版本闸门阻断」，
       **不重载**、只记日志。
+      → 注入层在页面状态那一拍探一次（变化才发 `versiongate`），原生 `requestPageReload`
+      **同步**查位跳过；注入层自己的两处 `location.reload()` 也先查。
 - [ ] 顺带：URL 白名单参数已含 `app_version`（`Xnr=new Set(['app_version','sid','mid','name'])`），
       加分参数不会破坏页面契约。
 
@@ -142,8 +165,10 @@
 
 ### 3.3 其余
 
-- [ ] P1：`NARROW_QUERY` 同步新断点 `(max-width:767px) and (hover:none) and (pointer:coarse)`；
+- [x] P1：`NARROW_QUERY` 同步新断点 `(max-width:767px) and (hover:none) and (pointer:coarse)`；
       `button[aria-haspopup="menu"]` 已是 Radix 运行时属性，建议加第二判据。
+      → 2026-11-04：两处都改；第二判据 = 同容器 `button[aria-label]` 命中主题文案
+      （`选择主题` / `Switch theme`）。JS 测试 +1。
 - [ ] 日志沉降：`window.zcode?.log` 在 /remote/v4 包内已消失（仅 officeFilePreview chunk 有），
       3.17.1 改用 `mobile-log` 家族帧——壳未实现，桌面端「拉取移动端日志」目前无应答者。
 - [ ] 4 处换落点：`chat-error-banner`（收回主包）、i18n（`IntlProvider-CneXitqp.js`）、
@@ -162,23 +187,35 @@
 
 决定（**照抄鸿蒙**，2026-11-04 拍板）：
 
-- [ ] **D1 可信域**：`z.ai` + `*.z.ai` + `bigmodel.cn` + `*.bigmodel.cn`（安卓现为两个根域 + 子域匹配，核对等价）。
-- [ ] **D2 导航闸门**：只有「非可信域 + 主框架 + 非下载」三条同时成立才外抛系统浏览器；**子资源与下载一律放行**。
-- [ ] **D3 登录判定只认 host + path 前缀**（不碰 Cookie、无登出清理、回调由网页在同 WebView 自洽）：
+- [x] **D1 可信域**：`z.ai` + `*.z.ai` + `bigmodel.cn` + `*.bigmodel.cn`（安卓现为两个根域 + 子域匹配，核对等价）。
+      → 已等价；判定抽成纯函数 `RemoteUrl.isTrustedHost`，单测钉死（含 `evilz.ai` / `z.ai.evil.com` 反例）。
+- [x] **D2 导航闸门**：只有「非可信域 + 主框架 + 非下载」三条同时成立才外抛系统浏览器；**子资源与下载一律放行**。
+      → `RemoteUrl.isDownloadUrl`（后缀表）+ `shouldOverrideUrlLoading` 先判下载；主框架之外照旧放行。
+- [x] **D3 登录判定只认 host + path 前缀**（不碰 Cookie、无登出清理、回调由网页在同 WebView 自洽）：
       `bigmodel.cn`（恒亮）、`chat.z.ai/auth/oauth/authorize`、`chat.z.ai/auth*`、`zcode.z.ai(/web-remote|/share|/cn/share)`。
-- [ ] **D4 登录页专用固定色表**（8 个 `auth-*` 状态名，随**网页**主题、不随系统深浅；无主题信号时 zcode 默认暗）：
+      → `RemoteUrl.authSurfaceOf(host, path)`（返回 `AuthSurface` 枚举，纯字符串）。
+- [x] **D4 登录页专用固定色表**（8 个 `auth-*` 状态名，随**网页**主题、不随系统深浅；无主题信号时 zcode 默认暗）：
       - `auth-bigmodel`（`*.bigmodel.cn`）：`#F7F8FA` **恒亮**
       - `auth-zai-consent-light/dark`（`chat.z.ai` + `/auth/oauth/authorize`）：`#F8F8F8` / `#161616`
       - `auth-zai-login-light`（`chat.z.ai` + `/auth*`）：`#F5F6F8`（窄屏 `max-width:512px` → `#FFFFFF`）
       - `auth-zai-login-dark`：`#141618`
-- [ ] **D5 先给初值防闪色**：`onPageBegin` 直接按 URL 给状态名与色值（不等注入层回推），再由页面回推纠正。
-- [ ] **D6 boot / KICKED / 配对等待底色对齐鸿蒙表**：boot 未着主题 `#FAFAFA`/`#171717`；
+      → `PageBarState` 扩到 12 项（4 页面态 + 8 登录态），登录态带 `fixedDark` 位、`resolve` 忽略
+      `dark` 参数；`auth-zai-login-light-narrow` 单独一项（≤512dp 由 `screenWidthDp` 近似）。
+- [x] **D5 先给初值防闪色**：`onPageBegin` 直接按 URL 给状态名与色值（不等注入层回推），再由页面回推纠正。
+      → `MainActivity.onPageStartedSurface()`；登录页无注入层，初值即终值（已写进注释）。
+- [x] **D6 boot / KICKED / 配对等待底色对齐鸿蒙表**：boot 未着主题 `#FAFAFA`/`#171717`；
       已着主题 / KICKED / 配对等待 `#F8F8F8`/`#161616`——按此核对并替换 `PageBarColor.kt:85-92`
       与 Android 资源里的 boot 色（替代"真机截图取色"的口径）。
-- [ ] **D7 离开远程页全清**（用户拍板）：清 `relayCreds`（防死凭证拨号）+ 停承载 + `store.reset()`
+      → `PageBarColor` 八个字面量核对**已与鸿蒙一致，未改值**；Android 资源侧新增
+      `values/colors.xml` + `values-night/colors.xml`（`page_bar_boot`），根布局与交接罩改引用它
+      （原先写死 `#FFF8F8F8`，深色冷启动会闪浅色）。
+- [x] **D7 离开远程页全清**（用户拍板）：清 `relayCreds`（防死凭证拨号）+ 停承载 + `store.reset()`
       （运行态/通知一并复位），由"非 remote 页 / 登录页判定"触发。
-- [ ] **D8 图标明暗纯 bug**：`MainActivity.kt:692/695` 改用解析后的 `dark`（登录页 `pageTheme` 恒 null
+      → `ShellRuntime.onLeftRemotePage()`，由 `MainActivity.onPageStarted` 在 `!isAllowed` 时调用。
+- [x] **D8 图标明暗纯 bug**：`MainActivity.kt:692/695` 改用解析后的 `dark`（登录页 `pageTheme` 恒 null
       ⇒ 系统深色下"深图标压 `#171717`"）。
+      → 解析收进 `PageBarColor.darkFor(state, theme, systemDark)`；`appearanceLightStatusBars(dark)` 只吃
+      解析结果，颜色与图标同一个输入。
 - [ ] **D9 路径闸收窄（待真机）**：先确认登录页 URL；若落在 `/remote` 前缀下（如 `/remote/v4/login`），
       注入的路径闸与 `isAllowed` 收窄为**精确白名单**，避免 `pinChatRoute`/WS hook/滚动条/刷新按钮在登录页生效。
 - [x] **D10 刷新按钮对齐鸿蒙**（2026-11-04 完成）：宽屏锚点链——`header[data-testid="workspace-header"]`
@@ -208,6 +245,7 @@
 | 术语更名（Tier2→原生承载、Tier1→页面侧） | ✅ 代码 + 文档全量替换，commit `dac579c` |
 | 承载计划与 3.17.1 修复方案 | ✅ 2026-11-04 逐条拍板（本文件 §2、§3） |
 | 登录页/状态栏新增范围 | ✅ 方案照鸿蒙（本文件 §4；两份取证报告在 `docs/android/`） |
+| 3.17.1 适配 + 承载修复（批次 0/1） | ✅ 2026-11-04 代码落地：JS 115/115、Kotlin 170/170、`assembleDebug` 通过；**真机验收见 §2.6** |
 | 首次 CI 运行 | ⏳ 需要推送 `main` 后验证 |
 
 ## 6. 已知风险 / 待办

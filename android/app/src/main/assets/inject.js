@@ -245,13 +245,39 @@
         G.history.replaceState(next, '');
     }
 
+    /**
+     * 「离开时在对话页」的**跨文档**记忆。为什么不能只信 `config().restoreChat`：
+     * 3.17.1 的版本闸门用 `location.replace()` 整页换 URL，新文档的 `history.state`
+     * 是空的，而原生那一刻的 `restoreChat` 可能已经翻成 false（`viewAtLeave` 被前面
+     * 那次判定消费掉了）⇒ 只按 config 判，`pinChatRoute` 预设会**正好在需要它的那次
+     * 导航上丢掉**。sessionStorage 在同一标签页内跨 navigation 存活，正好补这一格。
+     *
+     * 自愈：页面自己从对话页回到首页时清掉（见 noteChatViewEntered），所以这个标记
+     * 不会把用户永久钉在对话页。
+     */
+    var PIN_CHAT_KEY = 'zcodeShellPinChat';
+
+    function pinnedBefore() {
+        return storeGet(PIN_CHAT_KEY) === '1';
+    }
+
     // 原生知道离开时在聊天页：在网页 bootstrap 之前恢复路由，省去加载后的二次重载。
     if (config().restoreChat === true && config().foreground !== false) {
         try {
+            storeSet(PIN_CHAT_KEY, '1');
             pinChatRoute();
             diag('info', '快速交接：网页启动前已恢复聊天路由');
         } catch (e) {
             diag('warn', '启动前聊天路由恢复失败: ' + e);
+        }
+    } else if (pinnedBefore()) {
+        // 闸门①：`location.replace()` 之后的新文档（state 已被清空），按上一次的
+        // 决定重钉一次。幂等、成本就是一次 replaceState。
+        try {
+            pinChatRoute();
+            diag('info', '版本闸门导航后重钉聊天路由（history.state 已被 replace 清空）');
+        } catch (e) {
+            diag('warn', '闸门导航后重钉聊天路由失败: ' + e);
         }
     }
 
@@ -316,7 +342,16 @@
         var sid = query.get('sid') || '';
         var hash = query.get('hash') || '';
         var mid = query.get('mid') || '';
-        if (!sid || !hash) {
+        // 3.16.1+ 的链接**没有 `hash`**：认证由 `ws2?token=…` 承担，token 就在页面
+        // 打开 socket 用的那条 URL 上（`lastRelayUrl`）。只认 passHash 的话，这条移交
+        // 永远发不出去，原生承载在 3.17.1 上根本无法拨号（TODO §2.2 的唯一硬缺口）。
+        var token = '';
+        try {
+            token = new URL(lastRelayUrl).searchParams.get('token') || '';
+        } catch (e) {
+            token = '';
+        }
+        if (!sid || (!hash && !token)) {
             return;
         }
         relayCredsPosted = true;
@@ -324,7 +359,9 @@
             url: lastRelayUrl,
             deviceSid: sid,
             passHash: hash,
-            deviceMid: mid
+            deviceMid: mid,
+            // 凭证级内容：只走内存，任何日志路径都不带它。
+            authToken: token
         });
         diag('info', '承载: relay 凭证已移交原生（仅内存，不落日志）');
     }
@@ -1046,18 +1083,6 @@
             liveness.pairAcks += 1;
             linkWindow.acks += 1;
             if (relayPaired) {
-                // 配对成功＝链路真的回来了，KICKED 自愈的连续计数到此清零。
-                if (kickedAwayAt) {
-                    kickedAwayAt = 0;
-                    diag('info', '页面在后台重新配对成功，取消待处理的 KICKED 自愈');
-                }
-                if (kickedHealCount() > 0) {
-                    storeSet(KICKED_HEAL_STORE, '0');
-                }
-                // ⚠️ 档 3「对话恢复」的计数**不在这里清零**：它的闸门在原生侧
-                // （`Prefs.conversationRecovery`），清零由 `ShellRuntime` 在
-                // `paired` 由假变真时做。理由见 `__zcodeShellRecoverConversation`
-                // 的注释——本层的计数在"进程被杀"后归零，而那正是 S3 的定义。
                 // 只建客户端 + 跟随页面：**不**在这里安排任何主动开桥
                 // （2026-09-17 删 D7；原实现是 `maybeStartActive()`）。
                 ensureClient();
@@ -1130,6 +1155,22 @@
             }
             return;
         }
+        // 闸门②（TODO §3.1）：页面自己的 `bootstrap-response` 里就带着
+        // `desktopAppVersion`。学到它，原生下次加载/重载时拼进 URL，闸门就根本不会触发。
+        // 只上报、不猜：拿不到就不发（原生那边照样留闸门①/③兜底）。
+        if (frame.payload.zcode_type === 'bootstrap-response') {
+            try {
+                var bootResult = frame.payload.result;
+                var desktopVersion = bootResult && typeof bootResult.desktopAppVersion === 'string'
+                    ? bootResult.desktopAppVersion
+                    : '';
+                if (desktopVersion) {
+                    post('desktopversion', {version: desktopVersion});
+                }
+            } catch (e) {
+                // 版本学习失败不影响只读观测
+            }
+        }
         var target = ensureClient();
         try {
             // ⚠️ 这里原本还有一行 `target.acceptPayload(frame.payload)`（"我们自己的桥 / 待办请求"路由）。
@@ -1187,15 +1228,12 @@
     var resumeHealTimer = null;
     /** Ticks closer together than this are dropped so the timer and the pump cannot double up. */
     var MIN_TICK_GAP_MS = 5000;
-    /** Cap on automatic reloads after a KICKED, counted across the reload itself. */
-    var KICKED_HEAL_CAP = 2;
-    var KICKED_HEAL_STORE = 'zcodeShellKickedHeals';
     var lastPairAckAt = 0;
     var lastTickAt = 0;
     var staleTicks = 0;
     // 前后台**初始值**向原生对一次表（2026-09-28）：文档若在后台期间被重载（自愈/
-    // 兜底重载都可能），启动默认 true 会让注入层在真后台里自认前台——KICKED 被误判
-    // 成"前台被顶→不自动干预"，自愈链路（kickedAwayAt）就此短路（真机 17:07 现场一环）。
+    // 兜底重载都可能），启动默认 true 会让注入层在真后台里自认前台——KICKED 归因
+    // 就会缺一路信号（真机 17:07 现场一环）。
     // config() 是 document-start 的同步询问；字段缺失（老壳/测试桩）按 true 兜底。
     var appForeground = config().foreground !== false;
     var foregroundEpoch = 0;
@@ -1256,24 +1294,46 @@
     }
 
     /**
-     * relay 把本端顶掉（KICKED）。
+     * relay 把本端顶掉（KICKED）——**归因**决定谁收拾（TODO §2.3，2026-11-04 拍板，
+     * 替换旧的 `KICKED_HEAL_CAP=2` 计数）。
      *
-     * 两种来源：① 壳在后台的原生接管——这是**预期**行为（relay 是单控制端互斥
-     * 的，原生要接管就必须把页面顶下去）；② 另一台控制端接入——不是我们的战场。
-     * 共同点是页面自己的传输层会因此进终态（"已被其他设备接管"，只有手动点
-     * "重新连接"才回得来），所以壳必须负责把它救回来：
+     *   落在**承载拨号窗口**内 ⇒ 是我们自己的后台承载把它顶掉的（relay 单控制端互斥）。
+     *     页面自愈必然再被踢一次，所以壳负责恢复：原生**即刻盖上加载中遮罩**（后台就盖、
+     *     前台不露一秒），交还后重载回原任务，新版 kicked 页面**不得上屏**。注入层这里
+     *     只记日志——不再自己 reload（那会与原生交还抢时序，而且新文档又会撞上承载）。
      *
-     *   * 后台被顶 → 什么都不做（那时页面不该在跑），只在回前台时重载一次，
-     *     让页面用同一条链路重新握手（原生槽位那时已交还）。
-     *   * 前台被顶 → 不自动干预（可能与另一台控制端在抢）。
-     *
-     * 原生先交还，再立即重载。跨 reload 用 sessionStorage 记次数，配对成功即清零，所以最坏也
-     * 只是重载两次而不是死循环。
+     *   不在窗口内 ⇒ 前端被别的设备/对话抢占，是**官方流程**：kicked 文案/终态照常展示，
+     *     壳不动手（不盖罩、不重载，只记日志）。
      */
-    var kickedAwayAt = 0;
+    var carrierWindow = {at: 0, workspace: '', session: ''};
+    /** 窗口的时间上界（5 分钟）：拨号造成的 KICK 在几秒内就到。 */
+    var CARRIER_WINDOW_MAX_MS = 300000;
 
-    function kickedHealCount() {
-        return parseInt(storeGet(KICKED_HEAL_STORE), 10) || 0;
+    /** 原生在启动承载时打开窗口，交还时关闭（at=0）。 */
+    G.__zcodeShellExpectCarrier = function (at, workspace, session) {
+        var stamp = typeof at === 'number' ? at : 0;
+        carrierWindow = {
+            at: stamp > 0 ? stamp : 0,
+            workspace: typeof workspace === 'string' ? workspace : '',
+            session: typeof session === 'string' ? session : ''
+        };
+        diag('info', stamp > 0
+            ? '承载窗口已开启（KICKED 归因：窗口内的 KICK 归我们自己）'
+            : '承载窗口已关闭');
+        return true;
+    };
+
+    /** KICKED 是否落在承载窗口内（= 我们自己造成的）。 */
+    function kickedByOwnCarrier() {
+        if (carrierWindow.at <= 0) {
+            return false;
+        }
+        // 窗口本身有时间上界：承载拨号造成的 KICK 在几秒内就到，超出这么久还留着窗口
+        // 只可能是原生没来得及关（进程被杀/异常），那时把外部抢占误判成自我接管更糟。
+        if (Date.now() - carrierWindow.at > CARRIER_WINDOW_MAX_MS) {
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -1328,6 +1388,11 @@
                     's < ' + Math.round(RESUME_HEAL_MIN_GAP_MS / 1000) + 's）');
                 return;
             }
+            if (versionGateBlocked()) {
+                // 闸门③：页面被「桌面版本已更新」挡着，重载只会重现同一个对话框。
+                diag('warn', '回前台兜底：版本闸门阻断中（桌面版本与 URL 的 app_version 不等），不重载');
+                return;
+            }
             lastResumeHealAt = Date.now();
             diag('warn', '回前台兜底：静默 ' + Math.round(silenceMs / 1000) +
                 's、观察窗 ' + Math.round((Date.now() - resumedAt) / 1000) +
@@ -1342,41 +1407,18 @@
     }
 
     function noteRelayKicked() {
-        if (appForeground) {
-            // paired/visibility 带进日志：前台被踢有两种可能——另一台控制端在抢（不干预
-            // 是对的），或自家承载的配对竞态（原生 matched 回调里会自查并交还+重载）。
-            // 这两个值是区分它们的取证字段（2026-09-27 17:07 现场）。
-            diag('warn', '页面连接被顶掉（relay 返回 KICKED，前台）：不自动干预' +
-                '（paired=' + relayPaired + ' · visibility=' +
-                (document.visibilityState || '?') + '）');
+        if (kickedByOwnCarrier()) {
+            // 自我接管：遮罩由原生盖（后台就盖），重载也由原生在交还后做。
+            diag('warn', '页面连接被顶掉（KICKED）：**落在承载窗口内（自我接管）**——' +
+                '原生盖加载中遮罩，交还后重载回原任务；本层不重载、不抢连线' +
+                '（workspace=' + (carrierWindow.workspace || '?') +
+                ' · visibility=' + (document.visibilityState || '?') + '）');
             return;
         }
-        kickedAwayAt = Date.now();
-        diag('warn', '页面连接被顶掉（relay 返回 KICKED，应用在后台）：' +
-            '回前台将自动重载页面恢复');
-    }
-
-    function healKickedOnForeground() {
-        // 只读壳里**唯一保留**的页面级干预，理由是它针对的是一条已经死掉的链路：
-        // KICKED 是终态（页面进入"已被其他设备接管"，自己不会回来），重载是唯一
-        // 恢复手段，不存在"打断健康连接"的问题。回前台才做，且跨 reload 记次数封顶。
-        if (!kickedAwayAt) {
-            return;
-        }
-        kickedAwayAt = 0;
-        var count = kickedHealCount();
-        if (count >= KICKED_HEAL_CAP) {
-            diag('error', 'KICKED 自愈：已连续重载 ' + count + ' 次仍未配对，停止自动重载');
-            return;
-        }
-        storeSet(KICKED_HEAL_STORE, String(count + 1));
-        diag('warn', 'KICKED 自愈：立即重载页面（第 ' + (count + 1) + '/' +
-            KICKED_HEAL_CAP + ' 次），让页面重新配对');
-        try {
-            G.location.reload();
-        } catch (e) {
-            diag('warn', 'KICKED 自愈重载失败: ' + e);
-        }
+        // 外部抢占：官方流程。kicked 终态/文案照常展示，壳不动手。
+        diag('warn', '页面连接被顶掉（KICKED，不在承载窗口内）：外部抢占，壳不动手' +
+            '（paired=' + relayPaired + ' · foreground=' + appForeground +
+            ' · visibility=' + (document.visibilityState || '?') + '）');
     }
 
     /**
@@ -3082,10 +3124,6 @@
             liveness.backgroundFirstTickDelayMs = -1;
             return;
         }
-        // 被 relay 顶掉的终态页面不会自愈（只有手动"重新连接"才回得来），
-        // 所以回前台第一件事就是把它重载回来。放在所有链路判断之前——被顶掉时
-        // relayPaired 已经是 false，走不到下面的分支。
-        healKickedOnForeground();
         if (!relayPaired || !deviceSid) {
             diag('info', '回前台时链路未就绪，交由页面自行重连');
             reportPageState();
@@ -3244,7 +3282,11 @@
     // prefers-color-scheme query is only the fallback, and the only signal that
     // exists while the boot shell is up.
     // -----------------------------------------------------------------------
-    var NARROW_QUERY = '(max-width: 767px)';
+    // 窄/宽判据**必须与页面一致**：3.17.1 已把手机壳的断点收窄成三条件
+    // （主包 @3,226,116 `(max-width: 767px) and (hover: none) and (pointer: coarse)`）。
+    // 只写宽度时，视口 ≤767px 但指针是 fine 的设备（折叠屏接鼠标、桌面模式、
+    // WebView 被识别成精确指针）会让壳报 main-header、页面却按宽屏渲染 ⇒ 条带取错色。
+    var NARROW_QUERY = '(max-width: 767px) and (hover: none) and (pointer: coarse)';
     var DARK_QUERY = '(prefers-color-scheme: dark)';
 
     function mediaMatches(query) {
@@ -3315,6 +3357,24 @@
 
     var lastPageState = '';
     var pageStateScheduled = false;
+    var lastVersionGate = false;
+
+    /**
+     * 版本闸门③（TODO §3.1）：页面被「桌面版本已更新」的阻断式 modal 挡住时，
+     * 它的 `isBlocked()` 会把一切 relay 发送与轻推门死——此时**重载只会让同一个
+     * 对话框再来一次**（页面重载 → 版本仍不等 → 再弹）。
+     *
+     * 唯一稳定标识是那个 `<dialog>` 的 `aria-labelledby="remote-version-title"`
+     * （主包 @6,955,657）。这里只读一次 DOM，跟着页面状态那一拍走（本来就要读 DOM）。
+     */
+    function versionGateBlocked() {
+        try {
+            return !!(document.querySelector &&
+                document.querySelector('dialog[aria-labelledby="remote-version-title"]'));
+        } catch (e) {
+            return false;
+        }
+    }
 
     /** Release the native cover at the fresh page's first logo or React frame. */
     function pagePresentationName(state) {
@@ -3332,6 +3392,16 @@
 
     function pushPageState() {
         pageStateScheduled = false;
+        // 闸门③：状态上报这一拍顺手探一次阻断式 modal，变化时才发一帧。
+        // 原生据此**同步**决定"不重载"（<300ms 的交还预算耗不起一次 JS 往返）。
+        var gate = versionGateBlocked();
+        if (gate !== lastVersionGate) {
+            lastVersionGate = gate;
+            post('versiongate', {blocked: gate});
+            diag(gate ? 'warn' : 'info',
+                gate ? '版本闸门阻断：页面停在「桌面版本已更新」，停止轻推与重载'
+                    : '版本闸门已解除');
+        }
         var state = pageStateName();
         if (!state) {
             return;
@@ -3386,6 +3456,11 @@
         }
         fallbackState.chatView = has;
         if (!has) {
+            // 用户真的回到了首页/工作区概览：别再把这个标记留给下一次整页导航
+            // （否则刷新一次就会被拽回对话页）。
+            if (pinnedBefore()) {
+                storeSet(PIN_CHAT_KEY, '');
+            }
             return;
         }
         var age = fallbackState.beaconAt ? Date.now() - fallbackState.beaconAt : -1;
@@ -3928,18 +4003,59 @@
         }
     }
 
+    /**
+     * 主题菜单按钮候选。
+     *
+     * 第一判据 `button[aria-haspopup="menu"]`：**它是 Radix 在运行时写上去的属性**
+     * （主包 @433,886 `"aria-haspopup":\`menu\``），页面源码里 grep 不到字面量——
+     * 也就是说，页面换掉这个菜单组件时它会**静默失效**，没有任何编译期/搜索期信号。
+     * 所以补第二判据：同容器里 aria-label 命中主题文案的按钮。两者都空才认失效。
+     */
+    var THEME_LABEL_HINTS = ['选择主题', '主题', 'switch theme', 'theme'];
+
+    function looksLikeThemeLabel(label) {
+        var text = String(label || '').toLowerCase();
+        if (!text) {
+            return false;
+        }
+        for (var i = 0; i < THEME_LABEL_HINTS.length; i += 1) {
+            if (text.indexOf(THEME_LABEL_HINTS[i]) >= 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function themeMenuButtons(container) {
+        if (!container || !container.querySelectorAll) {
+            return [];
+        }
+        var menus = container.querySelectorAll('button[aria-haspopup="menu"]');
+        if (menus && menus.length) {
+            return menus;
+        }
+        var labelled = container.querySelectorAll('button[aria-label]');
+        var out = [];
+        for (var i = 0; i < (labelled ? labelled.length : 0); i += 1) {
+            if (looksLikeThemeLabel(labelled[i].getAttribute('aria-label'))) {
+                out.push(labelled[i]);
+            }
+        }
+        return out;
+    }
+
     /** 解析头部锚点：手机优先、宽屏兜底，都没有就返回 null。 */
     function refreshAnchor() {
         var section = document.querySelector('section[data-mobile-page="chat"]');
         if (section && section.firstElementChild && section.firstElementChild.querySelectorAll) {
-            var menus = section.firstElementChild.querySelectorAll('button[aria-haspopup="menu"]');
+            var menus = themeMenuButtons(section.firstElementChild);
             if (menus && menus.length) {
                 return menus[menus.length - 1];
             }
         }
         var header = document.querySelector('header[data-testid="workspace-header"]');
         if (header && header.querySelectorAll) {
-            var wide = header.querySelectorAll('button[aria-haspopup="menu"]');
+            var wide = themeMenuButtons(header);
             if (wide && wide.length) {
                 return wide[wide.length - 1];
             }

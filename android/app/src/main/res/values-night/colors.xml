@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色下的 boot 面。理由与 values/colors.xml 同；鸿蒙现值 #161616。 -->
+<resources>
+    <color name="page_bar_boot">#FF161616</color>
+</resources>

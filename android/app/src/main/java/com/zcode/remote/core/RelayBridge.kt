@@ -900,6 +900,15 @@ class BridgeManager(
     private val reanchorInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
+     * 是否允许"回收换服务权"的轮换（TODO §2.4 的并行实验开关）。
+     *
+     * 关掉它 = 只开桥、只订阅、**不回收**：用来验证「桌面端是否真的同一时刻只服务一座桥」。
+     * 由诊断指令 `carrier_parallel_on/off` 切换，默认开（生产语义）。
+     */
+    @Volatile
+    var rotateEnabled: Boolean = true
+
+    /**
      * 发现链落点：`workspace-list-response.result.tasks` 里"有活动任务"的工作区键。
      * 供 [NativeRelayClient.discoveredCoverage] 与 `ShellRuntime.carrierCoverageTargets()` 做定向覆盖。
      */
@@ -1043,6 +1052,17 @@ class BridgeManager(
             try {
                 val live = bridges.values.toList().filter { it.conversationSessionIds().isNotEmpty() }
                 if (live.isEmpty()) return@Thread
+                if (!rotateEnabled) {
+                    // 并行可行性实验（TODO §2.4，2026-11-04）：**不轮换**，只把每座桥的
+                    // 收帧年龄打成一行——判据①「每座桥是否持续收帧」全靠它。
+                    // 判据②（rpc-transport-fault）/③（服务权被抢占）看正常日志即可。
+                    onLogLine(
+                        "parallel coverage: ${live.size} bridges · " + live.joinToString(" | ") {
+                            "${it.workspaceKey}=" + convSilenceText(convSilenceMs(it))
+                        },
+                    )
+                    return@Thread
+                }
                 // 谁被服务（最近有帧）／谁最饿（最久没帧）——两个极值，各自一个用途。
                 //
                 // **全平局是首轮的正常形态，不必处理**：所有桥都还没收到过帧时

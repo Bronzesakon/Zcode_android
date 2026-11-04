@@ -16,6 +16,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.View
 import android.webkit.ConsoleMessage
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -38,6 +39,7 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import com.zcode.remote.core.DesktopVersion
 import com.zcode.remote.core.Diagnostics
 import com.zcode.remote.core.PageBarColor
 import com.zcode.remote.core.PageBarState
@@ -73,6 +75,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: Prefs
+
+    /**
+     * The live WebView. It is normally the one inflated from the layout, but
+     * `onRenderProcessGone` **destroys** that instance (a WebView whose renderer
+     * died cannot be reused) and puts a fresh one in its place, so every use
+     * site has to read this field rather than `binding.webView`.
+     */
+    private lateinit var webView: WebView
 
     /** Which page state the status-bar strip is currently painted for. */
     private var pageBarState: PageBarState = PageBarState.DEFAULT
@@ -181,6 +191,7 @@ class MainActivity : AppCompatActivity() {
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        webView = binding.webview
         // targetSdk 35 forces edge-to-edge. The top inset becomes the page's top
         // padding so the page's own header is not covered by the status bar's
         // clock; the bottom is left immersed on purpose (see the function).
@@ -202,15 +213,15 @@ class MainActivity : AppCompatActivity() {
         // 求值通道必须先于 handleIntent 注册：ACTION_DIAG 会在同一个调用栈里走到
         // ShellRuntime.dispatchJsDiag，而它在 jsEvaluator 为空时**直接放弃、不排队**
         // ——冷启动的第一条诊断指令会这样丢掉，偏偏冷启动正是那个重试队列存在的理由。
-        // （configureWebView 已跑过，binding.webview 就绪。）
-        ShellRuntime.setJsEvaluator { script -> binding.webview.evaluateJavascript(script, null) }
+        // （configureWebView 已跑过，webView 就绪。）
+        ShellRuntime.setJsEvaluator { script -> webView.evaluateJavascript(script, null) }
         ShellRuntime.setPageReloader {
             // 通知定位已安排带目标的重载时复用它，避免一次交还闪两次。
             if (presetLocatePending) {
                 Diagnostics.info("快速交接：复用通知定位已安排的重载")
             } else {
                 ShellRuntime.onPageStarted()
-                binding.webview.reload()
+                webView.reload()
             }
         }
         // The intent may already have decided what the screen should be — asking
@@ -222,7 +233,7 @@ class MainActivity : AppCompatActivity() {
         ShellRuntime.setHandoffCoverListener { visible ->
             handoffCoverVisible = visible
             binding.handoffCover.visibility = if (visible) View.VISIBLE else View.GONE
-            binding.webview.importantForAccessibility = if (visible) {
+            webView.importantForAccessibility = if (visible) {
                 View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
             } else {
                 View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
@@ -230,7 +241,7 @@ class MainActivity : AppCompatActivity() {
             applyStatusBarSurface()
         }
         ShellRuntime.setHandoffPresentationListener { document, ticket ->
-            binding.webview.postVisualStateCallback(ticket, object : WebView.VisualStateCallback() {
+            webView.postVisualStateCallback(ticket, object : WebView.VisualStateCallback() {
                 override fun onComplete(requestId: Long) {
                     ShellRuntime.onHandoffPagePresented(document, requestId)
                 }
@@ -256,7 +267,7 @@ class MainActivity : AppCompatActivity() {
     // --------------------------------------------------------------- web view
 
     private fun configureWebView() {
-        val webView = binding.webview
+        val webView = this.webView
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -303,6 +314,12 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest,
             ): Boolean {
                 if (!request.isForMainFrame) return false
+                // D2：子资源与下载一律放行 —— 只有「非可信域 + 主框架 + 非下载」
+                // 三条同时成立才把用户交给系统浏览器。
+                if (RemoteUrl.isDownloadUrl(request.url.toString())) {
+                    Diagnostics.info("下载链接留在 WebView（不拦截）")
+                    return false
+                }
                 val uri = request.url
                 if (RemoteUrl.isTrustedNavigation(uri)) {
                     // OAuth 页面（chat.z.ai 授权、bigmodel.cn 登录、zcode.z.ai 回调）
@@ -331,12 +348,15 @@ class MainActivity : AppCompatActivity() {
                 // 这里按落地的文档再对齐一次桥的挂载状态。
                 setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
                 ShellRuntime.onHandoffPageStarted()
-                // A fresh document starts at the very first boot segment: the shell
-                // is up but the page has not stamped its theme class yet, so drop
-                // back to that surface until the new document reports otherwise.
-                // Without this a reload keeps the *previous* document's header
-                // colour under the status bar.
-                onPageStateReported(PageBarState.BOOT_SHELL.token, null)
+                // D5：登录/授权面没有注入层 ⇒ 状态名与色值只能在这里按 URL 先给，
+                // 否则整条登录链路都停在 boot 色上（`pageTheme` 恒 null，深色下还会
+                // 因 D8 那个 bug 变成"深图标压深底"）。页面回推（远程页）时照常纠正。
+                onPageStartedSurface(Uri.parse(url))
+                // D7：离开远程页（登录/回调/其它落地页）⇒ 原生侧全清——死凭证会被
+                // 退后台的承载拨号复用，旧的运行态/通知会一直挂着直到下一次 ready。
+                if (!RemoteUrl.isAllowed(Uri.parse(url))) {
+                    ShellRuntime.onLeftRemotePage("页面离开远程页")
+                }
                 // 与上面那条 boot 底色同理：上一份文档的注入层已随文档一起销毁，
                 // 「已就绪」标记（含注入状态行的去重记忆）必须同时归零。
                 // 这是该标记**唯一**的复位点——此前零调用者，于是一旦置真就永不回落：
@@ -412,6 +432,25 @@ class MainActivity : AppCompatActivity() {
                 Diagnostics.log("warn", "网页加载失败: $description")
                 showError(getString(R.string.error_network) + if (description.isEmpty()) "" else "\n($description)")
             }
+
+            /**
+             * 渲染进程死亡（OOM / 崩溃）：返回 true **阻止系统杀掉整个应用**，然后换一个
+             * 新 WebView 把原 URL 重新装上——旧实例连同它的渲染器一起不可再用。
+             *
+             * 不落冷启动、不闪失败页：先盖 logo 罩（与接管同款），新文档首个 logo/页面帧
+             * 画出才撤（见 ShellRuntime.onHandoffPagePresented）。
+             */
+            override fun onRenderProcessGone(
+                view: WebView,
+                detail: RenderProcessGoneDetail,
+            ): Boolean {
+                Diagnostics.log(
+                    "warn",
+                    "渲染进程终止（crashed=${detail.didCrash()}）——重建 WebView 并恢复原 URL",
+                )
+                rebuildWebViewAfterRendererGone(view)
+                return true
+            }
         }
 
         // File uploads. WebView ships no default chooser, so without this the
@@ -482,6 +521,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 渲染器死了之后换一个新的 WebView。
+     *
+     * 旧实例**必须销毁**（它的渲染器进程已经不在，继续用只会一直空白），新实例插回
+     * 根布局的第 0 层（WebView 在最底下，罩/面板仍在上面），然后把 document-start
+     * 注入与桥重新装上、按原 URL 加载。`history.state` 的钉法走同一条 document-start
+     * 路径（`config().restoreChat`），relay 的 `mobileViewState` 由承载在后台补发。
+     */
+    private fun rebuildWebViewAfterRendererGone(dead: WebView) {
+        val url = dead.url?.takeIf { it.isNotEmpty() } ?: prefs.remoteUrl
+        if (url == null) {
+            showSetup()
+            return
+        }
+        ShellRuntime.coverForRendererGone("渲染进程终止")
+        binding.root.removeView(dead)
+        try {
+            dead.destroy()
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "销毁旧 WebView 失败: ${e.message}")
+        }
+
+        val fresh = WebView(this)
+        fresh.layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        )
+        binding.root.addView(fresh, 0)
+        webView = fresh
+        // 新实例上没有 document-start 注册，也没有桥：两份守卫都归零后重装。
+        injectionRegistered = false
+        bridgeAttached = false
+        configureWebView()
+        installInjection()
+        setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
+        applyStatusBarSurface()
+        Diagnostics.info("重建完成，重新加载: ${RemoteUrl.toDisplayString(url)}")
+        webView.loadUrl(DesktopVersion.withAppVersion(url))
+    }
+
+    /**
      * 稳定注入：任何一次主帧加载都有三道互相独立的时机，缺哪道都兜得住——
      *   1. document-start（addDocumentStartJavaScript）：主道，抢在页面任何
      *      脚本之前，能拿到首帧 WebSocket。注册挂在 WebView 实例上、跨 loadUrl
@@ -514,7 +593,7 @@ class MainActivity : AppCompatActivity() {
             Diagnostics.log("error", "注入脚本缺失，通知功能将不可用")
             return
         }
-        val webView = binding.webview
+        val webView = this.webView
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             val rules = setOf("https://$ALLOWED_ROOT", "https://*.$ALLOWED_ROOT")
             WebViewCompat.addDocumentStartJavaScript(webView, script, rules)
@@ -531,9 +610,9 @@ class MainActivity : AppCompatActivity() {
     private fun setBridgeAttached(attached: Boolean) {
         if (attached == bridgeAttached) return
         if (attached) {
-            binding.webview.addJavascriptInterface(WebAppBridge(prefs), BRIDGE_NAME)
+            webView.addJavascriptInterface(WebAppBridge(prefs), BRIDGE_NAME)
         } else {
-            binding.webview.removeJavascriptInterface(BRIDGE_NAME)
+            webView.removeJavascriptInterface(BRIDGE_NAME)
         }
         bridgeAttached = attached
     }
@@ -559,32 +638,32 @@ class MainActivity : AppCompatActivity() {
     private fun applyUrl(url: String) {
         prefs.remoteUrl = url
         Diagnostics.info("加载远程页面: ${RemoteUrl.toDisplayString(url)}")
-        binding.webview.visibility = View.VISIBLE
+        webView.visibility = View.VISIBLE
         binding.setupPanel.visibility = View.GONE
         hideError()
         // document-start 注册跨重载保留；加载开始/完成的补注仍兜住引擎失效。
         installInjection()
         ShellRuntime.ensureServiceRunning(this)
-        binding.webview.loadUrl(url)
+        webView.loadUrl(DesktopVersion.withAppVersion(url))
     }
 
     private fun reloadPage() {
         val url = prefs.remoteUrl ?: return showSetup()
         hideError()
         installInjection()
-        binding.webview.loadUrl(url)
+        webView.loadUrl(DesktopVersion.withAppVersion(url))
     }
 
     private fun showSetup() {
         ShellRuntime.dismissHandoffCover("显示接入页")
-        binding.webview.visibility = View.GONE
+        webView.visibility = View.GONE
         binding.errorPanel.visibility = View.GONE
         binding.setupPanel.visibility = View.VISIBLE
     }
 
     private fun showError(message: String) {
         ShellRuntime.dismissHandoffCover("加载失败，显示原生错误页")
-        binding.webview.visibility = View.GONE
+        webView.visibility = View.GONE
         binding.setupPanel.visibility = View.GONE
         binding.errorPanel.visibility = View.VISIBLE
         binding.errorText.text = message
@@ -593,7 +672,7 @@ class MainActivity : AppCompatActivity() {
     private fun hideError() {
         binding.errorPanel.visibility = View.GONE
         if (prefs.remoteUrl != null) {
-            binding.webview.visibility = View.VISIBLE
+            webView.visibility = View.VISIBLE
         }
     }
 
@@ -674,8 +753,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyStatusBarSurface() {
-        val dark = pageTheme?.let { it == PageTheme.DARK } ?: isSystemDark()
         val surfaceState = if (handoffCoverVisible) PageBarState.BOOT else pageBarState
+        // D8：颜色与图标必须用**同一个**解析结果。登录页 `pageTheme` 恒 null，
+        // 旧代码颜色按系统夜景、图标按「页面说浅色」⇒ 深色下深图标压在 #171717 上。
+        val dark = PageBarColor.darkFor(surfaceState, pageTheme, isSystemDark())
         val color = PageBarColor.resolve(surfaceState, dark)
         binding.handoffCover.setBackgroundColor(PageBarColor.resolve(PageBarState.BOOT, dark))
         // The strip is the root's own background: the root is padded down by the
@@ -687,13 +768,35 @@ class MainActivity : AppCompatActivity() {
         //（2026-09-28 真机截图）。页面预渲染壳的首帧底色就是 shell 色（:root 兜底的
         // neutral-50/900，与色表逐项一致），所以缝只存在于首绘之前；页面完成首绘后
         // 自己的背景盖掉这个底色。深色主题顺带消灭开屏白闪。
-        binding.webview.setBackgroundColor(color)
+        if (::webView.isInitialized) webView.setBackgroundColor(color)
         val controller = WindowInsetsControllerCompat(window, binding.root)
-        controller.isAppearanceLightStatusBars = PageBarColor.appearanceLightStatusBars(pageTheme)
+        controller.isAppearanceLightStatusBars = PageBarColor.appearanceLightStatusBars(dark)
         // The gesture bar floats over the page, so its icons have to agree with
         // the page too. Only matters for 3-button navigation (API 26+).
-        controller.isAppearanceLightNavigationBars = PageBarColor.appearanceLightStatusBars(pageTheme)
+        controller.isAppearanceLightNavigationBars = PageBarColor.appearanceLightStatusBars(dark)
         Diagnostics.info(PageBarColor.describe(surfaceState, pageTheme, color))
+    }
+
+    /**
+     * 新文档起步时该用的那一档表面。
+     *
+     * 远程页：回到 boot-shell（壳在、主题类未挂），否则重载会留着**上一份文档**的
+     * 头部色；登录/授权面：按 URL 直接给 D4 的专用色，不等一个永远不会来的回推。
+     */
+    private fun onPageStartedSurface(uri: Uri) {
+        val surface = RemoteUrl.authSurfaceOf(uri)
+        if (surface == null) {
+            pageTheme = null
+            pageBarState = PageBarState.BOOT_SHELL
+            applyStatusBarSurface()
+            return
+        }
+        val narrow = resources.configuration.screenWidthDp <= AUTH_NARROW_MAX_DP
+        val state = PageBarColor.authStateFor(surface, isSystemDark(), narrow)
+        Diagnostics.info("登录/授权面：${surface.name} → ${state.token}")
+        pageTheme = null
+        pageBarState = state
+        applyStatusBarSurface()
     }
 
     private fun isSystemDark(): Boolean =
@@ -733,7 +836,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun installBackHandling() {
         onBackPressedDispatcher.addCallback(this) {
-            val webView = binding.webview
             if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
                 webView.goBack()
                 return@addCallback
@@ -878,7 +980,7 @@ class MainActivity : AppCompatActivity() {
             append(");")
         }
         try {
-            binding.webview.evaluateJavascript(script, null)
+            webView.evaluateJavascript(script, null)
         } catch (e: Exception) {
             Diagnostics.log("warn", "执行定位脚本失败: ${e.message}")
         }
@@ -936,7 +1038,7 @@ class MainActivity : AppCompatActivity() {
         ShellRuntime.expectPageReload()
         mainHandler.postDelayed({
             try {
-                binding.webview.reload()
+                webView.reload()
                 Diagnostics.info("定位：页面疑似被顶掉，已重载（带任务预设，等新文档就绪后再定位）")
             } catch (e: Exception) {
                 Diagnostics.log("warn", "定位重载失败: ${e.message}")
@@ -983,7 +1085,7 @@ class MainActivity : AppCompatActivity() {
                             "注入层只保留滚动条 + 状态页面上报 + 页面日志汇，重载页面中"
                         },
                 )
-                binding.webview.reload()
+                webView.reload()
                 return
             }
         }
@@ -1141,6 +1243,12 @@ class MainActivity : AppCompatActivity() {
 
         private const val BRIDGE_NAME = "ZCodeShell"
         private const val ALLOWED_ROOT = "z.ai"
+
+        /**
+         * D4：`chat.z.ai` 登录页在 ≤512 CSS px 时卡片转纯白（鸿蒙口径）。原生只能拿
+         * `screenWidthDp` 近似——两者在 1x 设备上等价，高 dpr 设备上会略有偏差。
+         */
+        private const val AUTH_NARROW_MAX_DP = 512
         private const val LOCATE_RETRY_MS = 600L
         /**
          * 走了"预设 + 重载"那条路时，页内 DOM 定位器**降级为兜底**，等这么久再跑：

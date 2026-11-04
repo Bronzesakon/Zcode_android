@@ -17,6 +17,27 @@ import javax.crypto.spec.SecretKeySpec
  * HMAC 密钥是 passHash 的 UTF-8 字节，消息是 `nonce|role|deviceSid` 的 UTF-8 字节，
  * 输出 base64url 无填充）。role 固定为 `terminal`。
  */
+/**
+ * `auth_init` 帧（3.17.1 适配，TODO §2.2）。
+ *
+ * 与归档 Rust 逐字对齐（`relay_client.rs:556-590`，3.17.1 快照核对）：
+ *   * **token 模式**：没有 `role`，`client_ts` 用 **Unix 秒**（页面 `Math.floor(Date.now()/1e3)`）；
+ *   * **legacy**：`role:"terminal"` + **毫秒**，随后走 `auth_challenge` / HMAC proof。
+ *
+ * 抽成顶层纯函数是为了能在 JVM 单测里把两条分支的形状钉住——真机上一次握手要扫码，
+ * 而这里错一个字段就是"配对永远不 matched"。
+ */
+internal fun authInitFrame(creds: RelayCreds, nowMs: Long): JSONObject = JSONObject().apply {
+    put("type", "auth_init")
+    if (!creds.tokenMode) put("role", "terminal")
+    put("device_sid", creds.deviceSid)
+    put(
+        "meta",
+        JSONObject().put("platform", "web").put("version", "web").put("name", "mobile-browser"),
+    )
+    put("client_ts", if (creds.tokenMode) nowMs / 1000 else nowMs)
+}
+
 internal fun relayProof(passHash: String, nonce: String, role: String, deviceSid: String): String {
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(SecretKeySpec(passHash.toByteArray(Charsets.UTF_8), "HmacSHA256"))
@@ -28,9 +49,19 @@ internal fun relayProof(passHash: String, nonce: String, role: String, deviceSid
 data class RelayCreds(
     val wsUrl: String,
     val deviceSid: String,
+    /** legacy HMAC 模式的 passHash；3.16.1+ 的 token 模式下为空串。 */
     val passHash: String,
     val deviceMid: String?,
-)
+    /**
+     * 3.16.1+ 的 OAuth 短 token（页面自己那份 `ws2?token=…` 里的值）。非空即 token
+     * 模式：`auth_init` 不带 `role`、`client_ts` 用秒、`auth_challenge` 直接忽略。
+     * 与 `passHash` 一样是凭证，**绝不进日志**。
+     */
+    val authToken: String? = null,
+) {
+    /** 3.17.1 只发 token；legacy 回退留给带 `hash` 的旧链接（Rust 侧同样兼容）。 */
+    val tokenMode: Boolean get() = !authToken.isNullOrEmpty()
+}
 
 /**
  * 原生承载— 原生直连 relay 客户端，完全不经过 WebView/renderer。
@@ -116,6 +147,23 @@ object NativeRelayClient {
 
     private var heartbeatCount = 0
     private var ackCount = 0
+
+    /** 交还时"等 socket 关闭确认"的登记表：key 是 socket 实例本身（身份相等）。 */
+    private val closeWatchers = java.util.concurrent.ConcurrentHashMap<WebSocket, () -> Unit>()
+
+    /**
+     * relay 心跳间隔。**5s，不是 10s**：3.17.1 页面与归档 Rust 都是
+     * `heartbeatIntervalMs ?? 5_000` / `HEARTBEAT_INTERVAL_MS = 5_000`，ack 超时
+     * 15s（`relay_client.rs:138-140`、`validation-B0HfQ5gr.js` off≈152400）。
+     * `docs/25` 里那句"心跳 10s / ack 30s"是 3.16.1 时代的旧值，别按它调。
+     */
+    private const val HEARTBEAT_INTERVAL_MS = 5_000L
+
+    /**
+     * 关闭确认的等待上限（TODO §2.3 的 300ms 交还预算）。本机 `cancel()` 通常在一个
+     * 事件循环内就回调 `onFailure`；这里只是防"对端不回 FIN"把回前台卡死。
+     */
+    private const val CLOSE_CONFIRM_TIMEOUT_MS = 250L
     private var startedAtMs = 0L
     private var persistent = false
     private var carrierPaired: (() -> Unit)? = null
@@ -194,6 +242,30 @@ object NativeRelayClient {
             .connectTimeout(10, TimeUnit.SECONDS)
             .build()
     }
+
+    /** Includes a disconnected persistent session waiting for its retry. */
+    /**
+     * 并行覆盖实验开关（TODO §2.4）：关掉桥轮换，只开桥 + 同时订阅，并每拍打印
+     * 每座桥的收帧年龄。用于验证「桌面端是否真的同一时刻只服务一座桥」——
+     * 结论出来之前不写策略。
+     */
+    @Volatile
+    private var parallelCoverage = false
+
+    fun setParallelCoverage(enabled: Boolean) {
+        parallelCoverage = enabled
+        bridgeManager?.rotateEnabled = !enabled
+        Diagnostics.log(
+            "warn",
+            "承载: 并行覆盖实验" + (if (enabled) {
+                "开启——不轮换，每 12s 打一行每桥收帧年龄（观察 ≥10 分钟）"
+            } else {
+                "关闭——恢复 12s 轮换（只 resync 最饿的一座）"
+            }),
+        )
+    }
+
+    fun isParallelCoverage(): Boolean = parallelCoverage
 
     /** Includes a disconnected persistent session waiting for its retry. */
     fun isRunning(): Boolean = lifetime.active
@@ -374,8 +446,8 @@ object NativeRelayClient {
                 object : java.util.TimerTask() {
                     override fun run() = sendHeartbeat(token)
                 },
-                10_000L,
-                10_000L,
+                HEARTBEAT_INTERVAL_MS,
+                HEARTBEAT_INTERVAL_MS,
             )
         }
     }
@@ -412,6 +484,60 @@ object NativeRelayClient {
         synchronized(lifecycleLock) {
             if (lifetime.isCurrent(token)) stop(reason)
         }
+    }
+
+    /**
+     * 交还不变式（TODO §2.2 / §2.3）：**先停承载 → 确认 socket close → 才允许页面
+     * 重载/重拨**。
+     *
+     * 单控制端互斥：relay 只服务"最近连上的那一个"。页面在原生 socket 还没真正关掉时
+     * 重载，自己的新连接会被旧的原生连接顶掉——真机 2026-09-18 用 CDP 实测过那条路径
+     * （页面订阅成功后随即又被 KICKED）。所以重载必须挂在"关闭确认"上，而不是一个固定
+     * 延时（固定延时要么不够、要么白等）。
+     *
+     * `onClosed(true)` = 对端/本端都确认关闭；`false` = 超时放行（**不阻塞用户**：
+     * 关不掉的是本机 socket，页面重拨仍然可能成功，总比永远不回前台好）。
+     */
+    fun stopAndAwaitClose(
+        reason: String,
+        timeoutMs: Long = CLOSE_CONFIRM_TIMEOUT_MS,
+        onClosed: (Boolean) -> Unit,
+    ) {
+        val delivered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val deliver = { confirmed: Boolean ->
+            if (delivered.compareAndSet(false, true)) {
+                try {
+                    onClosed(confirmed)
+                } catch (e: Exception) {
+                    Diagnostics.log("warn", "承载: 交还回调异常 ${e.message}")
+                }
+            }
+        }
+        val watched = synchronized(lifecycleLock) {
+            val current = socket
+            if (current != null && lifetime.active) closeWatchers[current] = { deliver(true) }
+            current
+        }
+        stop(reason)
+        if (watched == null) {
+            deliver(false)
+            return
+        }
+        java.util.Timer(true).schedule(
+            object : java.util.TimerTask() {
+                override fun run() {
+                    closeWatchers.remove(watched)
+                    deliver(false)
+                }
+            },
+            timeoutMs,
+        )
+    }
+
+    /** 关闭确认：listener 在**任何**早退判断之前调它，见 [stopAndAwaitClose]。 */
+    private fun signalSocketClosed(webSocket: WebSocket) {
+        val watcher = closeWatchers.remove(webSocket) ?: return
+        watcher()
     }
 
     fun stop(reason: String) {
@@ -596,6 +722,7 @@ object NativeRelayClient {
                 maxWorkspaces = DEFAULT_MAX_COVERAGE,
             )
             bridgeManager = manager
+            manager.rotateEnabled = !parallelCoverage
             manager
         }
         Thread {
@@ -902,18 +1029,11 @@ object NativeRelayClient {
                 if (!mayAuthenticate(token)) return
                 phase = Phase.AUTHENTICATING
                 val c = creds ?: return
-                val init = JSONObject().apply {
-                    put("type", "auth_init")
-                    put("role", "terminal")
-                    put("device_sid", c.deviceSid)
-                    put(
-                        "meta",
-                        JSONObject().put("platform", "web").put("version", "web").put("name", "mobile-browser"),
-                    )
-                    put("client_ts", System.currentTimeMillis())
-                }
-                webSocket.send(init.toString())
-                Diagnostics.log("warn", "承载: 已连接，auth_init 已发（等待质询）")
+                webSocket.send(authInitFrame(c, System.currentTimeMillis()).toString())
+                Diagnostics.log(
+                    "warn",
+                    "承载: 已连接，auth_init 已发（${if (c.tokenMode) "token 模式" else "legacy HMAC"}，等待配对）",
+                )
             }
         }
 
@@ -929,6 +1049,15 @@ object NativeRelayClient {
                     synchronized(lifecycleLock) {
                         if (!isCurrent(token, webSocket) || !mayAuthenticate(token)) return
                         val c = creds ?: return
+                        // token 模式（3.16.1+）不需要 HMAC proof，服务端也不该再发挑战；
+                        // 若仍收到只能忽略——拿同一个 token 重试也不会成功（照 Rust 口径）。
+                        if (c.tokenMode || c.passHash.isEmpty()) {
+                            Diagnostics.log(
+                                "warn",
+                                "承载: token 模式下收到 auth_challenge，忽略（无 passHash 可算 proof）",
+                            )
+                            return
+                        }
                         val nonce = frame.optString("nonce")
                         val proof = relayProof(c.passHash, nonce, "terminal", c.deviceSid)
                         val response = JSONObject().apply {
@@ -944,6 +1073,14 @@ object NativeRelayClient {
                 "auth_ack", "pair_status_ack" -> {
                     synchronized(lifecycleLock) {
                         if (!isCurrent(token, webSocket)) return
+                        // 3.16.1 起 ack 带 device_sid，必须与本端一致才认（照 Rust
+                        // `relay_client.rs:700-716` 的门控）。缺字段的旧服务端放行。
+                        val ackSid = frame.optString("device_sid")
+                        val expectedSid = creds?.deviceSid
+                        if (ackSid.isNotEmpty() && expectedSid != null && ackSid != expectedSid) {
+                            Diagnostics.log("warn", "承载: 忽略 device_sid 不匹配的配对应答")
+                            return
+                        }
                         val status = frame.optString("pair_status", "unknown")
                         ackCount += 1
                         if (phase != Phase.PAIRED && status == "matched") {
@@ -1010,6 +1147,8 @@ object NativeRelayClient {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: okhttp3.Response?) {
+            // 交还路径先拿"关闭确认"：下面的 isCurrent 检查在 stop() 之后必然为假。
+            signalSocketClosed(webSocket)
             synchronized(lifecycleLock) {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED
@@ -1020,6 +1159,7 @@ object NativeRelayClient {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            signalSocketClosed(webSocket)
             synchronized(lifecycleLock) {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED

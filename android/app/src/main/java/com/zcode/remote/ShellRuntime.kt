@@ -10,6 +10,7 @@ import android.os.SystemClock
 import com.zcode.remote.core.CarrierHandback
 import com.zcode.remote.core.ConversationRecoveryPolicy
 import com.zcode.remote.core.CompletionEvent
+import com.zcode.remote.core.DesktopVersion
 import com.zcode.remote.core.Diagnostics
 import com.zcode.remote.core.InjectionReadiness
 import com.zcode.remote.core.HandoffState
@@ -672,18 +673,36 @@ object ShellRuntime {
             lastSocketMarkForStall = -1L
             lastSocketChangeAt = 0L
             val restoreAfterCarrier = NativeRelayClient.isRunning() || carrierHandedBack || carrierRanThisStint
-            // 成功；重连/重载后注入层 runtime 是新的（状态回默认）。
-            // 4b（2026-09-18）起没有"僵尸档"了：页面自己回不来时，靠注入层的 KICKED 终态自愈
-            // （healKickedOnForeground，在 __zcodeShellSetAppForeground 里）+ 回前台死链兜底
-            // （healDeadLinkOnResume）+ 页面自己的重连梯子；承载交还那条路另有下方的一次兜底重载。
-            if (NativeRelayClient.isRunning()) {
-                NativeRelayClient.stop("回前台交还")
+            val reloadNeeded = reloadExistingPage && (restoreAfterCarrier || pageReloadExpected)
+            // 必须在 stop() 之前取证：stop 一返回 isRunning() 就是 false，用它做分支会把
+            // "等关闭确认"那条路和"立刻重载"那条路同时走一遍（pageReloadEpoch 谁先到谁赢）。
+            val carrierWasRunning = NativeRelayClient.isRunning()
+            // 交还顺序（TODO §2.3，2026-11-04 拍板）：先停承载 → **等 NativeRelayClient
+            // 的 socket close 确认**（NATIVE_OWNED → RELEASED）→ 才 reload，不用固定延时。
+            // 单控制端互斥：原生 socket 还占着的时候页面重载，新连接会被再顶一次。
+            if (carrierWasRunning) {
                 carrierHandedBack = true
-                Diagnostics.log(
-                    "warn",
-                    "后台原生承载：回前台交还完成——页面可见性恢复后 Chromium 网络栈复活，" +
-                        "立即触发网页重载，不等待 JS 终态或 8s 观察窗",
-                )
+                val stopAt = SystemClock.elapsedRealtime()
+                NativeRelayClient.stopAndAwaitClose("回前台交还") { confirmed ->
+                    val waited = SystemClock.elapsedRealtime() - stopAt
+                    mainHandler.post {
+                        Diagnostics.log(
+                            "warn",
+                            "后台原生承载：回前台交还完成（socket " +
+                                (if (confirmed) "已确认关闭" else "关闭超时放行") +
+                                "，等待 ${waited}ms）——页面可见性恢复后 Chromium 网络栈复活，" +
+                                "立即触发网页重载，不等 JS 终态或 8s 观察窗",
+                        )
+                        if (reloadNeeded) {
+                            requestPageReload("回前台交还（socket 已关）", epoch)
+                        } else {
+                            evaluateJs(
+                                "window.__zcodeShellSetAppForeground && " +
+                                    "window.__zcodeShellSetAppForeground(true);",
+                            )
+                        }
+                    }
+                }
             }
             clearCarrierState()
             stopLiveProgressPolling()
@@ -693,9 +712,10 @@ object ShellRuntime {
                 // 新 Activity 会创建 WebView 并 loadUrl，不先加载再补一次 reload。
                 carrierRanThisStint = false
                 Diagnostics.info("提前交还：新 WebView 使用首次加载恢复，不额外重载")
-            } else if (restoreAfterCarrier || pageReloadExpected) {
+            } else if (!carrierWasRunning && reloadNeeded) {
+                // 承载没在跑（没起过 / 后台期间已被停）：没有 socket 要等，照旧立刻重载。
                 requestPageReload("回前台交还原生承载", epoch)
-            } else {
+            } else if (!reloadNeeded) {
                 evaluateJs("window.__zcodeShellSetAppForeground && window.__zcodeShellSetAppForeground(true);")
             }
             val startedAt = backgroundStartedAt
@@ -726,7 +746,14 @@ object ShellRuntime {
             // 新一次后台：复位"本次后台承载跑过"，避免把**上一次**后台（或前台）的承载记到
             // 这一次头上——那会让正常回前台也去安排兜底重载（见 [carrierRanThisStint]）。
             carrierRanThisStint = false
-            mainHandler.postDelayed({ maybeStartHandoffCarrier(epoch) }, HandoffState.START_DELAY_MS)
+            // 触发时机（TODO §2.3，2026-11-04 拍板）：
+            //   有在跑任务 → **0ms** 起 dial（后台通知实时性是这条路线存在的理由）；
+            //   没在跑任务 → 延迟 30s，届时不满足就什么都不做。
+            // 「dial 之前回前台 → 取消不踢页面」不靠计时器：`HandoffState` 的 epoch 与
+            // `NativeRelayClient.mayAuthenticate` 的前台复查都会把这一枪打空。
+            val hasRunning = store.runningTaskRefs().isNotEmpty() || store.staleGateHold().holds
+            val startDelay = if (hasRunning) 0L else CARRIER_IDLE_START_DELAY_MS
+            mainHandler.postDelayed({ maybeStartHandoffCarrier(epoch) }, startDelay)
             val snapshot = liveness
             backgroundFrameBase = snapshot?.inboundFrames ?: 0
             backgroundAckBase = snapshot?.pairAcks ?: 0
@@ -1121,6 +1148,13 @@ object ShellRuntime {
      * 探针的 ack），连续三窗一帧都没有，只可能是链路断了。
      */
     private const val STALL_SILENCE_MS = 35_000L
+
+    /**
+     * 退后台且**没有在跑任务**时，承载拨号的延迟（TODO §2.3，2026-11-04 拍板）：
+     * 30s 内没有任务出现就根本不启动。有任务时是 **0ms**——后台通知的实时性就是这条
+     * 路线存在的理由，代价（每次退后台都会踢页面 ⇒ 回前台一次受控重载）用户已接受。
+     */
+    private const val CARRIER_IDLE_START_DELAY_MS = 30_000L
 
     /** 页面刚动过 socket（重拨中）后的静默期：见 [lastSocketMarkForStall]。 */
     private const val CARRIER_REQUIET_AFTER_SOCKET_MS = 20_000L
@@ -1598,6 +1632,8 @@ object ShellRuntime {
         carrierStarted = false
         carrierStartedEarly = false
         handbackDeferredLogged = false
+        // 交还即关窗口：之后收到的 KICK 不能再算到"自我接管"头上。
+        closeCarrierWindow()
     }
 
     /**
@@ -1724,6 +1760,21 @@ object ShellRuntime {
                 Diagnostics.log("warn", "多工作区覆盖：已关闭（只开页面工作区）")
                 return true
             }
+            // 并行可行性实验（TODO §2.4）：开覆盖 + 关轮换。判据看日志里每 12s 一行的
+            // `parallel coverage: N bridges · <工作区>=<收帧年龄>`，观察 ≥10 分钟。
+            "carrier_parallel_on" -> {
+                multiWorkspaceCoverage = true
+                NativeRelayClient.setParallelCoverage(true)
+                Diagnostics.log(
+                    "warn",
+                    "多工作区覆盖：已开启（并行实验：全部开桥 + 同时订阅 + 不轮换）",
+                )
+                return true
+            }
+            "carrier_parallel_off" -> {
+                NativeRelayClient.setParallelCoverage(false)
+                return true
+            }
             "carrier_now" -> {
                 Diagnostics.log("warn", "后台原生承载（adb 手动触发）")
                 val creds = relayCreds
@@ -1842,6 +1893,16 @@ object ShellRuntime {
     private var pageReloadEpoch = -1L
     private var pageReloadExpected = false
 
+    /**
+     * 版本闸门③（TODO §3.1）：页面已经在 `remote-version-title` 那个阻断式 modal 上。
+     *
+     * 这个状态下页面被 `isBlocked()` 门死——轻推是空操作、重载只会让对话框再来一次。
+     * 注入层每次状态上报顺手探一次（本来就是同一拍），变化时才发一帧，所以这里是
+     * 一个**同步可读**的位，重载决策不用等 JS 往返（<300ms 的交还预算耗不起）。
+     */
+    @Volatile
+    private var versionGateBlocked = false
+
     fun expectPageReload() {
         pageReloadExpected = true
     }
@@ -1853,6 +1914,12 @@ object ShellRuntime {
     private fun requestPageReload(reason: String, epoch: Long) {
         if (!handoff.isCurrent(epoch, false) || pageReloadEpoch == epoch) return
         if (pageReloader == null) return
+        if (versionGateBlocked) {
+            // 闸门③：页面正卡在「桌面版本已更新」modal 上，重载只会重现同一个对话框。
+            // 只记日志——用户点 modal 里的「重新加载」时页面自己会把 app_version 带上。
+            Diagnostics.log("warn", "快速交接：跳过网页重载——版本闸门阻断中（$reason）")
+            return
+        }
         pageReloadEpoch = epoch
         // 不加延时；让同一生命周期事务内的新 Intent 有机会提供通知定位目标。
         mainHandler.post {
@@ -1884,6 +1951,10 @@ object ShellRuntime {
         carrierRanThisStint = true
         handbackDeferredLogged = false
         acquireCarrierWakeLock()
+        // KICKED 归因：把"从现在起是我们的拨号窗口"告诉页面。窗口内收到的 KICK 是
+        // 我们自己造成的（页面自愈必然再被踢），由壳盖罩 + 交还后重载；窗口外的 KICK
+        // 是外部抢占，壳不动手（TODO §2.3）。
+        openCarrierWindow()
         NativeRelayClient.start(
             creds,
             durationMs = 0L,
@@ -1912,6 +1983,22 @@ object ShellRuntime {
 
     fun setJsEvaluator(evaluator: ((String) -> Unit)?) {
         jsEvaluator = evaluator
+    }
+
+    /** 承载拨号窗口开启（页面据此归因 KICKED）。只记键名/会话 id，不含凭证。 */
+    private fun openCarrierWindow() {
+        val at = System.currentTimeMillis()
+        evaluateJs(
+            "window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(" +
+                at + "," + JSONObject.quote(pageWorkspaceKey) + "," +
+                JSONObject.quote(pageWorkspaceTaskId) + ");",
+        )
+    }
+
+    /** 承载停掉/交还后关闭窗口，避免把之后的外部抢占误判成自我接管。 */
+    private fun closeCarrierWindow() {
+        if (jsEvaluator == null) return
+        evaluateJs("window.__zcodeShellExpectCarrier && window.__zcodeShellExpectCarrier(0,'','');")
     }
 
     /** 原生承载原生直连 relay 的凭证（注入层移交，仅内存，不落日志）。 */
@@ -2058,6 +2145,18 @@ object ShellRuntime {
 
     fun dismissHandoffCover(reason: String) {
         if (handoffCover.clear()) notifyHandoffCover(reason)
+    }
+
+    /**
+     * 渲染进程死亡后的恢复罩（`onRenderProcessGone`）：新文档首个 logo/页面帧画出才撤，
+     * 与接管同一条释放路径；15s 兜底（与交还超时同值）。
+     */
+    fun coverForRendererGone(reason: String) {
+        if (!handoffCover.rendererGone()) return
+        notifyHandoffCover(reason)
+        mainHandler.postDelayed({
+            if (handoffCover.expire(-1L)) notifyHandoffCover("渲染恢复超时，露出网页原有状态")
+        }, HandoffCoverState.RETURN_TIMEOUT_MS)
     }
 
     private fun notifyHandoffCover(reason: String) {
@@ -2236,12 +2335,17 @@ object ShellRuntime {
                 }
                 "relaycreds" -> {
                     // 原生承载（原生直连 relay）凭证：注入层移交，仅驻内存。
-                    // 任何日志路径都不得打印这些字段（sid/hash/mid 红线）。
+                    // 任何日志路径都不得打印这些字段（sid/hash/mid/token 红线）。
                     val data = root.optJSONObject("data") ?: return
                     val wsUrl = data.optString("url")
                     val deviceSid = data.optString("deviceSid")
                     val passHash = data.optString("passHash")
-                    if (wsUrl.isEmpty() || deviceSid.isEmpty() || passHash.isEmpty()) {
+                    // 3.16.1+：链接里没有 `hash`，认证改由 `ws2?token=…` 承担。两者留一即可，
+                    // 少了这一条 token 模式永远进不来（旧代码只认 passHash）。
+                    val authToken = data.optString("authToken").ifBlank { null }
+                    if (wsUrl.isEmpty() || deviceSid.isEmpty() ||
+                        (passHash.isEmpty() && authToken == null)
+                    ) {
                         Diagnostics.log("warn", "承载: relaycreds 字段不全，忽略")
                         return
                     }
@@ -2254,10 +2358,14 @@ object ShellRuntime {
                         deviceSid = deviceSid,
                         passHash = passHash,
                         deviceMid = data.optString("deviceMid").ifBlank { null },
+                        authToken = authToken,
                     )
                     NativeRelayClient.sessionsSink = { update -> acceptNativeSessions(update) }
                     mainHandler.post { maybeStartHandoffCarrier(handoff.epoch) }
-                    Diagnostics.log("info", "承载: relay 凭证已接收（仅内存）")
+                    Diagnostics.log(
+                        "info",
+                        "承载: relay 凭证已接收（仅内存，${if (authToken != null) "token" else "legacy"} 模式）",
+                    )
                 }
                 "pagestate" -> {
                     // Which visual state the page is in, and which theme it
@@ -2267,20 +2375,66 @@ object ShellRuntime {
                     onPageState(data.optString("state"), data.optString("theme"))
                     onHandoffPresentation(data)
                 }
+                "versiongate" -> {
+                    // 闸门③：阻断式 modal 的出现/消失（注入层在同一拍里探一次）。
+                    val data = root.optJSONObject("data") ?: return
+                    val blocked = data.optBoolean("blocked")
+                    if (blocked == versionGateBlocked) return
+                    versionGateBlocked = blocked
+                    if (blocked) {
+                        Diagnostics.log(
+                            "warn",
+                            "版本闸门阻断：页面停在「桌面版本已更新」，停止轻推与重载" +
+                                "（app_version=${DesktopVersion.current() ?: "未知"}）",
+                        )
+                    } else {
+                        Diagnostics.info("版本闸门解除，恢复正常重载策略")
+                    }
+                }
+                "desktopversion" -> {
+                    // 闸门②：从页面自己的 bootstrap 帧学到 desktopAppVersion，
+                    // 下次加载/重载时拼进 URL（不写 Prefs、不猜）。
+                    val data = root.optJSONObject("data") ?: return
+                    DesktopVersion.learn(data.optString("version"))
+                }
                 "pagefailure" -> {
                     val data = root.optJSONObject("data") ?: return
                     val failureEpoch = handoff.epoch
                     val document = data.optString("documentId")
+                    val kind = data.optString("kind")
                     mainHandler.post {
                         if (document != pageDocumentId) return@post
+                        // KICKED 归因（TODO §2.3，替换旧的 KICKED_HEAL_CAP 计数）：
+                        //   落在承载 dial 窗口内 → **自我接管**，盖罩等交还后重载；
+                        //   否则 → 前端被别的设备/对话抢占，壳**不动手**，官方文案照常展示。
+                        if (kind == "kicked" && carrierMayHaveKickedPage()) {
+                            if (handoffCover.carrierMatched(failureEpoch, true, document)) {
+                                notifyHandoffCover("自我接管：检测到 KICKED，立即盖上加载中遮罩")
+                            } else {
+                                Diagnostics.log(
+                                    "info",
+                                    "自我接管：KICKED 落在承载窗口内，遮罩保持到新文档就绪",
+                                )
+                            }
+                            return@post
+                        }
+                        if (kind == "kicked") {
+                            Diagnostics.log(
+                                "warn",
+                                "外部抢占：KICKED 不在承载窗口内——壳不恢复、不罩，" +
+                                    "按页面官方终态展示",
+                            )
+                        }
                         var unownedConflict = false
-                        if (failureEpoch == handoff.epoch && data.optString("kind") == "kicked" &&
+                        if (failureEpoch == handoff.epoch && kind == "kicked" &&
                             !carrierStarted && !NativeRelayClient.isRunning()) {
                             // A conflict known before our own attempt is not ours to mask.
                             unownedConflict = handoffCover.carrierKicked(handoff.epoch)
                         }
-                        if (handoffCover.pageFailed(document, data.optBoolean("foreground")) || unownedConflict) {
-                            notifyHandoffCover("网页报告 ${data.optString("kind")}，保留原有提示")
+                        if (handoffCover.pageFailed(document, data.optBoolean("foreground")) ||
+                            unownedConflict
+                        ) {
+                            notifyHandoffCover("网页报告 $kind，保留原有提示")
                         }
                     }
                 }
@@ -2584,6 +2738,9 @@ object ShellRuntime {
         injectionReadiness.reset()
         lastInjectStatusLine = ""
         pageReloadExpected = false
+        // 闸门③的阻断位属于**上一份文档**：新文档一起步就清掉，否则一旦被置真，
+        // 离开那个页面之后所有重载都会被跳过。
+        versionGateBlocked = false
         if (!userIsAway()) carrierRanThisStint = false
     }
 
@@ -2592,6 +2749,35 @@ object ShellRuntime {
         val update = store.reset()
         notifier.syncRunningTasks(update)
         updateServiceNotification(emptyList())
+    }
+
+    /**
+     * D7（2026-11-04 拍板）：**离开远程页就全清**——登录页/授权页/回调页/任何非
+     * `/remote` 的落地文档都会走到这里。
+     *
+     * 三件事各有各的理由：
+     *   * `relayCreds = null`：这份凭证只在页面当前那条连接上有效。页面一换（登录是
+     *     整页导航），它就是死凭证；而 `maybeStartHandoffCarrier` 只检查"非空"，退后台
+     *     时会拿它拨号——拨不通、只留噪音，最坏还会把用户刚登录的那一侧顶掉。
+     *   * 停承载：单控制端互斥，登录页上没有任何理由让原生继续占着 relay。
+     *   * `store.reset()`（经 [onPageReloaded]）：运行态与通知只在远程页 `ready` 时复位，
+     *     登录页永远等不到 ready ⇒ 旧的"运行中"卡片、前台服务文案会一直挂着。
+     */
+    fun onLeftRemotePage(reason: String) {
+        val hadCreds = relayCreds != null
+        relayCreds = null
+        val carrierWasRunning = NativeRelayClient.isRunning()
+        if (carrierWasRunning) NativeRelayClient.stop("离开远程页：$reason")
+        clearCarrierState()
+        carrierRanThisStint = false
+        onPageReloaded()
+        if (hadCreds || carrierWasRunning) {
+            Diagnostics.log(
+                "warn",
+                "离开远程页：已清 relay 凭证" + (if (carrierWasRunning) "、停止承载" else "") +
+                    "、复位运行态/通知（$reason）",
+            )
+        }
     }
 
     fun isInjectedReady(): Boolean = injectionReadiness.isReady()

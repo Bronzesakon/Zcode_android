@@ -16,7 +16,7 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#FFF8F8F8">
+    android:background="@color/page_bar_boot">
 
     <WebView
         android:id="@+id/webview"
@@ -30,7 +30,7 @@
         android:id="@+id/handoffCover"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="#FFF8F8F8"
+        android:background="@color/page_bar_boot"
         android:clickable="true"
         android:focusable="true"
         android:contentDescription="@string/handoff_loading"

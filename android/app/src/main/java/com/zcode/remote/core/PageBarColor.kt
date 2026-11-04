@@ -25,7 +25,16 @@ package com.zcode.remote.core
  * so the reported theme wins and the system's night mode is only the fallback.
  * See inject.js section 6 for how the state is derived.
  */
-enum class PageBarState(val token: String) {
+enum class PageBarState(
+    val token: String,
+    /**
+     * Login/authorization surfaces carry their own light/dark name from the page
+     * (D4): they follow the *web page's* theme, never the system's, and the
+     * native side has no DOM to ask on those pages. `null` means "the page
+     * reports a theme and the table follows it" — every non-auth state.
+     */
+    val fixedDark: Boolean? = null,
+) {
     /**
      * Pre-rendered boot shell while `<html>` carries no `theme-zai-*` class yet,
      * i.e. before the page's own top-level IIFE stamps it: the page background
@@ -44,7 +53,31 @@ enum class PageBarState(val token: String) {
     MAIN_HEADER("main-header"),
 
     /** Control view, wide: the shell area sits directly under the bar. */
-    MAIN_SURFACE("main-surface");
+    MAIN_SURFACE("main-surface"),
+
+    // ---------------------------------------------------------- login (D4)
+    // 8 names, mirroring the Harmony shell. The light/dark bit is baked into
+    // the name because these pages run without the injected layer: nobody
+    // reports a theme there, so the native side can only pick by URL + system
+    // night mode when the page starts loading (D5).
+
+    /** `*.bigmodel.cn` — the BigModel login page is always the light surface. */
+    AUTH_BIGMODEL("auth-bigmodel", fixedDark = false),
+
+    /** `chat.z.ai` + `/auth/oauth/authorize`. */
+    AUTH_ZAI_CONSENT_LIGHT("auth-zai-consent-light", fixedDark = false),
+    AUTH_ZAI_CONSENT_DARK("auth-zai-consent-dark", fixedDark = true),
+
+    /** `chat.z.ai` + `/auth…` (the phone login page). */
+    AUTH_ZAI_LOGIN_LIGHT("auth-zai-login-light", fixedDark = false),
+
+    /** Same page at ≤512 CSS px: the card turns pure white. */
+    AUTH_ZAI_LOGIN_LIGHT_NARROW("auth-zai-login-light-narrow", fixedDark = false),
+    AUTH_ZAI_LOGIN_DARK("auth-zai-login-dark", fixedDark = true),
+
+    /** `zcode.z.ai` + `/web-remote`, `/share`, `/cn/share`. */
+    AUTH_ZCODE_LIGHT("auth-zcode-light", fixedDark = false),
+    AUTH_ZCODE_DARK("auth-zcode-dark", fixedDark = true);
 
     companion object {
         val DEFAULT = BOOT
@@ -91,6 +124,17 @@ object PageBarColor {
     private const val MAIN_SURFACE_LIGHT = 0xFFECECEE.toInt()
     private const val MAIN_SURFACE_DARK = 0xFF2B2B2B.toInt()
 
+    // 登录/授权面（D4，2026-11-04 照抄鸿蒙现值——用户已确认观感无问题，勿改）。
+    // 这是一张**独立**的表：色值随网页主题，不随系统深浅；`dark` 位由状态名自带。
+    private const val AUTH_BIGMODEL_SURFACE = 0xFFF7F8FA.toInt()
+    private const val AUTH_CONSENT_LIGHT = 0xFFF8F8F8.toInt()
+    private const val AUTH_CONSENT_DARK = 0xFF161616.toInt()
+    private const val AUTH_LOGIN_LIGHT = 0xFFF5F6F8.toInt()
+    private const val AUTH_LOGIN_LIGHT_NARROW = 0xFFFFFFFF.toInt()
+    private const val AUTH_LOGIN_DARK = 0xFF141618.toInt()
+    private const val AUTH_ZCODE_LIGHT = 0xFFF8F8F8.toInt()
+    private const val AUTH_ZCODE_DARK = 0xFF161616.toInt()
+
     /**
      * @param state which page state the injected layer last reported.
      * @param theme the theme the page resolved for itself; null means "the page
@@ -101,7 +145,49 @@ object PageBarColor {
         PageBarState.BOOT -> if (dark) BOOT_DARK else BOOT_LIGHT
         PageBarState.MAIN_HEADER -> if (dark) MAIN_HEADER_DARK else MAIN_HEADER_LIGHT
         PageBarState.MAIN_SURFACE -> if (dark) MAIN_SURFACE_DARK else MAIN_SURFACE_LIGHT
+        // The auth names already carry their light/dark bit; `dark` is ignored on
+        // purpose — otherwise a system theme switch would paint the wrong surface
+        // on a page that follows the web theme.
+        PageBarState.AUTH_BIGMODEL -> AUTH_BIGMODEL_SURFACE
+        PageBarState.AUTH_ZAI_CONSENT_LIGHT -> AUTH_CONSENT_LIGHT
+        PageBarState.AUTH_ZAI_CONSENT_DARK -> AUTH_CONSENT_DARK
+        PageBarState.AUTH_ZAI_LOGIN_LIGHT -> AUTH_LOGIN_LIGHT
+        PageBarState.AUTH_ZAI_LOGIN_LIGHT_NARROW -> AUTH_LOGIN_LIGHT_NARROW
+        PageBarState.AUTH_ZAI_LOGIN_DARK -> AUTH_LOGIN_DARK
+        PageBarState.AUTH_ZCODE_LIGHT -> AUTH_ZCODE_LIGHT
+        PageBarState.AUTH_ZCODE_DARK -> AUTH_ZCODE_DARK
     }
+
+    /**
+     * D8：图标明暗必须跟着**真的画上去的那一面**，不能跟着页面原始主题。
+     *
+     * 登录页没有注入层 ⇒ `theme` 恒 null；旧实现里颜色按系统夜景取（深色下
+     * `#171717` 的条带），图标却按 `pageTheme != DARK` 取「浅色表面 ⇒ 深图标」，
+     * 于是深图标压在近黑条带上。这里把两者收进同一个函数，调用方只有一个 `dark`。
+     */
+    fun darkFor(state: PageBarState, theme: PageTheme?, systemDark: Boolean): Boolean =
+        state.fixedDark ?: (theme?.let { it == PageTheme.DARK } ?: systemDark)
+
+    /**
+     * D5：登录页没有注入层 ⇒ 状态名只能由 URL 先给初值，不等回推。
+     *
+     * `dark` 是**网页**主题的替代信号：登录页上唯一能拿到的就是系统夜景。鸿蒙的默认
+     * 口径照抄在这里——bigmodel 恒亮、chat.z.ai 默认亮、zcode `/web-remote|/share`
+     * 默认暗；`narrow` 只影响 chat.z.ai 登录页（≤512 CSS px 时卡片转纯白）。
+     */
+    fun authStateFor(surface: RemoteUrl.AuthSurface, dark: Boolean, narrow: Boolean): PageBarState =
+        when (surface) {
+            RemoteUrl.AuthSurface.BIGMODEL -> PageBarState.AUTH_BIGMODEL
+            RemoteUrl.AuthSurface.ZAI_CONSENT ->
+                if (dark) PageBarState.AUTH_ZAI_CONSENT_DARK else PageBarState.AUTH_ZAI_CONSENT_LIGHT
+            RemoteUrl.AuthSurface.ZAI_LOGIN -> when {
+                dark -> PageBarState.AUTH_ZAI_LOGIN_DARK
+                narrow -> PageBarState.AUTH_ZAI_LOGIN_LIGHT_NARROW
+                else -> PageBarState.AUTH_ZAI_LOGIN_LIGHT
+            }
+            RemoteUrl.AuthSurface.ZCODE ->
+                if (dark) PageBarState.AUTH_ZCODE_DARK else PageBarState.AUTH_ZCODE_LIGHT
+        }
 
     /**
      * One line for the log, so a field round can tell what was applied.
@@ -111,14 +197,15 @@ object PageBarColor {
      * theme, and the log has to state the colour that is actually on screen.
      */
     fun describe(state: PageBarState, theme: PageTheme?, appliedArgb: Int): String {
-        val name = theme?.token ?: "system"
+        val name = theme?.token
+            ?: if (state.fixedDark != null) "fixed" else "system"
         return "状态栏底色: ${state.token}/$name → #${"%06X".format(appliedArgb and 0xFFFFFF)}"
     }
 
     /**
      * What `isAppearanceLightStatusBars` has to be set to, i.e. "the surface
-     * behind the bar is light, so draw dark icons". The opposite of the theme,
-     * which is why it lives next to the table instead of in the Activity.
+     * behind the bar is light, so draw dark icons". The caller passes the
+     * **resolved** `dark` from [darkFor] — not the page's raw theme (D8).
      */
-    fun appearanceLightStatusBars(theme: PageTheme?): Boolean = theme != PageTheme.DARK
+    fun appearanceLightStatusBars(dark: Boolean): Boolean = !dark
 }

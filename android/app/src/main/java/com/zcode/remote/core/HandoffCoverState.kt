@@ -78,6 +78,28 @@ class HandoffCoverState {
         return clear()
     }
 
+    /**
+     * The renderer died and a fresh WebView is being built (`onRenderProcessGone`).
+     *
+     * Same cover, different cause: there is no carrier epoch to wait for, so it is
+     * pinned to -1 and released by the first frame of the new document exactly like
+     * a handback ([pageStarted] → [pageReady] → [renderedCandidate] → [pagePresented]).
+     * [expire] with -1 is the timeout path.
+     */
+    fun rendererGone(): Boolean {
+        if (visible) return false
+        visible = true
+        returning = true
+        carrierEpoch = -1L
+        sourceDocument = ""
+        activeDocument = ""
+        candidateDocument = ""
+        loadStarted = false
+        retiredDocuments.clear()
+        revision += 1
+        return true
+    }
+
     fun expire(epoch: Long): Boolean {
         if (!visible || !returning || carrierEpoch != epoch) return false
         return clear()

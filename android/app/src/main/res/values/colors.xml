@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 壳自己的固定表面色（与 core/PageBarColor.kt 的表逐值一致）。
+
+     这里只有一项：**boot 面**。它是根布局与交接罩的默认底色，也就是"网页还什么都没画"
+     时用户看到的那一整块。运行时的条带色由 Activity 按注入层回推的状态名查表设置
+     （`PageBarColor.resolve`），XML 只负责首帧——所以它必须跟着系统深浅走，
+     否则深色设备冷启动会闪一下浅色。
+
+     值来自鸿蒙现值（用户 2026-11-04 确认观感无问题）：
+       boot（已着主题 / KICKED / 配对等待）  亮 #F8F8F8  暗 #161616
+     未着主题那一档（#FAFAFA / #171717）只在运行时用，见 PageBarColor.BOOT_SHELL。 -->
+<resources>
+    <color name="page_bar_boot">#FFF8F8F8</color>
+</resources>

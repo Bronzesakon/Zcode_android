@@ -110,4 +110,27 @@ class HandoffCoverStateTest {
         assertFalse(state.visible)
         assertFalse(state.expire(1L))
     }
+
+    @Test
+    fun `renderer death covers without a carrier and releases on the fresh document`() {
+        val state = HandoffCoverState()
+        assertTrue(state.rendererGone())
+        assertTrue(state.visible)
+        assertFalse("the cover is already up", state.rendererGone())
+        // 新 WebView 加载：pageStarted/pageReady/presented 与交还同一条释放路径。
+        state.pageStarted()
+        state.pageReady("rebuilt")
+        val ticket = state.renderedCandidate("rebuilt")!!
+        assertTrue(state.pagePresented("rebuilt", ticket))
+        assertFalse(state.visible)
+    }
+
+    @Test
+    fun `renderer cover is released by the timeout even if no frame arrives`() {
+        val state = HandoffCoverState()
+        assertTrue(state.rendererGone())
+        // -1 是渲染恢复专用的 epoch（没有承载代次可等）。
+        assertTrue(state.expire(-1L))
+        assertFalse(state.visible)
+    }
 }

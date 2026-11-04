@@ -22,6 +22,9 @@ const assert = require('node:assert');
 const path = require('node:path');
 const {DesktopCore, encodeBody, fragment, snapshotWire} = require('./fake-desktop.js');
 
+// 3.17.1 把页面手机壳的断点收窄成三条件，壳的 NARROW_QUERY 必须逐字跟着它。
+const NARROW_QUERY = '(max-width: 767px) and (hover: none) and (pointer: coarse)';
+
 const PROTOCOL_PATH = path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'zcode-protocol.js');
 const INJECT_PATH = path.join(__dirname, '..', 'app', 'src', 'main', 'assets', 'inject.js');
 
@@ -465,6 +468,7 @@ function setupPage(options) {
         delete globalThis.__zcodeShellHeartbeat;
         delete globalThis.__zcodeShellReportPageState;
         delete globalThis.__zcodeShellPageStateHooked;
+        delete globalThis.__zcodeShellExpectCarrier;
         delete globalThis.__zcodeShellFallback;
     };
 
@@ -1201,7 +1205,7 @@ function pageStates(posts) {
 }
 
 test('handoff returns to the first page frame and never hides workspace connection status', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         const socket = new globalThis.WebSocket('wss://relay.example');
         await flush();
@@ -1278,7 +1282,7 @@ test('background KICK and other relay failures keep their origin and original pa
 });
 
 test('the page reports its visual state, and only when it changes', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         // Boot shell is up and the page has not stamped its theme class yet: the
         // unthemed shell is the one that falls back to the :root token.
@@ -1324,7 +1328,7 @@ test('the page reports its visual state, and only when it changes', async () => 
 test('crossing the page\'s breakpoint without a DOM change is still reported', async () => {
     // Rotation, split screen and foldables change the layout without mutating the
     // DOM, so the media query has to be watched in its own right.
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         page.dom.set('bg-background-win-alt', true);
         page.dom.setTheme('light');
@@ -1332,7 +1336,7 @@ test('crossing the page\'s breakpoint without a DOM change is still reported', a
         await flush();
         assert.deepStrictEqual(pageStates(page.posts), ['main-header/light']);
 
-        const narrow = page.mediaQueries.find((mql) => mql.query === '(max-width: 767px)');
+        const narrow = page.mediaQueries.find((mql) => mql.query === NARROW_QUERY);
         assert.ok(narrow, 'the reporter must watch the page\'s own breakpoint');
         narrow.setMatches(false);
         await flush();
@@ -1344,7 +1348,7 @@ test('crossing the page\'s breakpoint without a DOM change is still reported', a
 });
 
 test('the native side can ask for a fresh report after a background stint', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         page.dom.set('bg-background-win-alt', true);
         page.dom.setTheme('light');
@@ -1368,7 +1372,7 @@ test('a page without MutationObserver still boots, and still follows its breakpo
     // re-checked, but the initial read and the media-query watchers still work —
     // so the bar is correct for the layout the page boots into and keeps up with
     // rotation and a system theme switch.
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}, noObserver: true});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}, noObserver: true});
     try {
         page.dom.set('bg-background-win-alt', true);
         page.dom.setTheme('light');
@@ -1376,7 +1380,7 @@ test('a page without MutationObserver still boots, and still follows its breakpo
         assert.deepStrictEqual(
             pageStates(page.posts), ['main-header/light'],
             'the state is read once even without an observer');
-        const narrow = page.mediaQueries.find((mql) => mql.query === '(max-width: 767px)');
+        const narrow = page.mediaQueries.find((mql) => mql.query === NARROW_QUERY);
         narrow.setMatches(false);
         await flush();
         assert.deepStrictEqual(
@@ -1397,7 +1401,7 @@ test('a document-start arrival before <html> exists retries instead of giving up
     const page = setupPage({
         pageState: true,
         noDocumentElement: true,
-        media: {'(max-width: 767px)': true},
+        media: {[NARROW_QUERY]: true},
     });
     try {
         assert.deepStrictEqual(pageStates(page.posts), [],
@@ -1451,7 +1455,7 @@ const refreshButtonsIn = (row) =>
     row.children.filter((child) => child.getAttribute('data-zcode-shell-refresh') === '1');
 
 test('the refresh button lands left of the theme menu trigger with cloned styling', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         const {row, theme} = stubChatHeader(page);
         await bootPageState(page);
@@ -1477,7 +1481,7 @@ test('the refresh button lands left of the theme menu trigger with cloned stylin
 });
 
 test('the refresh icon clones the page icon shell and swaps in the family glyph', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         const {row, theme} = stubChatHeader(page);
         // The page's own icon, as React renders it (a lucide shell).
@@ -1504,7 +1508,7 @@ test('the refresh icon clones the page icon shell and swaps in the family glyph'
 });
 
 test('a remounted header gets a fresh button, and a page without the anchor stays untouched', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         const {section, row, theme} = stubChatHeader(page);
         await bootPageState(page);
@@ -1540,7 +1544,7 @@ test('a remounted header gets a fresh button, and a page without the anchor stay
 });
 
 test('clicking the refresh button reloads in-process and leaves a log line', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         const {row} = stubChatHeader(page);
         await bootPageState(page);
@@ -1560,7 +1564,7 @@ test('clicking the refresh button reloads in-process and leaves a log line', asy
 });
 
 test('on the wide shell the button anchors to the workspace header (no mobile header)', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': false}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: false}});
     try {
         // The wide/desktop shell never renders section[data-mobile-page="chat"];
         // the right-most header menu (measured: the help menu) is the anchor.
@@ -1586,7 +1590,7 @@ test('on the wide shell the button anchors to the workspace header (no mobile he
 });
 
 test('the testid toggle fallback anchors the button and strips the selected highlight', async () => {
-    const page = setupPage({pageState: true, media: {'(max-width: 767px)': false}});
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: false}});
     try {
         const bar = new FakeElement('div');
         const toggle = new FakeElement('button');
@@ -1614,7 +1618,7 @@ test('login and authorization surfaces never get the refresh button', async () =
         'https://zcode.z.ai/web-remote/callback?code=redacted',
     ];
     for (const href of surfaces) {
-        const page = setupPage({pageState: true, media: {'(max-width: 767px)': true}});
+        const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
         try {
             const {row} = stubChatHeader(page);
             globalThis.location.href = href;
@@ -1922,20 +1926,22 @@ test('进对话铁判准：页面真实发出的信标会武装 5s 判定', () =
     }
 });
 
-test('KICKED 自愈：后台被顶掉 → 回前台立即触发重载', async () => {
+test('KICKED 归因：落在承载窗口内 → 自我接管，注入层不重载、交给原生', async () => {
     const page = setupPage();
     const {reloads, restore} = stubReload();
     const storage = stubSessionStorage();
     try {
         const socket = new globalThis.WebSocket('wss://relay.example');
         globalThis.__zcodeShellSetAppForeground(false);
+        globalThis.__zcodeShellExpectCarrier(Date.now(), 'ws-key', 'sess-1');
         socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
         assert.ok(findPost(page.posts, 'diag', (d) =>
-            d.message.includes('应用在后台')).length === 1,
-            'a background kick must be recorded');
+            d.message.includes('落在承载窗口内（自我接管）')).length === 1,
+            'diag: ' + JSON.stringify(findPost(page.posts, 'diag').map((p) => p.data.message)));
         globalThis.__zcodeShellSetAppForeground(true);
-        assert.strictEqual(reloads.length, 1,
-            'native releases ownership first; the page must not add a 1.5s delay');
+        await wait(50);
+        assert.strictEqual(reloads.length, 0,
+            'the native side owns the recovery: it covers, hands back, then reloads');
     } finally {
         storage.restore();
         restore();
@@ -1943,87 +1949,71 @@ test('KICKED 自愈：后台被顶掉 → 回前台立即触发重载', async ()
     }
 });
 
-test('KICKED：前台被顶掉不自动重载（可能与另一台控制端在抢）', async () => {
+test('KICKED 归因：窗口外（外部抢占）→ 壳不动手，不罩也不重载', async () => {
     const page = setupPage();
     const {reloads, restore} = stubReload();
     const storage = stubSessionStorage();
     try {
         const socket = new globalThis.WebSocket('wss://relay.example');
         socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
+        assert.ok(findPost(page.posts, 'diag', (d) =>
+            d.message.includes('外部抢占，壳不动手')).length === 1);
         globalThis.__zcodeShellSetAppForeground(false);
         globalThis.__zcodeShellSetAppForeground(true);
         await wait(1700);
-        assert.strictEqual(reloads.length, 0, 'a foreground kick is not ours to fix');
-        assert.ok(findPost(page.posts, 'diag', (d) =>
-            d.message.includes('前台）：不自动干预')).length === 1);
+        assert.strictEqual(reloads.length, 0, 'an external conflict is the official flow');
     } finally {
         storage.restore();
         restore();
+        page.teardown();
+    }
+});
+
+test('KICKED 归因：承载窗口关闭（交还）后，迟到的 KICK 归外部', async () => {
+    const page = setupPage();
+    const {reloads, restore} = stubReload();
+    const storage = stubSessionStorage();
+    try {
+        const socket = new globalThis.WebSocket('wss://relay.example');
+        globalThis.__zcodeShellExpectCarrier(Date.now(), 'ws-key', '');
+        globalThis.__zcodeShellExpectCarrier(0, '', '');
+        socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
+        assert.ok(findPost(page.posts, 'diag', (d) =>
+            d.message.includes('外部抢占，壳不动手')).length === 1,
+            'a closed window must not claim the kick');
+        assert.strictEqual(reloads.length, 0);
+    } finally {
+        storage.restore();
+        restore();
+        page.teardown();
+    }
+});
+
+test('KICKED 归因：窗口超过 5 分钟自动失效（原生没来得及关也不误判）', async () => {
+    const page = setupPage();
+    const storage = stubSessionStorage();
+    try {
+        const socket = new globalThis.WebSocket('wss://relay.example');
+        globalThis.__zcodeShellExpectCarrier(Date.now() - 3e5 - 1000, 'ws-key', '');
+        socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
+        assert.ok(findPost(page.posts, 'diag', (d) =>
+            d.message.includes('外部抢占，壳不动手')).length === 1);
+    } finally {
+        storage.restore();
         page.teardown();
     }
 });
 
 test('后台期间重载的文档按原生真实前后台启动（config.foreground）', async () => {
     // 2026-09-27 17:07 现场的一环：文档在后台被重载后，注入层启动默认自认前台，
-    // 于是 KICKED 被判成"前台被顶→不自动干预"，自愈链路（kickedAwayAt）短路。
-    // 原生现在在 config() 里给出权威前后台，后台加载的文档必须按它启动。
+    // 归因日志就缺了那一路信号。原生现在在 config() 里给出权威前后台。
     const page = setupPage({config: {passiveObserve: true, foreground: false}});
-    const {reloads, restore} = stubReload();
-    const storage = stubSessionStorage();
     try {
         const socket = new globalThis.WebSocket('wss://relay.example');
         socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
-        assert.ok(findPost(page.posts, 'diag', (d) =>
-            d.message.includes('应用在后台')).length === 1,
-            'a config.foreground=false document must classify the kick as background');
-        assert.ok(findPost(page.posts, 'diag', (d) =>
-            d.message.includes('回前台将自动重载')).length === 1,
-            'and arm the foreground self-heal');
-        globalThis.__zcodeShellSetAppForeground(true);
-        await wait(1700);
-        assert.strictEqual(reloads.length, 1,
-            'the heal must fire once the app is really back');
+        assert.strictEqual(findPost(page.posts, 'pagefailure').at(-1).data.foreground, false,
+            'a config.foreground=false document must report the kick as background');
     } finally {
-        storage.restore();
-        restore();
-        page.teardown();
-    }
-});
-
-test('KICKED 自愈：跨 reload 连续两次后停止（避免死循环）', async () => {
-    const page = setupPage();
-    const {reloads, restore} = stubReload();
-    const storage = stubSessionStorage();
-    try {
-        storage.store.set('zcodeShellKickedHeals', '2');
-        const socket = new globalThis.WebSocket('wss://relay.example');
-        globalThis.__zcodeShellSetAppForeground(false);
-        socket.receive({type: 'error', code: 'KICKED', message: 'session-conflict'});
-        globalThis.__zcodeShellSetAppForeground(true);
-        await wait(1700);
-        assert.strictEqual(reloads.length, 0, 'the heal cap stops the reload loop; diag=' +
-            JSON.stringify(findPost(page.posts, 'diag').map((p) => p.data.message)));
-        assert.ok(findPost(page.posts, 'diag', (d) =>
-            d.message.includes('停止自动重载')).length === 1,
-            'diag: ' + JSON.stringify(findPost(page.posts, 'diag').map((p) => p.data.message)));
-    } finally {
-        storage.restore();
-        restore();
-        page.teardown();
-    }
-});
-
-test('KICKED 自愈：配对成功即清零计数', () => {
-    const page = setupPage();
-    const storage = stubSessionStorage();
-    try {
-        storage.store.set('zcodeShellKickedHeals', '1');
-        const socket = new globalThis.WebSocket('wss://relay.example');
-        socket.receive({type: 'pair_status_ack', pair_status: 'matched'});
-        assert.strictEqual(storage.store.get('zcodeShellKickedHeals'), '0',
-            'a matched pair resets the heal counter');
-    } finally {
-        storage.restore();
         page.teardown();
     }
 });
@@ -2437,4 +2427,136 @@ test('快速交接：旧交还定时器不能干预新的前后台窗口', (t) =
         t.mock.timers.tick(500);
         assert.strictEqual(reloads.length, 0, 'the previous epoch cannot reload a later foreground window');
     } finally { restore(); page.teardown(); t.mock.timers.reset(); }
+});
+
+// ---------------------------------------------------------------------------
+// 3.17.1 适配（2026-11-04）：版本闸门 ②/③、登录面刷新按钮二判据、闸门① 重钉路由
+// ---------------------------------------------------------------------------
+
+test('版本闸门②：从页面自己的 bootstrap 帧学到 desktopAppVersion（拿不到就不发）', async () => {
+    const page = setupPage();
+    try {
+        const socket = new globalThis.WebSocket('wss://relay.example');
+        socket.receive({type: 'data', payload: {
+            zcode_type: 'bootstrap-response',
+            requestId: 'boot-1',
+            result: {desktopAppVersion: '3.17.1', workspaces: []}
+        }});
+        assert.deepStrictEqual(
+            findPost(page.posts, 'desktopversion').map((p) => p.data.version),
+            ['3.17.1'],
+            'the value the gate would compare against must reach the native side',
+        );
+        // 旧桌面端/字段缺失：不猜，不发（原生留着闸门①/③兜底）。
+        socket.receive({type: 'data', payload: {
+            zcode_type: 'bootstrap-response', result: {workspaces: []}
+        }});
+        socket.receive({type: 'data', payload: {
+            zcode_type: 'bootstrap-response', result: {desktopAppVersion: ''}
+        }});
+        assert.strictEqual(findPost(page.posts, 'desktopversion').length, 1,
+            'an absent/empty version must not be reported');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('版本闸门③：阻断式 modal 出现/消失各上报一次（重载决策据此同步跳过）', async () => {
+    const page = setupPage({pageState: true});
+    try {
+        const dialog = new FakeElement('dialog');
+        const realQuery = page.document.querySelector;
+        page.document.querySelector = (sel) =>
+            sel === 'dialog[aria-labelledby="remote-version-title"]' ? dialog : realQuery(sel);
+
+        page.dom.set('bg-background-win-alt', true);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(findPost(page.posts, 'versiongate').map((p) => p.data.blocked), [true]);
+
+        // 同一状态重复上报不刷屏。
+        FakeMutationObserver.fire();
+        await flush();
+        assert.strictEqual(findPost(page.posts, 'versiongate').length, 1, 'deduped until it changes');
+
+        page.document.querySelector = () => null;
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(findPost(page.posts, 'versiongate').map((p) => p.data.blocked), [true, false]);
+    } finally {
+        page.teardown();
+    }
+});
+
+test('刷新按钮：没有 aria-haspopup 时用 aria-label 二判据兜住', async () => {
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
+    try {
+        const theme = new FakeElement('button');
+        // Radix 换实现：运行时不再写 aria-haspopup，只剩语义化的 aria-label。
+        theme.setAttribute('aria-label', 'Switch theme');
+        theme.className = 'ghost';
+        const row = new FakeElement('div');
+        row.querySelectorAll = (sel) => {
+            if (sel === 'button[aria-haspopup="menu"]') return [];
+            if (sel === 'button[aria-label]') return [theme];
+            return [];
+        };
+        row.appendChild(theme);
+        const section = new FakeElement('section');
+        section.setAttribute('data-mobile-page', 'chat');
+        section.appendChild(row);
+        page.document.querySelector = (sel) => (sel === 'section[data-mobile-page="chat"]' ? section : null);
+
+        await bootPageState(page);
+        assert.strictEqual(theme.previousElementSibling.getAttribute('data-zcode-shell-refresh'), '1',
+            'the second criterion keeps the button alive when the Radix attribute disappears');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('闸门①：version-gate 导航后按上一次的决定重钉聊天路由（state 已被清空）', () => {
+    const storage = stubSessionStorage();
+    storage.store.set('zcodeShellPinChat', '1');
+    const history = {state: null, replaceState(next) { this.state = next; }};
+    // restoreChat=false：原生那一刻已经翻成 false（viewAtLeave 被消费掉了）——正是
+    // `location.replace()` 之后那次文档加载的真实形状。
+    const page = setupPage({config: {passiveObserve: true, foreground: true}, history});
+    try {
+        assert.strictEqual(history.state.zcodeMobilePage, 'chat',
+            'the pin must survive the gate navigation, not depend on restoreChat');
+    } finally {
+        storage.restore();
+        page.teardown();
+    }
+});
+
+test('闸门①：没有记忆时不动 history.state（不把用户拽进对话页）', () => {
+    const storage = stubSessionStorage();
+    const history = {state: {zcodeMobilePage: 'home'}, replaceState(next) { this.state = next; }};
+    const page = setupPage({config: {passiveObserve: true, foreground: true}, history});
+    try {
+        assert.strictEqual(history.state.zcodeMobilePage, 'home');
+    } finally {
+        storage.restore();
+        page.teardown();
+    }
+});
+
+test('承载凭证：3.16.1+ 没有 hash 时用 ws2 的 token 移交（否则 3.17.1 上永不拨号）', () => {
+    const page = setupPage();
+    try {
+        const socket = new globalThis.WebSocket(
+            'wss://zcode.z.ai/api/v1/remote/ws2?token=tok-abc&mid=mid-1');
+        socket.send(JSON.stringify({type: 'auth_init', device_sid: 'sid-1'}));
+        const creds = findPost(page.posts, 'relaycreds').at(-1);
+        assert.ok(creds, 'the credentials must be handed over without a legacy hash');
+        assert.strictEqual(creds.data.deviceSid, 'redacted', 'sid comes from the page URL');
+        assert.strictEqual(creds.data.authToken, 'tok-abc');
+        assert.strictEqual(creds.data.passHash, '');
+        assert.ok(!JSON.stringify(findPost(page.posts, 'diag')).includes('tok-abc'),
+            'the token must never reach the diagnostic log');
+    } finally {
+        page.teardown();
+    }
 });
