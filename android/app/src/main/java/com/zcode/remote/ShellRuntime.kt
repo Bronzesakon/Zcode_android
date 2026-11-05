@@ -678,11 +678,11 @@ object ShellRuntime {
             // 期间开的 socket"当成"刚刚在重拨"（那会白等 20s，见 maybeStartNativeCarrier）。
             lastSocketMarkForStall = -1L
             lastSocketChangeAt = 0L
-            // 2026-11-05：原生承载改用**自己铸的 token**，页面那条 socket 从未被碰过，
-            // 回前台不需要为了"换新 token"而重载（那正是"连接中断"闪屏的来源）。
-            // 只有宿主明确要求（pageReloadExpected）才重载；页面自己若卡住，注入层的
-            // 握手失败自愈会在 2 次失败后重载一次。
-            val reloadNeeded = reloadExistingPage && pageReloadExpected
+            // 2026-11-05 实测：服务端**单控制端**——承载一旦配对成功（自铸 token），
+            // 页面那条连接就会被 KICKED。所以回前台必须重载页面换一枚新 token，
+            // 否则页面会拿着被顶掉的旧 token 一直卡在"连接中断，正在重连"。
+            val restoreAfterCarrier = NativeRelayClient.isRunning() || carrierHandedBack || carrierRanThisStint
+            val reloadNeeded = reloadExistingPage && (restoreAfterCarrier || pageReloadExpected)
             // 必须在 stop() 之前取证：stop 一返回 isRunning() 就是 false，用它做分支会把
             // "等关闭确认"那条路和"立刻重载"那条路同时走一遍（pageReloadEpoch 谁先到谁赢）。
             val carrierWasRunning = NativeRelayClient.isRunning()
