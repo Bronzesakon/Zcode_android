@@ -289,19 +289,21 @@
 
 判定（2026-11-05 真机 CDP + 鸿蒙 3.17.2 快照交叉核验）：**左上角命中链**——
 `elementFromPoint(4,6)` 向上找第一个真正画了底色的表面类（`bg-header` / `bg-background-win-alt`
-/ `bg-sidebar` / `bg-background`），按命中项报状态名；设置页先由 `settingsVisible()`
-（`[data-settings-content-frame]` 可见）提前判成 `boot`。命中链是几何事实，不猜宽窄；
-`elementFromPoint` 不可用时才退回矩形判据。
+/ `bg-sidebar` / `bg-background`），按命中项报状态名。命中链是几何事实，不猜宽窄；
+`elementFromPoint` 不可用时才退回矩形判据。设置页由命中链自然落到 `main-surface`
+（左轨透明，露出 `win-alt`），没有单独的设置页分支。
 
 **单色条带的固有限制**：设置页左 68px 轨是 `#ECECEE/#2B2B2B`、面板是 `#F8F8F8/#161616`。
 用户 2026-11-05 两次指正：设置页取**左列**色（面板差 12/21）。鸿蒙报告里"设置页取面板"的
 选择**已撤销**，以用户口径为准。
 
-**第二条腿（2026-11-05 真机反馈"设置页退出后条带变色"）**：状态名之外，注入层还在同一拍
-采样**左上角那一点的计算样式**（`elementFromPoint(4,6)` 向上找第一个不透明 `background-color`，
-报 `#RRGGBB`）随 `pagestate` 一起回推。原生优先用采样色、图标明暗按采样色亮度（WCAG 阈值 0.5），
-状态表只在采样缺失/非法时兜底；去重 token 也带上采样色。这样"类名换版 / 同名不同色的表面 /
-WebView 重建后漏报"都不会再画错条带。JS 测试 119/119（采样色断言）、Kotlin 185/185。
+**颜色来源（2026-11-05 用户拍板：对齐鸿蒙）**：注入层只回推状态名 + 页面主题，不读页面像素；
+原生按 `core/PageBarColor.kt` 的固定色表上色，图标明暗走同一份解析结果。此前"第二条腿"的
+运行时采样色（`topStripColor()` + `pagestate.color` + 原生 WCAG 亮度判定）**已撤销**：
+它在 React 换视图那一拍可能采到旧表面，而且若此后没有新的 DOM 变更，这一帧就会成为终态——
+这是本端独有的失败模式（鸿蒙的固定色表不存在它）。补强只保留一条：状态/主题名变化后
+150ms 再扫一拍（`pageStateSettleTimer`），过期的中间态会被纠正，稳定时由 token 去重静默。
+JS 测试 121/121。
 
 3.17.2 的 relay 逐项比对见 `docs/android/3.17.2-relay-audit.md`：**协议无变化**
 （ws2 / auth_init / 心跳 / data 外层 / KICKED 全同），本端原生承载的 3 处帧形状偏差

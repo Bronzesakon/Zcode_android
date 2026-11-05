@@ -3505,63 +3505,6 @@
         }
     }
 
-    /**
-     * 状态栏条带应该取的颜色：页面左上角（状态栏正下方第一行）真正画出来的底色。
-     *
-     * 为什么不再只靠"状态名"：3.17.x 换了三轮布局/类名，状态名→色表的映射每次都要跟着
-     * 修（首页、设置页、加载页都错杀过）。直接读**那一点的计算样式**，状态名退化成兜底：
-     * 无论页面怎么改版，条带都等于页面顶部实际颜色。
-     */
-    function topStripColor() {
-        try {
-            if (typeof document.elementFromPoint !== 'function' || !G.getComputedStyle) {
-                return '';
-            }
-            var el = document.elementFromPoint(4, 6) || document.elementFromPoint(4, 2);
-            for (var depth = 0; el && depth < 40; depth++, el = el.parentElement) {
-                var hex = solidColorOf(el);
-                if (hex) {
-                    return hex;
-                }
-            }
-            var body = document.body;
-            if (body) {
-                return solidColorOf(body) || solidColorOf(document.documentElement);
-            }
-        } catch (e) {
-            // 采样失败就交给状态名兜底，绝不影响页面。
-        }
-        return '';
-    }
-
-    /** 计算样式里的不透明背景色 → `#RRGGBB`；半透明/无背景返回 ''（继续向上找）。 */
-    function solidColorOf(el) {
-        try {
-            var bg = String(G.getComputedStyle(el).backgroundColor || '');
-            var m = /^rgba?\(([^)]+)\)$/.exec(bg);
-            if (!m) {
-                return '';
-            }
-            var parts = m[1].split(',');
-            if (parts.length < 3) {
-                return '';
-            }
-            var alpha = parts.length > 3 ? parseFloat(parts[3]) : 1;
-            if (!(alpha > 0.99)) {
-                return '';
-            }
-            var out = '#';
-            for (var i = 0; i < 3; i += 1) {
-                var v = Math.max(0, Math.min(255, Math.round(parseFloat(parts[i]) || 0)));
-                var h = v.toString(16);
-                out += h.length < 2 ? '0' + h : h;
-            }
-            return out;
-        } catch (e) {
-            return '';
-        }
-    }
-
     /** 类名 token 判断（class 属性按空白切分，避免 `bg-background` 命中 `bg-background-win-alt`）。 */
     function classHas(el, token) {
         try {
@@ -3577,7 +3520,8 @@
      *
      * 从 `elementFromPoint(4, 6)` 起向上走：对话页第一个命中的是 `bg-header`，首页
      * 是整页 `bg-background`，宽屏左栏/外壳会走到 `bg-background-win-alt`。子元素
-     * 自己画了别的东西时也自然由最近的表面类先命中。（设置页在外层已提前判掉。）
+     * 自己画了别的东西时也自然由最近的表面类先命中。（设置页左轨透明，命中的是外层
+     * 窗口外框，自然落到 main-surface，不需要单独的设置页分支。）
      */
     function topLeftSurfaceName() {
         var el = null;
@@ -3631,6 +3575,16 @@
 
     var lastPageState = '';
     var pageStateScheduled = false;
+    /**
+     * 过渡帧补强（对齐鸿蒙后的唯一 Android 侧加法）：
+     *
+     * 判据是 DOM class / 几何，React 换视图的那一拍可能读到中间态（比如设置页刚卸载、
+     * 对话页头还没挂），而此后若没有新的 DOM 变更，这个中间态就会一直留着——鸿蒙的
+     * 固定色表也救不了"状态名本身读错"。状态/主题名一旦变化，150ms 后再扫一次：
+     * 稳定了 token 去重会静默，没稳定就补报一次收尾状态。
+     */
+    var pageStateSettleTimer = 0;
+    var pageStateDocument = document;
     var lastVersionGate = false;
     /** 上次真正扫描版本闸门 modal 的时刻（毫秒）。全文档属性选择器不便宜，必须限频。 */
     var versionGateProbedAt = 0;
@@ -3696,17 +3650,26 @@
         }
         var theme = pageThemeName();
         var presentation = pagePresentationName(state);
-        // 采样色也进 token：状态名/主题都没变、但页面换了一块同名的表面时也要重报。
-        var stripColor = topStripColor();
-        var token = state + '|' + theme + '|' + presentation + '|' + stripColor;
+        var token = state + '|' + theme + '|' + presentation;
         if (token === lastPageState) {
             return;
         }
         lastPageState = token;
         post('pagestate', {
             state: state, theme: theme, documentId: pageDocumentId,
-            presentation: presentation, color: stripColor
+            presentation: presentation
         });
+        // 过渡帧补强：见 pageStateSettleTimer 的注释。
+        if (!pageStateSettleTimer) {
+            pageStateSettleTimer = setTimeout(function () {
+                pageStateSettleTimer = 0;
+                // 文档已经换掉（旧上下文的拍子）：这一拍作废，别把旧状态写进新页面。
+                if (!G.document || G.document !== pageStateDocument) {
+                    return;
+                }
+                schedulePageState();
+            }, 150);
+        }
     }
 
     /**

@@ -1508,17 +1508,10 @@ test('状态判定：设置页左列（透明图标栏）露出窗口外框 → 
         frame.appendChild(settings);
         document.documentElement.appendChild(frame);
         document.elementFromPoint = () => rail;
-        // 采样色：注入层读左上角那一点的计算样式（窗口外框 #ECECEE）。
-        globalThis.getComputedStyle = (el) => ({
-            backgroundColor: el === rail ? 'rgb(236, 236, 238)' : 'rgba(0, 0, 0, 0)',
-        });
         FakeMutationObserver.fire();
         await flush();
         assert.deepStrictEqual(pageStates(page.posts), ['main-surface/light'],
             'the settings page takes the left rail colour, not the panel colour');
-        assert.strictEqual(
-            findPost(page.posts, 'pagestate').at(-1).data.color, '#ececee',
-            'the sampled top colour rides along with the state name');
 
         // 对话页：左上角命中 bg-header → 标题栏色。
         page.dom.set('bg-header', true);
@@ -1528,6 +1521,28 @@ test('状态判定：设置页左列（透明图标栏）露出窗口外框 → 
         FakeMutationObserver.fire();
         await flush();
         assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-header/light']);
+    } finally {
+        page.teardown();
+    }
+});
+
+test('状态变化后 150ms 补扫一拍：没有新 DOM 事件也能纠正过渡态', async () => {
+    // 判据是 DOM 几何；React 换视图的那一拍可能读到中间态。补扫只认最终状态，
+    // token 不变时被去重静默，代价就是一次 setTimeout。
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
+    try {
+        page.dom.setZaiTheme('theme-zai-light');
+        page.dom.setTheme('light');
+        page.dom.set('bg-header', true);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-header/light']);
+
+        // 视图被换掉，但这一拍没有任何 MutationObserver 事件（模拟扫描早于最终 DOM）。
+        page.dom.set('bg-header', false);
+        await wait(220);
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['boot/light'],
+            'the settle rescan catches the settled state without a mutation');
     } finally {
         page.teardown();
     }

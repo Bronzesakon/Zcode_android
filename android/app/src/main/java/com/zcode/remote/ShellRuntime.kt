@@ -2296,18 +2296,18 @@ object ShellRuntime {
         }
     }
 
-    /** (page state token, theme token, sampled colour) -> the Activity that paints the strip. */
+    /** (page state token, theme token) -> the Activity that paints the strip. */
     @Volatile
-    private var pageStateListener: ((String, String, String) -> Unit)? = null
+    private var pageStateListener: ((String, String) -> Unit)? = null
 
-    fun setPageStateListener(listener: ((String, String, String) -> Unit)?) {
+    fun setPageStateListener(listener: ((String, String) -> Unit)?) {
         pageStateListener = listener
     }
 
-    private fun onPageState(state: String, theme: String, color: String) {
+    private fun onPageState(state: String, theme: String) {
         if (state.isEmpty()) return
         try {
-            pageStateListener?.invoke(state, theme, color)
+            pageStateListener?.invoke(state, theme)
         } catch (e: Exception) {
             // A listener that throws must not break the WebView's JS bridge.
             Diagnostics.log("warn", "应用页面状态失败: ${e.message}")
@@ -2522,7 +2522,6 @@ object ShellRuntime {
                     onPageState(
                         data.optString("state"),
                         data.optString("theme"),
-                        data.optString("color"),
                     )
                     onHandoffPresentation(data)
                 }
