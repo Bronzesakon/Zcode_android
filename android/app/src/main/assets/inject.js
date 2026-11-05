@@ -3335,15 +3335,19 @@
                 // same colour as every status page, so those two share one name.
                 return hasZaiTheme() ? 'boot' : 'boot-shell';
             }
+            // 设置页（3.17.2 快照锚点 `data-settings-content-frame`）：整页是面板
+            // #F8F8F8/#161616，左 68px 轨是窗口外框 #ECECEE/#2B2B2B。按鸿蒙
+            // 2026-11-05 的最终口径取**面板**色（单色条带二选一，面板占比更大）。
+            if (settingsVisible()) {
+                return 'boot';
+            }
             // 状态栏正下方是谁，就报谁——取左上角（状态栏覆盖的最左一列）命中链，
             // 从命中元素往上找第一个「真正画了底色」的表面类：
             //   * `.bg-header`            页面自己的标题栏（窄屏对话页）→ main-header
-            //   * `.bg-background-win-alt` 桌面窗口外框。设置页左列（68px 图标栏）
-            //                             自身全透明，露出来的就是它 —— 用户 2026-11-05
-            //                             口径：设置页条带对齐「左侧较暗背景」；
-            //   * `.bg-sidebar` / 侧栏面板 data 属性 → main-surface（导航面）；
+            //   * `.bg-background-win-alt` 桌面窗口外框：宽屏左栏/外壳 → main-surface
+            //   * `.bg-sidebar` / 侧栏面板 data 属性 → main-surface（同一色）
             //   * `.bg-background`        整页背景 → boot。
-            // 这一条同时消灭了「按宽窄二分」在首页/设置页上的误判：命中链是几何事实，
+            // 这一条同时消灭了「按宽窄二分」在首页上的误判：命中链是几何事实，
             // 不是布局猜测。旧 WebView 若没有 elementFromPoint，再退回下面的矩形判据。
             var surface = topLeftSurfaceName();
             if (surface) {
@@ -3375,6 +3379,28 @@
         }
     }
 
+    /**
+     * 设置页是否可见（3.17.2 快照的稳定锚点）。
+     *
+     * 设置页是 SPA 内的一层：左侧 68px 图标栏 + 右侧面板 `section[data-settings-content-frame]`。
+     * 只看数据属性 + 矩形高度，不读样式。
+     */
+    function settingsVisible() {
+        try {
+            if (!document.querySelector) {
+                return false;
+            }
+            var frame = document.querySelector('[data-settings-content-frame]');
+            if (!frame) {
+                return false;
+            }
+            var rect = frame.getBoundingClientRect();
+            return rect.height > 0 && rect.width > 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
     /** 类名 token 判断（class 属性按空白切分，避免 `bg-background` 命中 `bg-background-win-alt`）。 */
     function classHas(el, token) {
         try {
@@ -3388,9 +3414,9 @@
     /**
      * 左上角那一点真正露出来的表面，映射成状态名；认不出返回 ''。
      *
-     * 从 `elementFromPoint(4, 6)` 起向上走：状态栏覆盖的第一列（x≈4）在设置页是
-     * 透明图标栏，会一路走到窗口外框；在对话页第一个命中的就是 bg-header；在首页
-     * 是整页 bg-background。子元素自己画了别的东西时也自然由最近的表面类先命中。
+     * 从 `elementFromPoint(4, 6)` 起向上走：对话页第一个命中的是 `bg-header`，首页
+     * 是整页 `bg-background`，宽屏左栏/外壳会走到 `bg-background-win-alt`。子元素
+     * 自己画了别的东西时也自然由最近的表面类先命中。（设置页在外层已提前判掉。）
      */
     function topLeftSurfaceName() {
         var el = null;
@@ -3406,7 +3432,7 @@
                 return 'main-header';
             }
             if (classHas(el, 'bg-background-win-alt')) {
-                return 'main-frame';
+                return 'main-surface';
             }
             if (classHas(el, 'bg-sidebar') || el.getAttribute('data-workspace-sidebar-panel') !== null) {
                 return 'main-surface';

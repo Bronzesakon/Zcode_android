@@ -284,12 +284,22 @@
 | 加载壳已着主题 / React 状态页 / 配对等待 | bg-background | boot | #F8F8F8 | #161616 |
 | 工作区主页（手机，实测） | bg-background（无贴顶 header） | boot | #F8F8F8 | #161616 |
 | 对话详情（手机，实测） | 手机壳标题栏 `div.bg-header`（h-11） | main-header | #FFFFFF | #202020 |
-| 设置页左列（真机实测 2026-11-05） | 68px 透明图标栏 → 露出窗口外框 `bg-background-win-alt` | main-frame | #ECECEE | #2B2B2B |
+| 宽屏主页 / 对话 / 其它 | 左上命中窗口外框 `bg-background-win-alt` | main-surface | #ECECEE | #2B2B2B |
+| 设置页（窄/宽） | `[data-settings-content-frame]` 面板 | boot | #F8F8F8 | #161616 |
 
-判定（2026-11-05 真机 CDP 校正）：**左上角命中链**——`elementFromPoint(4,6)` 向上找第一个
-真正画了底色的表面类（`bg-header` / `bg-background-win-alt` / `bg-sidebar` / `bg-background`），
-按命中项报状态名；`elementFromPoint` 不可用时才退回矩形判据。命中链是几何事实，不猜宽窄。
-设置页左列自身全透明，命中的是窗口外框 ⇒ `main-frame`（用户口径：对齐左列较暗背景）。
+判定（2026-11-05 真机 CDP + 鸿蒙 3.17.2 快照交叉核验）：**左上角命中链**——
+`elementFromPoint(4,6)` 向上找第一个真正画了底色的表面类（`bg-header` / `bg-background-win-alt`
+/ `bg-sidebar` / `bg-background`），按命中项报状态名；设置页先由 `settingsVisible()`
+（`[data-settings-content-frame]` 可见）提前判成 `boot`。命中链是几何事实，不猜宽窄；
+`elementFromPoint` 不可用时才退回矩形判据。
+
+**单色条带的固有限制（鸿蒙侧同口径）**：宽屏设置页左 68px 轨是 `#ECECEE/#2B2B2B`、面板是
+`#F8F8F8/#161616`，设置页取面板色（左轨差 12/21）；非设置页宽屏取侧栏/外框色（右侧主区差
+12/21）。这是二选一，按鸿蒙 2026-11-05 的最终表执行。
+
+3.17.2 的 relay 逐项比对见 `docs/android/3.17.2-relay-audit.md`：**协议无变化**
+（ws2 / auth_init / 心跳 / data 外层 / KICKED 全同），本端原生承载的 3 处帧形状偏差
+（meta.version、心跳多 device_sid + 毫秒、业务帧毫秒）已对齐并加单测。
 
 **同日发现的阻断级 bug（已修）**：`MainActivity.bridgeAttached` 初值为 `true`，而新 WebView
 里并没有 `addJavascriptInterface` ⇒ 冷启动第一次 `setBridgeAttached(true)` 早退，桥永远挂不上。

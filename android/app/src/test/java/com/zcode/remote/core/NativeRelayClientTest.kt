@@ -95,4 +95,33 @@ class NativeRelayClientTest {
         assertEquals(JSONObject().put("platform", "web").put("version", "web").put("name", "mobile-browser").toString(),
             frame.getJSONObject("meta").toString())
     }
+
+    @Test
+    fun authInitMetaCarriesTheLearnedDesktopVersion() {
+        // 3.17.2 页面 meta.version = appVersion（桌面版本号）；学到就用，学不到退回 "web"。
+        val learned = authInitFrame(tokenCreds(), nowMs = 1L, appVersion = "3.17.2")
+        assertEquals("3.17.2", learned.getJSONObject("meta").getString("version"))
+        val unknown = authInitFrame(tokenCreds(), nowMs = 1L, appVersion = null)
+        assertEquals("web", unknown.getJSONObject("meta").getString("version"))
+        val blank = authInitFrame(tokenCreds(), nowMs = 1L, appVersion = "  ")
+        assertEquals("web", blank.getJSONObject("meta").getString("version"))
+    }
+
+    @Test
+    fun heartbeatAndDataFramesMatchThePageShape() {
+        // 3.17.1/3.17.2 页面：心跳只有 {type, client_ts(秒)}，业务帧外层
+        // {type:'data', payload, client_ts(秒)}。多带 device_sid / 毫秒是旧实现的偏差。
+        val now = 1_700_000_000_123L
+        val query = pairStatusQueryFrame(now)
+        assertEquals(setOf("type", "client_ts"), query.keys().asSequence().toSet())
+        assertEquals("pair_status_query", query.getString("type"))
+        assertEquals(1_700_000_000L, query.getLong("client_ts"))
+
+        val payload = JSONObject().put("zcode_type", "workspace-bridge-open")
+        val envelope = dataEnvelope(payload, now)
+        assertEquals(setOf("type", "payload", "client_ts"), envelope.keys().asSequence().toSet())
+        assertEquals("data", envelope.getString("type"))
+        assertEquals(1_700_000_000L, envelope.getLong("client_ts"))
+        assertEquals(payload, envelope.getJSONObject("payload"))
+    }
 }

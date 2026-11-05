@@ -27,16 +27,38 @@ import javax.crypto.spec.SecretKeySpec
  * 抽成顶层纯函数是为了能在 JVM 单测里把两条分支的形状钉住——真机上一次握手要扫码，
  * 而这里错一个字段就是"配对永远不 matched"。
  */
-internal fun authInitFrame(creds: RelayCreds, nowMs: Long): JSONObject = JSONObject().apply {
+internal fun authInitFrame(
+    creds: RelayCreds,
+    nowMs: Long,
+    /** 页面 meta.version 用桌面版本号（3.17.2 页面：`appVersion`）；未知时退回 "web"。 */
+    appVersion: String? = null,
+): JSONObject = JSONObject().apply {
     put("type", "auth_init")
     if (!creds.tokenMode) put("role", "terminal")
     put("device_sid", creds.deviceSid)
     put(
         "meta",
-        JSONObject().put("platform", "web").put("version", "web").put("name", "mobile-browser"),
+        JSONObject()
+            .put("platform", "web")
+            .put("version", appVersion?.takeIf { it.isNotBlank() } ?: "web")
+            .put("name", "mobile-browser"),
     )
     put("client_ts", if (creds.tokenMode) nowMs / 1000 else nowMs)
 }
+
+/**
+ * `pair_status_query` 心跳帧：页面 3.17.1/3.17.2 的形状是**只有 type + client_ts（秒）**，
+ * 没有 `device_sid`。这里逐字对齐（多带字段服务端目前容忍，但没有理由冒这个险）。
+ */
+internal fun pairStatusQueryFrame(nowMs: Long): JSONObject = JSONObject()
+    .put("type", "pair_status_query")
+    .put("client_ts", nowMs / 1000)
+
+/** 业务帧外层：`{type:"data", payload, client_ts:秒}`（页面 `prepare()` 同口径）。 */
+internal fun dataEnvelope(payload: JSONObject, nowMs: Long): JSONObject = JSONObject()
+    .put("type", "data")
+    .put("payload", payload)
+    .put("client_ts", nowMs / 1000)
 
 internal fun relayProof(passHash: String, nonce: String, role: String, deviceSid: String): String {
     val mac = Mac.getInstance("HmacSHA256")
@@ -1111,7 +1133,9 @@ object NativeRelayClient {
                 if (!mayAuthenticate(token)) return
                 phase = Phase.AUTHENTICATING
                 val c = creds ?: return
-                webSocket.send(authInitFrame(c, System.currentTimeMillis()).toString())
+                webSocket.send(
+                    authInitFrame(c, System.currentTimeMillis(), DesktopVersion.current()).toString(),
+                )
                 scheduleHandshakeTimeout(token, webSocket)
                 Diagnostics.log(
                     "warn",
@@ -1265,10 +1289,7 @@ object NativeRelayClient {
     private fun sendBusinessPayload(payload: JSONObject, token: Long, webSocket: WebSocket) {
         synchronized(lifecycleLock) {
             if (!isCurrent(token, webSocket) || phase != Phase.PAIRED) return
-            val envelope = JSONObject()
-                .put("type", "data")
-                .put("payload", payload)
-                .put("client_ts", System.currentTimeMillis())
+            val envelope = dataEnvelope(payload, System.currentTimeMillis())
             try {
                 webSocket.send(envelope.toString())
             } catch (e: Exception) {
@@ -1281,14 +1302,10 @@ object NativeRelayClient {
         synchronized(lifecycleLock) {
             if (!lifetime.isCurrent(token)) return
             val s = socket ?: return
-            val c = creds ?: return
+            creds ?: return
             if (phase != Phase.PAIRED && phase != Phase.AUTHENTICATING) return
             heartbeatCount += 1
-            val q = JSONObject().apply {
-                put("type", "pair_status_query")
-                put("device_sid", c.deviceSid)
-                put("client_ts", System.currentTimeMillis())
-            }
+            val q = pairStatusQueryFrame(System.currentTimeMillis())
             try {
                 s.send(q.toString())
             } catch (e: Exception) {
