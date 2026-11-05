@@ -758,7 +758,13 @@ object ShellRuntime {
             // 「dial 之前回前台 → 取消不踢页面」不靠计时器：`HandoffState` 的 epoch 与
             // `NativeRelayClient.mayAuthenticate` 的前台复查都会把这一枪打空。
             val hasRunning = store.runningTaskRefs().isNotEmpty() || store.staleGateHold().holds
-            val startDelay = if (hasRunning) 0L else CARRIER_IDLE_START_DELAY_MS
+            // 2026-11-05 稳定性优先：不再 0ms 拨号。快速切后台/回前台（回一条微信）会让
+            // 承载抢走页面正在用的短 token，页面回来就卡在"连接中断，正在重连"（真机反复
+            // 复现）。统一等 15s：短切换根本不触发承载，长后台照常接管。
+            val startDelay = maxOf(
+                if (hasRunning) 0L else CARRIER_IDLE_START_DELAY_MS,
+                CARRIER_MIN_BACKGROUND_DELAY_MS,
+            )
             mainHandler.postDelayed({ maybeStartHandoffCarrier(epoch) }, startDelay)
             val snapshot = liveness
             backgroundFrameBase = snapshot?.inboundFrames ?: 0
@@ -1162,6 +1168,14 @@ object ShellRuntime {
      * 路线存在的理由，代价（每次退后台都会踢页面 ⇒ 回前台一次受控重载）用户已接受。
      */
     private const val CARRIER_IDLE_START_DELAY_MS = 30_000L
+
+    /**
+     * 后台最短静默期：不足 15s 的切后台一律不启动承载。
+     *
+     * 快速切走再回来（回一条微信）如果拨了号，承载会拿走页面正在使用的短 token，
+     * 页面回来就卡在"连接中断，正在重连"——页面自己的重连不会重新铸 token。
+     */
+    private const val CARRIER_MIN_BACKGROUND_DELAY_MS = 15_000L
 
     /** 页面刚动过 socket（重拨中）后的静默期：见 [lastSocketMarkForStall]。 */
     private const val CARRIER_REQUIET_AFTER_SOCKET_MS = 20_000L
@@ -1982,6 +1996,12 @@ object ShellRuntime {
 
     private fun maybeStartHandoffCarrier(epoch: Long) {
         if (!prefs.nativeCore) return
+        // 后台不足 15s 一律不接管（任何触发点，包括 relaycreds / pump 的早触发）。
+        if (backgroundStartedAt <= 0L ||
+            SystemClock.elapsedRealtime() - backgroundStartedAt < CARRIER_MIN_BACKGROUND_DELAY_MS
+        ) {
+            return
+        }
         if (!handoff.isCurrent(epoch, true) || !userIsAway() || !carrierEnabled) return
         // 页面还可见时绝不拨号：同一 token 的第二条连接会被服务端判成互斥，先把页面踢掉，
         // 用户看到的就是"连接中断，正在重连"（2026-11-05 真机反复出现）。

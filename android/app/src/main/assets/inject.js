@@ -384,7 +384,12 @@
         // 客户端、不发心跳探针。留下的只有"零侵入三件事"（滚动条 CSS / 状态页面上报 /
         // 页面日志汇），用来判定"是不是我们对每帧的同步处理拖死了页面"。
         if (config().passiveObserve === false) {
-            diag('warn', '被动旁观已关闭（诊断开关 active=false）：跳过 WebSocket hook 与全部协议观测');
+            // 原生核心关闭时不做任何协议观测，但保留**最小握手失败看门狗**：
+            // 页面自己的重连会复用同一枚已失效的短 token，切后台再回来会永久卡在
+            // "连接中断，正在重连"；这里只数"open 之前就 close"的次数，不装消息
+            // 监听、不碰 send/close、不解析任何帧，连续两次就重载一次换新 token。
+            installHandshakeFailureWatch();
+            diag('warn', '被动旁观已关闭（诊断开关 active=false）：跳过 WebSocket hook 与全部协议观测（保留握手失败自愈）');
             return;
         }
         if (typeof NativeWebSocket !== 'function') {
@@ -547,6 +552,8 @@
             socket.addEventListener('message', handler);
             socket.addEventListener('open', function () {
                 activeSocket = socket;
+                socket.__zcodeShellOpened = true;
+                handshakeFailures = 0;
                 liveness.socketsOpened += 1;
                 diag('info', 'relay socket open (#' + liveness.socketsOpened + ')');
             });
@@ -555,6 +562,15 @@
                 diag('warn', 'relay socket closed (code=' +
                     (event ? event.code : '?') + ' clean=' +
                     (event ? event.wasClean : '?') + ')');
+                if (!socket.__zcodeShellOpened) {
+                    // 握手级失败（服务端 401/403，浏览器只给 1006）：页面自己的重连会一直
+                    // 复用同一枚已失效的短 token，永远不会自愈。连续两次 → 前台且在线时
+                    // 重载一次（sessionStorage 60s 冷却），重载会重新 POST /remote/token。
+                    handshakeFailures += 1;
+                    if (handshakeFailures >= 2) {
+                        maybeReloadAfterHandshakeFailure();
+                    }
+                }
                 relayPaired = false;
                 resetClient();
                 if (activeSocket === socket) {
@@ -3322,6 +3338,78 @@
             // rect 读不到就不猜：宁可落回整页背景色。
         }
         return false;
+    }
+
+    /** 连续"握手失败"计数（open 之前就 close 的 socket）。 */
+    var handshakeFailures = 0;
+
+    /**
+     * 最小握手失败看门狗（原生核心关闭时仍生效）。
+     *
+     * 只包一层构造函数、只挂 open/close 两个监听：不装 message、不碰 prototype、
+     * 不做任何帧解析。open 之前就 close = 服务端在升级阶段拒绝（通常 401/403，
+     * 浏览器只给 1006），页面自己的重连不会重新铸 token，必须靠重载自愈。
+     */
+    function installHandshakeFailureWatch() {
+        if (typeof NativeWebSocket !== 'function' || NativeWebSocket.__zcodeShellWatched) {
+            return;
+        }
+        function WatchedWebSocket(url, protocols) {
+            var socket = protocols === undefined ?
+                new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+            try {
+                socket.addEventListener('open', function () {
+                    socket.__zcodeShellOpened = true;
+                    handshakeFailures = 0;
+                });
+                socket.addEventListener('close', function (event) {
+                    if (socket.__zcodeShellOpened) {
+                        return;
+                    }
+                    handshakeFailures += 1;
+                    diag('warn', '握手失败(静默观测): code=' + (event ? event.code : '?'));
+                    if (handshakeFailures >= 2) {
+                        maybeReloadAfterHandshakeFailure();
+                    }
+                });
+            } catch (e) {}
+            return socket;
+        }
+        WatchedWebSocket.__zcodeShellWatched = true;
+        Object.setPrototypeOf(WatchedWebSocket, NativeWebSocket);
+        WatchedWebSocket.prototype = NativeWebSocket.prototype;
+        G.WebSocket = WatchedWebSocket;
+    }
+
+    /**
+     * 连续两次握手失败后的自愈：重载页面换一枚新 token。
+     * 仅在**前台、在线**时做，且 60s 冷却（sessionStorage 跨重载保留）——避免把一次
+     * 网络抖动放大成重载循环。页面自己的重连不会重新铸 token，这是真机卡死的根因。
+     */
+    function maybeReloadAfterHandshakeFailure() {
+        try {
+            if (!appForeground) return;
+            if (G.navigator && G.navigator.onLine === false) return;
+            var key = 'zcodeShellAuthReloadAt';
+            var now = Date.now();
+            var last = 0;
+            try {
+                last = Number(G.sessionStorage.getItem(key) || 0) || 0;
+            } catch (e) {
+                last = 0;
+            }
+            if (now - last < 60000) return;
+            try {
+                G.sessionStorage.setItem(key, String(now));
+            } catch (e) {
+                return;
+            }
+            handshakeFailures = 0;
+            diag('warn', '连续握手失败（前台在线）→ 重载页面刷新 relay token');
+            try {
+                G.location.reload();
+            } catch (e) {}
+        } catch (e) {}
     }
 
     function pageStateName() {
