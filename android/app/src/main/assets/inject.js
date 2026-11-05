@@ -3335,20 +3335,16 @@
                 // same colour as every status page, so those two share one name.
                 return hasZaiTheme() ? 'boot' : 'boot-shell';
             }
-            // 设置页（3.17.2 快照锚点 `data-settings-content-frame`）：整页是面板
-            // #F8F8F8/#161616，左 68px 轨是窗口外框 #ECECEE/#2B2B2B。按鸿蒙
-            // 2026-11-05 的最终口径取**面板**色（单色条带二选一，面板占比更大）。
-            if (settingsVisible()) {
-                return 'boot';
-            }
             // 状态栏正下方是谁，就报谁——取左上角（状态栏覆盖的最左一列）命中链，
             // 从命中元素往上找第一个「真正画了底色」的表面类：
             //   * `.bg-header`            页面自己的标题栏（窄屏对话页）→ main-header
-            //   * `.bg-background-win-alt` 桌面窗口外框：宽屏左栏/外壳 → main-surface
+            //   * `.bg-background-win-alt` 窗口外框：宽屏左栏/外壳、以及**设置页左列**
+            //                             （68px 图标栏自身透明，露出的就是它）
+            //                             → main-surface（#ECECEE/#2B2B2B）
             //   * `.bg-sidebar` / 侧栏面板 data 属性 → main-surface（同一色）
             //   * `.bg-background`        整页背景 → boot。
-            // 这一条同时消灭了「按宽窄二分」在首页上的误判：命中链是几何事实，
-            // 不是布局猜测。旧 WebView 若没有 elementFromPoint，再退回下面的矩形判据。
+            // 设置页取左列色是用户 2026-11-05 明确口径（两次指正），优先于"面板占比"。
+            // 命中链是几何事实，不是布局猜测；旧 WebView 没有 elementFromPoint 时退回矩形判据。
             var surface = topLeftSurfaceName();
             if (surface) {
                 return surface;
@@ -3380,24 +3376,59 @@
     }
 
     /**
-     * 设置页是否可见（3.17.2 快照的稳定锚点）。
+     * 状态栏条带应该取的颜色：页面左上角（状态栏正下方第一行）真正画出来的底色。
      *
-     * 设置页是 SPA 内的一层：左侧 68px 图标栏 + 右侧面板 `section[data-settings-content-frame]`。
-     * 只看数据属性 + 矩形高度，不读样式。
+     * 为什么不再只靠"状态名"：3.17.x 换了三轮布局/类名，状态名→色表的映射每次都要跟着
+     * 修（首页、设置页、加载页都错杀过）。直接读**那一点的计算样式**，状态名退化成兜底：
+     * 无论页面怎么改版，条带都等于页面顶部实际颜色。
      */
-    function settingsVisible() {
+    function topStripColor() {
         try {
-            if (!document.querySelector) {
-                return false;
+            if (typeof document.elementFromPoint !== 'function' || !G.getComputedStyle) {
+                return '';
             }
-            var frame = document.querySelector('[data-settings-content-frame]');
-            if (!frame) {
-                return false;
+            var el = document.elementFromPoint(4, 6) || document.elementFromPoint(4, 2);
+            for (var depth = 0; el && depth < 40; depth++, el = el.parentElement) {
+                var hex = solidColorOf(el);
+                if (hex) {
+                    return hex;
+                }
             }
-            var rect = frame.getBoundingClientRect();
-            return rect.height > 0 && rect.width > 0;
+            var body = document.body;
+            if (body) {
+                return solidColorOf(body) || solidColorOf(document.documentElement);
+            }
         } catch (e) {
-            return false;
+            // 采样失败就交给状态名兜底，绝不影响页面。
+        }
+        return '';
+    }
+
+    /** 计算样式里的不透明背景色 → `#RRGGBB`；半透明/无背景返回 ''（继续向上找）。 */
+    function solidColorOf(el) {
+        try {
+            var bg = String(G.getComputedStyle(el).backgroundColor || '');
+            var m = /^rgba?\(([^)]+)\)$/.exec(bg);
+            if (!m) {
+                return '';
+            }
+            var parts = m[1].split(',');
+            if (parts.length < 3) {
+                return '';
+            }
+            var alpha = parts.length > 3 ? parseFloat(parts[3]) : 1;
+            if (!(alpha > 0.99)) {
+                return '';
+            }
+            var out = '#';
+            for (var i = 0; i < 3; i += 1) {
+                var v = Math.max(0, Math.min(255, Math.round(parseFloat(parts[i]) || 0)));
+                var h = v.toString(16);
+                out += h.length < 2 ? '0' + h : h;
+            }
+            return out;
+        } catch (e) {
+            return '';
         }
     }
 
@@ -3535,13 +3566,16 @@
         }
         var theme = pageThemeName();
         var presentation = pagePresentationName(state);
-        var token = state + '|' + theme + '|' + presentation;
+        // 采样色也进 token：状态名/主题都没变、但页面换了一块同名的表面时也要重报。
+        var stripColor = topStripColor();
+        var token = state + '|' + theme + '|' + presentation + '|' + stripColor;
         if (token === lastPageState) {
             return;
         }
         lastPageState = token;
         post('pagestate', {
-            state: state, theme: theme, documentId: pageDocumentId, presentation: presentation
+            state: state, theme: theme, documentId: pageDocumentId,
+            presentation: presentation, color: stripColor
         });
     }
 

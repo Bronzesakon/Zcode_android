@@ -1,6 +1,7 @@
 package com.zcode.remote.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +52,24 @@ class PageBarColorTest {
         assertEquals(HEADER_DARK, PageBarColor.resolve(PageBarState.MAIN_HEADER, dark = true))
         assertEquals(SURFACE_LIGHT, PageBarColor.resolve(PageBarState.MAIN_SURFACE, dark = false))
         assertEquals(SURFACE_DARK, PageBarColor.resolve(PageBarState.MAIN_SURFACE, dark = true))
+    }
+
+    @Test
+    fun `sampled colour is parsed and its luminance decides the icons`() {
+        // 注入层采样的 #RRGGBB：合法就转 ARGB，非法/缺失退回状态表（null）。
+        assertEquals(0xFFECECEE.toInt(), PageBarColor.parseHex("#ECECEE"))
+        assertEquals(0xFFECECEE.toInt(), PageBarColor.parseHex("ececee"))
+        assertNull(PageBarColor.parseHex(null))
+        assertNull(PageBarColor.parseHex(""))
+        assertNull(PageBarColor.parseHex("#ECECE"))
+        assertNull(PageBarColor.parseHex("#GGGGGG"))
+        // 图标明暗按采样色亮度：亮底深图标、暗底浅图标。
+        assertTrue(PageBarColor.isDarkSurface(0xFF161616.toInt()))
+        assertTrue(PageBarColor.isDarkSurface(0xFF202020.toInt()))
+        assertTrue(PageBarColor.isDarkSurface(0xFF2B2B2B.toInt()))
+        assertFalse(PageBarColor.isDarkSurface(0xFFECECEE.toInt()))
+        assertFalse(PageBarColor.isDarkSurface(0xFFF8F8F8.toInt()))
+        assertFalse(PageBarColor.isDarkSurface(0xFFFFFFFF.toInt()))
     }
 
     @Test

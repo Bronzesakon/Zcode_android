@@ -1485,14 +1485,15 @@ test('状态判定：宽屏左栏与标题栏同时贴顶时按左列（main-sur
         await flush();
         assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-header/light']);
     } finally {
+        delete globalThis.getComputedStyle;
         page.teardown();
     }
 });
 
-test('状态判定：设置页取面板色（boot），无设置时宽屏左栏取外框色（main-surface）', async () => {
-    // 鸿蒙 2026-11-05 3.17.2 复核：设置页整页是面板 #F8F8F8/#161616，左 68px 轨才是
-    // #ECECEE/#2B2B2B；单色条带只能二选一，设置页按面板（占比更大）取 boot。
-    // 非设置页的宽屏布局：左上命中窗口外框 → main-surface（#ECECEE/#2B2B2B）。
+test('状态判定：设置页左列（透明图标栏）露出窗口外框 → main-surface', async () => {
+    // 用户 2026-11-05 两次指正：设置页条带对齐"左侧窄列的较暗背景"。设置页左列
+    // 68px 图标栏自身全透明，命中的是窗口外框 --color-background-win-alt
+    // (#ECECEE/#2B2B2B)。判据用左上角命中链，不猜宽窄。
     const page = setupPage({pageState: true, media: {[NARROW_QUERY]: false}});
     try {
         page.dom.setZaiTheme('theme-zai-light');
@@ -1507,18 +1508,17 @@ test('状态判定：设置页取面板色（boot），无设置时宽屏左栏�
         frame.appendChild(settings);
         document.documentElement.appendChild(frame);
         document.elementFromPoint = () => rail;
+        // 采样色：注入层读左上角那一点的计算样式（窗口外框 #ECECEE）。
+        globalThis.getComputedStyle = (el) => ({
+            backgroundColor: el === rail ? 'rgb(236, 236, 238)' : 'rgba(0, 0, 0, 0)',
+        });
         FakeMutationObserver.fire();
         await flush();
-        assert.deepStrictEqual(pageStates(page.posts), ['boot/light'],
-            'settings page takes the panel colour, not the rail colour');
-
-        // 离开设置页：同一个外框/左栏贴顶 → main-surface。
-        delete settings._attributes['data-settings-content-frame'];
-        settings._rect = {top: 0, bottom: 0, height: 0, left: 0, right: 0, width: 0};
-        document.elementFromPoint = () => rail;
-        FakeMutationObserver.fire();
-        await flush();
-        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-surface/light']);
+        assert.deepStrictEqual(pageStates(page.posts), ['main-surface/light'],
+            'the settings page takes the left rail colour, not the panel colour');
+        assert.strictEqual(
+            findPost(page.posts, 'pagestate').at(-1).data.color, '#ececee',
+            'the sampled top colour rides along with the state name');
 
         // 对话页：左上角命中 bg-header → 标题栏色。
         page.dom.set('bg-header', true);

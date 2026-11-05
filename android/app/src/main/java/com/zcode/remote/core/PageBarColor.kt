@@ -18,7 +18,7 @@ package com.zcode.remote.core
  * | -------------- | --------- | --------- | --------------------------- |
  * | `boot-shell`   | `#fafafa` | `#171717` | pre-rendered shell before the page stamps its theme class |
  * | `boot`         | `#f8f8f8` | `#161616` | themed shell, status pages, **and the narrow home/task-list/settings pages**（它们的顶部是整页 `--color-background`，不是标题栏） |
- * | `main-surface` | `#ececee` | `#2b2b2b` | 宽屏：状态栏正下方是左侧边栏/窗口外框（`--color-background-win-alt`）；窄屏有导航条时取 `--color-sidebar`（同值） |
+ * | `main-surface` | `#ececee` | `#2b2b2b` | 状态栏正下方是窗口外框/左列（`--color-background-win-alt`）：宽屏侧栏、**设置页左 68px 图标栏**（用户 2026-11-05 口径：对齐左列较暗背景） |
  * | `main-header`  | `#ffffff` | `#202020` | 有「可见且贴顶」标题栏（`--color-header`）时的窄屏对话页 |
  *
  * Light/dark is not taken from the system: the page has its own theme setting,
@@ -211,4 +211,36 @@ object PageBarColor {
      * **resolved** `dark` from [darkFor] — not the page's raw theme (D8).
      */
     fun appearanceLightStatusBars(dark: Boolean): Boolean = !dark
+
+    /**
+     * 注入层**采样**到的顶部实际颜色（`#RRGGBB`）→ ARGB。
+     *
+     * 状态名是推理，采样色是事实：页面改版/同名不同色的表面都靠它兜住。非法值返回
+     * null，调用方回退到状态表——采样失败不能让条带没颜色。
+     */
+    fun parseHex(token: String?): Int? {
+        val value = token?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        val hex = if (value.startsWith("#")) value.substring(1) else value
+        if (hex.length != 6) return null
+        val rgb = hex.toLongOrNull(16) ?: return null
+        return 0xFF000000.toInt() or rgb.toInt()
+    }
+
+    /**
+     * 采样色是不是深色面（状态栏图标要用浅色）。
+     *
+     * WCAG 相对亮度，阈值 0.5：`#161616/#202020/#2B2B2B` → 深；`#F8F8F8/#ECECEE/#FFF` → 浅。
+     * 只在有采样色时用；没有采样色仍走 [darkFor] 的页面主题口径。
+     */
+    fun isDarkSurface(argb: Int): Boolean {
+        fun channel(value: Int): Double {
+            val s = value / 255.0
+            return if (s <= 0.03928) s / 12.92 else Math.pow((s + 0.055) / 1.055, 2.4)
+        }
+        val luminance = 0.2126 * channel((argb shr 16) and 0xFF) +
+            0.7152 * channel((argb shr 8) and 0xFF) +
+            0.0722 * channel(argb and 0xFF)
+        return luminance < 0.5
+    }
 }

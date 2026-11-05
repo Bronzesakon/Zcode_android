@@ -94,6 +94,12 @@ class MainActivity : AppCompatActivity() {
     /** The theme the page resolved for itself; null until it says. */
     private var pageTheme: PageTheme? = null
 
+    /**
+     * 注入层采样到的顶部实际颜色（ARGB）。有它就用它，状态表只做兜底——这是
+     * "状态名推理"之外的第二条腿：页面改版、同名不同色的表面都不会再画错条带。
+     */
+    private var pageColor: Int? = null
+
     /** 最近一次状态栏档位判定的落地 URL：旋转跨 512dp 阈值时用它重算登录面档位。 */
     private var lastSurfaceUri: Uri? = null
 
@@ -242,7 +248,9 @@ class MainActivity : AppCompatActivity() {
         val intentHandled = handleIntent(intent)
         // 页面状态上报不必跟着提前：它只由注入层从页面里报来，而 handleIntent 里那次
         // loadUrl 的新文档至少还要一个主循环轮次才 boot，届时这里早已注册完。
-        ShellRuntime.setPageStateListener { state, theme -> onPageStateReported(state, theme) }
+        ShellRuntime.setPageStateListener { state, theme, color ->
+            onPageStateReported(state, theme, color)
+        }
         ShellRuntime.setHandoffCoverListener { visible ->
             handoffCoverVisible = visible
             binding.handoffCover.visibility = if (visible) View.VISIBLE else View.GONE
@@ -853,15 +861,18 @@ class MainActivity : AppCompatActivity() {
      * touching views; the state is deduped there too, because a busy page emits
      * several reports per second.
      */
-    private fun onPageStateReported(stateToken: String?, themeToken: String?) {
+    private fun onPageStateReported(stateToken: String?, themeToken: String?, colorToken: String?) {
         runOnUiThread {
             val state = PageBarColor.stateOf(stateToken)
             val theme = PageBarColor.themeOf(themeToken)
-            if (state == pageBarState && theme == pageTheme) {
+            // 采样色非法/缺失 → null，回退状态表；采样色变了也要重画。
+            val color = PageBarColor.parseHex(colorToken)
+            if (state == pageBarState && theme == pageTheme && color == pageColor) {
                 return@runOnUiThread
             }
             pageBarState = state
             pageTheme = theme
+            pageColor = color
             applyStatusBarSurface()
         }
     }
@@ -870,8 +881,10 @@ class MainActivity : AppCompatActivity() {
         val surfaceState = if (handoffCoverVisible) PageBarState.BOOT else pageBarState
         // D8：颜色与图标必须用**同一个**解析结果。登录页 `pageTheme` 恒 null，
         // 旧代码颜色按系统夜景、图标按「页面说浅色」⇒ 深色下深图标压在 #171717 上。
-        val dark = PageBarColor.darkFor(surfaceState, pageTheme, isSystemDark())
-        val color = PageBarColor.resolve(surfaceState, dark)
+        // 有采样色时以采样色为准（状态名只是兜底），图标明暗也按采样色的亮度定。
+        val tableState = PageBarColor.darkFor(surfaceState, pageTheme, isSystemDark())
+        val dark = pageColor?.let { PageBarColor.isDarkSurface(it) } ?: tableState
+        val color = pageColor ?: PageBarColor.resolve(surfaceState, tableState)
         binding.handoffCover.setBackgroundColor(PageBarColor.resolve(PageBarState.BOOT, dark))
         // The strip is the root's own background: the root is padded down by the
         // status bar inset, so this colour shows exactly in that strip and
@@ -902,6 +915,7 @@ class MainActivity : AppCompatActivity() {
         val surface = RemoteUrl.authSurfaceOf(uri)
         if (surface == null) {
             pageTheme = null
+            pageColor = null
             pageBarState = PageBarState.BOOT_SHELL
             applyStatusBarSurface()
             return
@@ -910,6 +924,7 @@ class MainActivity : AppCompatActivity() {
         val state = PageBarColor.authStateFor(surface, isSystemDark(), narrow)
         Diagnostics.info("登录/授权面：${surface.name} → ${state.token}")
         pageTheme = null
+        pageColor = null
         pageBarState = state
         applyStatusBarSurface()
     }

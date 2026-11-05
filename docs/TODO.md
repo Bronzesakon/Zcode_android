@@ -285,7 +285,7 @@
 | 工作区主页（手机，实测） | bg-background（无贴顶 header） | boot | #F8F8F8 | #161616 |
 | 对话详情（手机，实测） | 手机壳标题栏 `div.bg-header`（h-11） | main-header | #FFFFFF | #202020 |
 | 宽屏主页 / 对话 / 其它 | 左上命中窗口外框 `bg-background-win-alt` | main-surface | #ECECEE | #2B2B2B |
-| 设置页（窄/宽） | `[data-settings-content-frame]` 面板 | boot | #F8F8F8 | #161616 |
+| 设置页（窄/宽） | 左 68px 图标栏露出窗口外框（用户口径：对齐左列） | main-surface | #ECECEE | #2B2B2B |
 
 判定（2026-11-05 真机 CDP + 鸿蒙 3.17.2 快照交叉核验）：**左上角命中链**——
 `elementFromPoint(4,6)` 向上找第一个真正画了底色的表面类（`bg-header` / `bg-background-win-alt`
@@ -293,9 +293,15 @@
 （`[data-settings-content-frame]` 可见）提前判成 `boot`。命中链是几何事实，不猜宽窄；
 `elementFromPoint` 不可用时才退回矩形判据。
 
-**单色条带的固有限制（鸿蒙侧同口径）**：宽屏设置页左 68px 轨是 `#ECECEE/#2B2B2B`、面板是
-`#F8F8F8/#161616`，设置页取面板色（左轨差 12/21）；非设置页宽屏取侧栏/外框色（右侧主区差
-12/21）。这是二选一，按鸿蒙 2026-11-05 的最终表执行。
+**单色条带的固有限制**：设置页左 68px 轨是 `#ECECEE/#2B2B2B`、面板是 `#F8F8F8/#161616`。
+用户 2026-11-05 两次指正：设置页取**左列**色（面板差 12/21）。鸿蒙报告里"设置页取面板"的
+选择**已撤销**，以用户口径为准。
+
+**第二条腿（2026-11-05 真机反馈"设置页退出后条带变色"）**：状态名之外，注入层还在同一拍
+采样**左上角那一点的计算样式**（`elementFromPoint(4,6)` 向上找第一个不透明 `background-color`，
+报 `#RRGGBB`）随 `pagestate` 一起回推。原生优先用采样色、图标明暗按采样色亮度（WCAG 阈值 0.5），
+状态表只在采样缺失/非法时兜底；去重 token 也带上采样色。这样"类名换版 / 同名不同色的表面 /
+WebView 重建后漏报"都不会再画错条带。JS 测试 119/119（采样色断言）、Kotlin 185/185。
 
 3.17.2 的 relay 逐项比对见 `docs/android/3.17.2-relay-audit.md`：**协议无变化**
 （ws2 / auth_init / 心跳 / data 外层 / KICKED 全同），本端原生承载的 3 处帧形状偏差
