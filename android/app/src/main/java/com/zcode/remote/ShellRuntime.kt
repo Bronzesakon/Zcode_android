@@ -1097,6 +1097,7 @@ object ShellRuntime {
     }
 
     private fun startHeartbeatPump() {
+        if (!prefs.nativeCore) return
         if (heartbeatPumpRunning) return
         heartbeatPumpRunning = true
         mainHandler.removeCallbacks(pumpRunnable)
@@ -1980,7 +1981,10 @@ object ShellRuntime {
         !userIsAway() && readViewAtLeave()?.optBoolean("chat") == true
 
     private fun maybeStartHandoffCarrier(epoch: Long) {
+        if (!prefs.nativeCore) return
         if (!handoff.isCurrent(epoch, true) || !userIsAway() || !carrierEnabled) return
+        // 页面还可见时绝不拨号：同一 token 的第二条连接会被服务端判成互斥，先把页面踢掉，
+        // 用户看到的就是"连接中断，正在重连"（2026-11-05 真机反复出现）。
         if (NativeRelayClient.isRunning()) return
         if (store.runningTaskRefs().isEmpty() && !store.staleGateHold().holds) return
         val creds = relayCreds ?: return
@@ -1990,6 +1994,13 @@ object ShellRuntime {
     }
 
     private fun startNativeCarrier(creds: RelayCreds, early: Boolean) {
+        if (!prefs.nativeCore || !userIsAway()) {
+            Diagnostics.log(
+                "warn",
+                "承载: 拒绝启动（nativeCore=${prefs.nativeCore} · 前台=${isUserPresent()}）",
+            )
+            return
+        }
         val carrierEpoch = handoff.epoch
         carrierStarted = true
         carrierStartedEarly = early
@@ -2346,10 +2357,37 @@ object ShellRuntime {
      * Entry point for everything the injected script reports. Never throws: a
      * malformed message must not break the WebView's JS bridge.
      */
+    /**
+     * 原生核心总开关：关 = 不再监听页面（承载/通知/会话/心跳泵全部停），
+     * 只保留界面注入。切换后立刻重载页面，注入层按新 config 重新 boot。
+     */
+    fun setNativeCoreEnabled(enabled: Boolean) {
+        if (prefs.nativeCore == enabled) return
+        prefs.nativeCore = enabled
+        if (!enabled) {
+            stopCarrierAndCloseWindow("原生核心开关关闭")
+            stopHeartbeatPump()
+            store.reset()
+            notifier.clearAll()
+            dismissHandoffCover("原生核心开关关闭")
+        }
+        Diagnostics.log("warn", "原生核心: ${if (enabled) "开启" else "关闭（只保留状态栏/滚动条/刷新等界面注入）"}")
+        evaluateJs("window.location.reload();")
+    }
+
+    /** 总开关关闭时要忽略的"监听型"帧；pagestate/versiongate/desktopversion/diag 是界面与导航所需，保留。 */
+    private val CORE_EVENTS = setOf(
+        "sessions", "status", "liveness", "convtext", "pagews", "relaycreds", "pagefailure",
+    )
+
     fun onBridgeMessage(json: String) {
         try {
             val root = JSONObject(json)
-            when (root.optString("event")) {
+            val event = root.optString("event")
+            if (!prefs.nativeCore && event in CORE_EVENTS) {
+                return
+            }
+            when (event) {
                 "sessions" -> onSessions(root.optJSONObject("data"))
                 "status" -> onStatus(root.optJSONObject("data"))
                 "liveness" -> root.optJSONObject("data")?.let { onLiveness(it) }

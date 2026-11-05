@@ -55,6 +55,10 @@
     <string name="settings_notification_permission_ok">已允许</string>
     <string name="settings_notification_permission_denied">未允许 · 点此开启</string>
     <string name="settings_clear_notifications">清除全部通知</string>
+    <string name="settings_section_native_core">原生核心</string>
+    <string name="settings_native_core">监听网页与后台承载</string>
+    <string name="settings_native_core_on">开 · 后台承载、任务通知、会话监听</string>
+    <string name="settings_native_core_off">关 · 只保留状态栏着色、滚动条、刷新按钮</string>
     <string name="settings_section_keepalive">后台保活</string>
     <string name="settings_battery_optimization">电池优化白名单</string>
     <string name="settings_battery_exempt">已加入白名单</string>

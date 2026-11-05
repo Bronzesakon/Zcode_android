@@ -61,6 +61,21 @@ class Prefs(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_PASSIVE_OBSERVE, value).apply()
 
     /**
+     * **原生核心总开关**（用户可见，默认开）——2026-11-05 用户要求。
+     *
+     * 关 = 壳不再"监听"页面：不 hook WebSocket（不逐帧观测、不交承载凭证）、
+     * 不跑后台原生承载、不发任务通知/流体云。保留的只有界面注入：状态栏取色
+     * （`pagestate`）、滚动条归零/自绘、对话页刷新按钮、版本闸门与 URL 钉。
+     *
+     * 与 [passiveObserve] 的关系：后者是诊断用细开关，这里关掉时**一并**让
+     * `config().passiveObserve` 返回 false（见 WebAppBridge），两条腿都断。
+     * 切换后需要重载页面，注入层才会按新配置重新 boot。
+     */
+    var nativeCore: Boolean
+        get() = prefs.getBoolean(KEY_NATIVE_CORE, true)
+        set(value) = prefs.edit().putBoolean(KEY_NATIVE_CORE, value).apply()
+
+    /**
      * Whether the runtime has ever finished a session-index handshake. Used to
      * avoid asking for the notification permission before there is anything to
      * notify about (see §5.6).
@@ -123,6 +138,7 @@ class Prefs(context: Context) {
         private const val KEY_REMOTE_URL = "remote_url"
         private const val KEY_WEBVIEW_DEBUG = "webview_debugging"
         private const val KEY_PASSIVE_OBSERVE = "passive_observe"
+        private const val KEY_NATIVE_CORE = "native_core"
         private const val KEY_NOTIF_ASKED = "notification_permission_requested"
         private const val KEY_VIEW_AT_LEAVE = "view_at_leave"
         private const val KEY_CONVERSATION_RECOVERY = "conversation_recovery"

@@ -216,7 +216,7 @@
     var cachedConfig = null;
 
     function configDefaults() {
-        return {passiveObserve: true};
+        return {passiveObserve: true, nativeCore: true};
     }
 
     function config() {

@@ -57,7 +57,10 @@ class WebAppBridge(private val prefs: Prefs) {
                 list.put(sessionId)
             }
             JSONObject()
-                .put("passiveObserve", prefs.passiveObserve)
+                // 原生核心总开关关掉时，注入层连 WebSocket hook 都不装：只留状态栏取色、
+                // 滚动条、刷新按钮等界面件（用户 2026-11-05 的要求）。
+                .put("nativeCore", prefs.nativeCore)
+                .put("passiveObserve", prefs.passiveObserve && prefs.nativeCore)
                 // 注入层的前后台**初始值**：文档若在后台期间被重载（自愈/兜底重载都可能），
                 // 没有这个字段它会自认前台——KICKED 被误判成"前台被顶→不自动干预"，自愈
                 // 链路短路（2026-09-27 17:07 现场一环）。
@@ -68,7 +71,7 @@ class WebAppBridge(private val prefs: Prefs) {
         } catch (e: Exception) {
             // 兜底要与真实默认值一致：写错会让注入层在没有配置时反而去开订阅
             // ——2026-09-15 的教训（那时兜底里还带着 subscribeAll）。
-            "{\"passiveObserve\":true}"
+            "{\"passiveObserve\":true,\"nativeCore\":true}"
         }
     }
 }

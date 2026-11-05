@@ -97,6 +97,26 @@ class SettingsActivity : AppCompatActivity() {
         }
 
         binding.versionText.text = versionText()
+
+        // 原生核心总开关（用户 2026-11-05）：关 = 不监听页面、不跑后台承载、不发通知。
+        // 注入层的 WebSocket hook 也要等页面重载后才撤（config 在文档 boot 时读一次），
+        // setNativeCoreEnabled 里会主动 reload。
+        val nativeCoreOn = ShellRuntime.prefs().nativeCore
+        binding.switchNativeCore.isChecked = nativeCoreOn
+        updateNativeCoreSummary(nativeCoreOn)
+        binding.switchNativeCore.setOnCheckedChangeListener { _, checked ->
+            ShellRuntime.setNativeCoreEnabled(checked)
+            updateNativeCoreSummary(checked)
+        }
+        binding.rowNativeCore.setOnClickListener {
+            binding.switchNativeCore.isChecked = !binding.switchNativeCore.isChecked
+        }
+    }
+
+    private fun updateNativeCoreSummary(enabled: Boolean) {
+        binding.nativeCoreSummary.text = getString(
+            if (enabled) R.string.settings_native_core_on else R.string.settings_native_core_off
+        )
     }
 
     override fun onResume() {
