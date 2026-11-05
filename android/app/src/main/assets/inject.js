@@ -267,8 +267,29 @@
         return storeGet(PIN_CHAT_KEY) === '1';
     }
 
+    /**
+     * 能不能钉：**必须有一条可返回的历史条目**。
+     *
+     * 真机实测（2026-11-05，PLC110 / 3.17.2）：对话页左上角返回按钮的 onClick 是
+     * `if (L8(history.state)) { history.back(); return } v('home')` —— `L8` 认的
+     * 就是 `zcodeMobilePage === 'chat'`。冷启动时 WebView 的历史栈只有 1 条
+     * （`history.length === 1`），我们若把 state 钉成 chat，按钮就会走
+     * `history.back()` 而**无处可回**：点击毫无反应，用户被钉死在对话页；
+     * 清后台重进也一样（`Prefs.viewAtLeave` 存活 2h，restoreChat 仍为 true）。
+     *
+     * 所以只在"栈里确实有上一条"时钉：重载/闸门 replace 都保留 history.length，
+     * 恢复能力不受影响；冷启动（length=1）不钉，落回页面自己的首页。
+     */
+    function canPinChatRoute() {
+        try {
+            return !!(G.history && typeof G.history.length === 'number' && G.history.length > 1);
+        } catch (e) {
+            return false;
+        }
+    }
+
     // 原生知道离开时在聊天页：在网页 bootstrap 之前恢复路由，省去加载后的二次重载。
-    if (config().restoreChat === true && config().foreground !== false) {
+    if (config().restoreChat === true && config().foreground !== false && canPinChatRoute()) {
         try {
             pinChatRoute();
             // 先钉再记：replaceState 抛错时不留标记（否则下一个文档会拿旧标记重钉）。
@@ -285,9 +306,15 @@
         // 不焚掉的话，登出→重新登录回到 /remote（同一标签页、sessionStorage 存活）
         // 会把用户直接拽进旧对话；换工作区同理。
         try {
-            pinChatRoute();
+            if (canPinChatRoute()) {
+                pinChatRoute();
+                diag('info', '版本闸门导航后重钉聊天路由（history.state 已被 replace 清空，标记已消费）');
+            } else {
+                // 没有可返回的条目：钉了就等于把返回按钮废掉（见 canPinChatRoute）。
+                // 标记也必须焚掉，否则下一次导航（如版本闸门）会把它重钉回来。
+                diag('info', '无历史条目可返回，放弃重钉聊天路由（避免返回按钮失效）');
+            }
             storeSet(PIN_CHAT_KEY, '');
-            diag('info', '版本闸门导航后重钉聊天路由（history.state 已被 replace 清空，标记已消费）');
         } catch (e) {
             diag('warn', '闸门导航后重钉聊天路由失败: ' + e);
         }

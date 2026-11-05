@@ -2611,7 +2611,7 @@ test('档3：不碰页面 socket（它不许退化成轻推）', async () => {
 
 
 test('快速交接：启动前恢复聊天路由并保留网页其他历史字段', () => {
-    const history = {state: {zcodeMobilePage: 'home', keep: 7}, replaceState(next) { this.state = next; }};
+    const history = {state: {zcodeMobilePage: 'home', keep: 7}, length: 2, replaceState(next) { this.state = next; }};
     const page = setupPage({config: {passiveObserve: true, foreground: true, restoreChat: true}, history});
     try {
         assert.deepStrictEqual(history.state, {zcodeMobilePage: 'chat', keep: 7});
@@ -2627,6 +2627,22 @@ test('快速交接：后台加载不擅自恢复聊天路由', () => {
     const page = setupPage({config: {foreground: false, restoreChat: true}, history});
     try { assert.strictEqual(history.state.zcodeMobilePage, 'home'); }
     finally { page.teardown(); }
+});
+
+test('冷启动：历史栈只有一条时不钉聊天路由（否则返回按钮的 history.back() 无处可回）', () => {
+    const storage = stubSessionStorage();
+    storage.store.set('zcodeShellPinChat', '1'); // 上一份文档留下的标记
+    const history = {state: null, length: 1, replaceState(next) { this.state = next; }};
+    const page = setupPage({config: {passiveObserve: true, foreground: true, restoreChat: true}, history});
+    try {
+        assert.strictEqual(history.state, null,
+            'no back entry: pinning chat would make the page back button a no-op');
+        assert.strictEqual(storage.store.get('zcodeShellPinChat'), '',
+            'the stale pin marker must be consumed instead of leaking into a later navigation');
+    } finally {
+        storage.restore();
+        page.teardown();
+    }
 });
 
 test('旁观收窄：窗口控制 socket 不改变 relay 状态、不解析也不补心跳', () => {
@@ -2769,7 +2785,7 @@ test('刷新按钮：没有 aria-haspopup 时用 aria-label 二判据兜住', as
 test('闸门①：version-gate 导航后按上一次的决定重钉聊天路由（state 已被清空）', () => {
     const storage = stubSessionStorage();
     storage.store.set('zcodeShellPinChat', '1');
-    const history = {state: null, replaceState(next) { this.state = next; }};
+    const history = {state: null, length: 2, replaceState(next) { this.state = next; }};
     // restoreChat=false：原生那一刻已经翻成 false（viewAtLeave 被消费掉了）——正是
     // `location.replace()` 之后那次文档加载的真实形状。
     const page = setupPage({config: {passiveObserve: true, foreground: true}, history});
