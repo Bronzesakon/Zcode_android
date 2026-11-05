@@ -73,6 +73,12 @@ class FakeElement extends FakeEventTarget {
         this.dispatched = [];
         this.cursor = 'auto';
         this.isConnected = true;
+        // 真实 DOM 里任何元素都有 rect；默认"可见且贴顶"，需要测离屏/零高的用例覆写它。
+        this._rect = {top: 0, bottom: 100, height: 100, left: 0, right: 100, width: 100};
+    }
+
+    getBoundingClientRect() {
+        return this._rect;
     }
 
     get childElementCount() {
@@ -152,13 +158,37 @@ class FakeDocument extends FakeEventTarget {
     }
 
     querySelectorAll(selector) {
-        if (selector !== 'body *') {
-            return [];
+        if (selector === 'body *') {
+            const out = [];
+            const walk = (node) => {
+                for (const child of node.children) {
+                    out.push(child);
+                    walk(child);
+                }
+            };
+            walk(this.body);
+            return out;
         }
+        // '.classname' 单类选择器（状态判定用：.bg-header / .bg-background-win-alt）。
+        if (typeof selector === 'string' && /^(\.[A-Za-z0-9_-]+)$/.test(selector)) {
+            const name = selector.slice(1);
+            return this.getElementsByClassName(name);
+        }
+        return [];
+    }
+
+    querySelector(selector) {
+        const out = this.querySelectorAll(selector);
+        return out.length ? out[0] : null;
+    }
+
+    getElementsByClassName(name) {
         const out = [];
         const walk = (node) => {
             for (const child of node.children) {
-                out.push(child);
+                if (String(child.getAttribute('class') || '').split(/\s+/).indexOf(name) >= 0) {
+                    out.push(child);
+                }
                 walk(child);
             }
         };
@@ -1304,6 +1334,7 @@ test('the page reports its visual state, and only when it changes', async () => 
         // React mounts: the boot shell goes away and the control view appears.
         page.dom.set('zcode-boot-loading', false);
         page.dom.set('bg-background-win-alt', true);
+        page.dom.set('bg-header', true);
         FakeMutationObserver.fire();
         await flush();
         assert.deepStrictEqual(pageStates(page.posts),
@@ -1325,12 +1356,40 @@ test('the page reports its visual state, and only when it changes', async () => 
     }
 });
 
+test('状态判定：窄屏首页/任务列表（无贴顶标题栏）→ boot（整页背景色）', async () => {
+    // 2026-11-05 用户真机报：概览页条带 #202020 压在 #161616 页面上。
+    // 根因：旧判定只按宽窄二分，首页没有贴顶 .bg-header 也被给了 main-header。
+    // 照鸿蒙 computeState：贴顶 header 才是 main-header；否则窄屏一律 boot（bg-background）。
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
+    try {
+        page.dom.set('bg-background-win-alt', true);
+        page.dom.setZaiTheme('theme-zai-dark');
+        page.dom.setTheme('dark');
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts), ['boot/dark'],
+            'the overview top surface is bg-background, not the header colour');
+
+        // header 在 DOM 里但不贴顶（对话框/侧栏里的离屏头部）同样不算。
+        page.dom.set('bg-header', true);
+        const header = document.getElementsByClassName('bg-header')[0];
+        header._rect = {top: 40, bottom: 140, height: 100, left: 0, right: 100, width: 100};
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['boot/dark'],
+            'an off-screen header must not claim the top');
+    } finally {
+        page.teardown();
+    }
+});
+
 test('crossing the page\'s breakpoint without a DOM change is still reported', async () => {
     // Rotation, split screen and foldables change the layout without mutating the
     // DOM, so the media query has to be watched in its own right.
     const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         page.dom.set('bg-background-win-alt', true);
+        page.dom.set('bg-header', true);
         page.dom.setTheme('light');
         FakeMutationObserver.fire();
         await flush();
@@ -1338,6 +1397,8 @@ test('crossing the page\'s breakpoint without a DOM change is still reported', a
 
         const narrow = page.mediaQueries.find((mql) => mql.query === NARROW_QUERY);
         assert.ok(narrow, 'the reporter must watch the page\'s own breakpoint');
+        // 宽屏：顶部是 workspace 外壳而不是页面标题栏——把贴顶 header 拿掉再切宽。
+        page.dom.set('bg-header', false);
         narrow.setMatches(false);
         await flush();
         assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-surface/light'],
@@ -1351,6 +1412,7 @@ test('the native side can ask for a fresh report after a background stint', asyn
     const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
     try {
         page.dom.set('bg-background-win-alt', true);
+        page.dom.set('bg-header', true);
         page.dom.setTheme('light');
         FakeMutationObserver.fire();
         await flush();
@@ -1375,12 +1437,14 @@ test('a page without MutationObserver still boots, and still follows its breakpo
     const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}, noObserver: true});
     try {
         page.dom.set('bg-background-win-alt', true);
+        page.dom.set('bg-header', true);
         page.dom.setTheme('light');
         await flush();
         assert.deepStrictEqual(
             pageStates(page.posts), ['main-header/light'],
             'the state is read once even without an observer');
         const narrow = page.mediaQueries.find((mql) => mql.query === NARROW_QUERY);
+        page.dom.set('bg-header', false);
         narrow.setMatches(false);
         await flush();
         assert.deepStrictEqual(
@@ -1410,6 +1474,7 @@ test('a document-start arrival before <html> exists retries instead of giving up
         page.dom.materialiseRoot();
         page.document.dispatchEvent({type: 'DOMContentLoaded'});
         page.dom.set('bg-background-win-alt', true);
+        page.dom.set('bg-header', true);
         page.dom.setTheme('dark');
         FakeMutationObserver.fire();
         await flush();

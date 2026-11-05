@@ -3293,13 +3293,48 @@
                 return '';
             }
             var shell = document.getElementsByClassName('zcode-boot-loading').length > 0;
-            var noMain = document.getElementsByClassName('bg-background-win-alt').length === 0;
-            if (shell || noMain) {
+            if (shell) {
                 // Unthemed shell falls back to the :root token; once themed it is the
                 // same colour as every status page, so those two share one name.
                 return hasZaiTheme() ? 'boot' : 'boot-shell';
             }
-            return mediaMatches(NARROW_QUERY) ? 'main-header' : 'main-surface';
+            // 顶部判据照鸿蒙 computeState（2026-11-05 用户报概览页色差）：
+            // 看「实际可见且贴顶」的表面，而不是只按宽窄二分——窄屏首页/任务列表/
+            // 设置页**没有**贴顶标题栏，状态栏正下方是整页 bg-background（暗 #161616），
+            // 按 main-header 给 #202020 就是一条色缝。
+            var topHeaderVisible = false;
+            try {
+                if (document.querySelectorAll) {
+                    var headers = document.querySelectorAll('.bg-header');
+                    for (var hi = 0; hi < headers.length; hi++) {
+                        var hr = headers[hi].getBoundingClientRect();
+                        if (hr.height > 0 && hr.top <= 8 && hr.bottom > 0) {
+                            topHeaderVisible = true;
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {
+                // rect 读不到就不猜 header：宁可落回整页背景色。
+            }
+            if (topHeaderVisible) {
+                return 'main-header';
+            }
+            var winAlt = document.querySelector
+                ? document.querySelector('.bg-background-win-alt')
+                : null;
+            var winAltVisible = false;
+            try {
+                winAltVisible = !!(winAlt && winAlt.getBoundingClientRect().height > 0);
+            } catch (e) {
+                winAltVisible = false;
+            }
+            if (winAltVisible && !mediaMatches(NARROW_QUERY)) {
+                return 'main-surface';
+            }
+            // 其余（窄屏首页/任务列表/设置/引导）：整页 bg-background，与状态页同色。
+            // 未挂主题类的极早窗口沿用 :root 兜底色（boot-shell），与旧口径一致。
+            return hasZaiTheme() ? 'boot' : 'boot-shell';
         } catch (e) {
             return '';
         }

@@ -30,8 +30,8 @@ class PageBarColorTest {
     private val BOOT_DARK = 0xFF161616.toInt()
     private val HEADER_LIGHT = 0xFFFFFFFF.toInt()
     private val HEADER_DARK = 0xFF202020.toInt()
-    private val SURFACE_LIGHT = 0xFFECECEE.toInt()
-    private val SURFACE_DARK = 0xFF2B2B2B.toInt()
+    private val SURFACE_LIGHT = 0xFFF0F0F0.toInt()
+    private val SURFACE_DARK = 0xFF161616.toInt()
     // D4：登录/授权面的专用表（照鸿蒙现值，用户已确认观感无问题）。
     private val AUTH_BIGMODEL = 0xFFF7F8FA.toInt()
     private val AUTH_CONSENT_LIGHT = 0xFFF8F8F8.toInt()

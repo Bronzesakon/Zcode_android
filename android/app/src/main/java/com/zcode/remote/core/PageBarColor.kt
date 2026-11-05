@@ -17,9 +17,9 @@ package com.zcode.remote.core
  * | token          | light     | dark      | where it is the top surface |
  * | -------------- | --------- | --------- | --------------------------- |
  * | `boot-shell`   | `#fafafa` | `#171717` | pre-rendered shell before the page stamps its theme class |
- * | `boot`         | `#f8f8f8` | `#161616` | the same shell once themed, plus KICKED / takeover / pairing pages |
- * | `main-surface` | `#ececee` | `#2b2b2b` | wide layout: the shell area is directly under the status bar |
- * | `main-header`  | `#ffffff` | `#202020` | narrow layout (the phone shell): the page's own title bar is |
+ * | `boot`         | `#f8f8f8` | `#161616` | themed shell, status pages, **and the narrow home/task-list/settings pages**（它们的顶部是整页 `--color-background`，不是标题栏） |
+ * | `main-surface` | `#f0f0f0` | `#161616` | wide layout: `--color-sidebar`（2026-10-26 鸿蒙修正：旧值 #ECECEE/#2B2B2B 是窗口外框 `--color-background-win-alt`，不是状态栏正下方的可见层） |
+ * | `main-header`  | `#ffffff` | `#202020` | 有「可见且贴顶」标题栏（`--color-header`）时的窄屏对话页 |
  *
  * Light/dark is not taken from the system: the page has its own theme setting,
  * so the reported theme wins and the system's night mode is only the fallback.
@@ -121,8 +121,10 @@ object PageBarColor {
     private const val BOOT_DARK = 0xFF161616.toInt()
     private const val MAIN_HEADER_LIGHT = 0xFFFFFFFF.toInt()
     private const val MAIN_HEADER_DARK = 0xFF202020.toInt()
-    private const val MAIN_SURFACE_LIGHT = 0xFFECECEE.toInt()
-    private const val MAIN_SURFACE_DARK = 0xFF2B2B2B.toInt()
+    // 2026-11-05 校正：对齐鸿蒙 2026-10-26 的修正与 3.17.1 CSS（--color-sidebar）。
+    // 旧值 #ECECEE/#2B2B2B 是 --color-background-win-alt（窗口外框），不是状态栏正下方的层。
+    private const val MAIN_SURFACE_LIGHT = 0xFFF0F0F0.toInt()
+    private const val MAIN_SURFACE_DARK = 0xFF161616.toInt()
 
     // 登录/授权面（D4，2026-11-04 照抄鸿蒙现值——用户已确认观感无问题，勿改）。
     // 这是一张**独立**的表：色值随网页主题，不随系统深浅；`dark` 位由状态名自带。
