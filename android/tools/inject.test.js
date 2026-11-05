@@ -169,10 +169,27 @@ class FakeDocument extends FakeEventTarget {
             walk(this.body);
             return out;
         }
-        // '.classname' 单类选择器（状态判定用：.bg-header / .bg-background-win-alt）。
+        // '.classname' 单类选择器（状态判定用：.bg-sidebar / .bg-header / .bg-background-win-alt）。
         if (typeof selector === 'string' && /^(\.[A-Za-z0-9_-]+)$/.test(selector)) {
             const name = selector.slice(1);
             return this.getElementsByClassName(name);
+        }
+        // '[attr]' 属性存在选择器（状态判定用：[data-workspace-sidebar-panel]）。
+        // 从 <html> 起走，因为 pageState 分支把页面节点直接挂在 documentElement 下
+        // （body 只是它的一个子节点）。
+        const attrOnly = typeof selector === 'string' ? /^\[([A-Za-z0-9_-]+)\]$/.exec(selector) : null;
+        if (attrOnly) {
+            const out = [];
+            const walk = (node) => {
+                for (const child of node.children) {
+                    if (child.hasAttribute(attrOnly[1])) {
+                        out.push(child);
+                    }
+                    walk(child);
+                }
+            };
+            walk(this.documentElement || this.body);
+            return out;
         }
         return [];
     }
@@ -414,6 +431,31 @@ function setupPage(options) {
                     root.children = root.children.filter((child) => child !== el);
                 }
             }
+        };
+        /**
+         * 侧栏面板：真实页面里是 `div[data-workspace-sidebar-panel]`——窄屏
+         * `max-md:bg-sidebar` 横置成贴顶导航条，宽屏是左侧竖栏。用数据属性造，
+         * 顺带证明判据没有绑死 `.bg-sidebar` 类名（横向导航条的类名是
+         * `max-md:bg-sidebar`，不匹配 `.bg-sidebar`）。
+         */
+        dom.rail = null;
+        dom.setRail = (present) => {
+            if (!root) {
+                return null;
+            }
+            if (!present) {
+                if (dom.rail) {
+                    root.children = root.children.filter((child) => child !== dom.rail);
+                    dom.rail = null;
+                }
+                return null;
+            }
+            if (!dom.rail) {
+                dom.rail = new FakeElement('div');
+                dom.rail.setAttribute('data-workspace-sidebar-panel', 'true');
+                root.appendChild(dom.rail);
+            }
+            return dom.rail;
         };
         dom.setTheme = (theme) => {
             if (!root) {
@@ -1241,6 +1283,11 @@ test('handoff returns to the first page frame and never hides workspace connecti
         await flush();
         assert.strictEqual(findPost(page.posts, 'pagestate').at(-1).data.presentation, 'loading');
         page.dom.set('zcode-boot-loading', true);
+        // 真实页面里主题类是主包顶层 IIFE 在 React 挂载**之前**挂上的，所以
+        // 首帧之后看到的壳与随后的状态页必然同色（boot）。这里照实补上，
+        // 否则测的是一个页面上不存在的「未着主题就进 React」时序。
+        page.dom.setZaiTheme('theme-zai-light');
+        page.dom.setTheme('light');
         FakeMutationObserver.fire();
         await flush();
         const logo = findPost(page.posts, 'pagestate').at(-1).data;
@@ -1378,6 +1425,65 @@ test('状态判定：窄屏首页/任务列表（无贴顶标题栏）→ boot�
         await flush();
         assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['boot/dark'],
             'an off-screen header must not claim the top');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('状态判定：贴顶导航条（窄屏）优先于内容标题栏 → main-surface', async () => {
+    // 2026-11-05 用户报：加载页/工作区主页/设置页/对话详情页条带都有色差。
+    // 3.17.1 快照实证：web 远控外壳在窄屏把侧栏面板横置成贴顶导航条
+    // （div[data-workspace-sidebar-panel] + max-md:bg-sidebar），内容区（含对话页
+    // 自己的 bg-header 标题栏）全部在它**下面**；两者都是 --color-sidebar。
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
+    try {
+        page.dom.setZaiTheme('theme-zai-light');
+        page.dom.setTheme('light');
+        page.dom.setRail(true);
+        page.dom.set('bg-header', true);
+        const header = document.getElementsByClassName('bg-header')[0];
+        header._rect = {top: 44, bottom: 88, height: 44, left: 0, right: 100, width: 100};
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts), ['main-surface/light'],
+            'the top navigation bar is the surface under the status bar');
+
+        // 设置页：没有自己的标题栏，贴顶的只有导航条。
+        page.dom.set('bg-header', false);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-surface/light'],
+            'settings has no header of its own — the navigation bar still owns the strip');
+
+        // 导航面不在顶部（侧栏折叠后的离屏面板）：不许抢态，落回整页背景。
+        page.dom.rail._rect = {top: 48, bottom: 148, height: 100, left: 0, right: 100, width: 100};
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['boot/light'],
+            'a navigation panel that does not touch the top must not claim the strip');
+    } finally {
+        page.teardown();
+    }
+});
+
+test('状态判定：宽屏左栏与标题栏同时贴顶时按左列（main-surface）', async () => {
+    // 用户口径（2026-11-05）：平板式布局的状态栏取色对齐左列背景色。
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: false}});
+    try {
+        page.dom.setZaiTheme('theme-zai-light');
+        page.dom.setTheme('light');
+        page.dom.setRail(true);
+        page.dom.set('bg-header', true);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts), ['main-surface/light'],
+            'the left rail wins over the content header');
+
+        // 左栏折叠/不存在时才轮到内容区标题栏。
+        page.dom.setRail(false);
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-header/light']);
     } finally {
         page.teardown();
     }

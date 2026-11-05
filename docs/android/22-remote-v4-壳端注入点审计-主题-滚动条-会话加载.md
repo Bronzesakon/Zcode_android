@@ -63,6 +63,12 @@ function pageThemeName() {
 - `main-header` = **窄屏**（≤767px）：页面自己的标题栏（`bg-header`）紧贴状态栏；
 - `main-surface` = **宽屏**：外壳区（`bg-background-win-alt`）在最上。
 
+> **2026-11-05 快照复核：「宽屏顶部 = win-alt」已撤销**。3.17.1 主包 @4,295,239 证实
+> `bg-background-win-alt` 是桌面窗口外框（`data-desktop-window-frame`），web 远控路由里通常
+> 不存在或零高；真正贴状态栏的是**导航面** `div[data-workspace-sidebar-panel]`（@5,957,826）：
+> 窄屏 `max-md:bg-sidebar` 横置成顶部导航条，宽屏是左侧竖栏。状态名对照与逐页矩阵见
+> `docs/TODO.md` §4.1。
+
 ### 2.2 页面侧的三个锚点
 
 | 锚点 | 定义 | 证据 |

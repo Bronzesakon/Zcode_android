@@ -253,6 +253,50 @@
 **未验证前提**：登录全链路域是否真只有这四个（鸿蒙口径是代码口径、非实测清单）；
 新登录页 URL 归属（在不在 `/remote` 前缀下）；鸿蒙色表是否已是线上最新 palette（真机阶段复核）。
 
+### 4.1 逐页状态栏取色矩阵（2026-11-05 离线快照审计，未上机）
+
+用户报「加载页/工作区主页/对话详情页仍色差、设置页要对齐左列背景色」后的纯快照复核
+（`Reference_web/3.17.1`，不依赖设备）。**结论：色值表没错，错的是「顶部是谁」的判据。**
+
+证据：
+
+- 主题变量三套作用域：`:root,:host`（兜底）→ `.dark` → `.theme-zai-light/.theme-zai-dark`
+  （字面量，后定义覆盖前两者）。
+  `--color-background`：`neutral-50`(#FAFAFA) / `neutral-900`(#171717) / `#f8f8f8`·`#161616`；
+  `--color-sidebar`：`#F5F5F5` / `#0A0A0A` / `#F0F0F0`·`#161616`；
+  `--color-header`：`#F5F5F5` / `#171717` / `#FFF`·`#202020`。
+- 预渲染壳：`index.html` head 脚本先挂 `data-zcode-browser-theme-surface`，但 `--color-background`
+  的翻转仍靠主包顶层 IIFE 的 `classList.toggle('theme-zai-*')`（主包 @79,283 / @6,837,552）⇒
+  `boot-shell` 与 `boot` 两段仍然成立。
+- **`bg-background-win-alt` 是桌面窗口外框**（主包 @4,295,239，`data-desktop-window-frame`），
+  web 远控路由里一般不存在/零高——旧结论「宽屏顶部 = win-alt」**已撤销**（见
+  `docs/android/22-…md` §2.1 的撤销注记）。
+- 真正贴在状态栏下的是**导航面** `div[data-workspace-sidebar-panel]`（主包 @5,957,826）：
+  窄屏 `max-md:bg-sidebar` 横置成顶部导航条（高 `--web-remote-navigation-height`，
+  @5,958,258 / @5,942,254），宽屏保留为左侧竖栏；默认不折叠（`YXn` 仅在跨工作区一次性标记时折叠）。
+- `bg-header` 全包 1 处（主包 @5,147,447）：窄屏手机壳对话页的 `h-11` 标题栏，位置在导航条**下面**。
+
+矩阵：
+
+| 页面 | 顶部实际表面 | 状态名 | 亮 | 暗 |
+| --- | --- | --- | --- | --- |
+| 预渲染加载壳（主题类未挂） | `.zcode-boot-loading` → `:root` 的 background | boot-shell | #FAFAFA | #171717 |
+| 加载壳已着主题 / React 状态页 / 配对等待 | bg-background | boot | #F8F8F8 | #161616 |
+| 工作区主页（窄/宽） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
+| 设置页（窄/宽） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
+| 对话详情（窄，导航条在顶） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
+| 对话详情（导航面折叠，无贴顶导航） | 手机壳标题栏 bg-header | main-header | #FFFFFF | #202020 |
+
+落地：`inject.js pageStateName()` 新增「导航面」判据——`div[data-workspace-sidebar-panel]`
+（或 `.bg-sidebar`）贴顶（top≤8、height>8、width>0）→ `main-surface`，**判在 `.bg-header` 之前**
+（用户口径：对齐左列背景色）；无表面可判时兜底回到 `boot`（与鸿蒙 `computeState` 一致）。
+注意横向导航条的类名是 `max-md:bg-sidebar`，**不等于** `.bg-sidebar`，所以判据锚在数据属性上。
+JS 测试 +2（118/118）。
+
+**未验证**：宽屏（≥768px）时侧栏面板自身没有背景类（快照实证：全包只有 `.bg-sidebar` /
+`max-md:bg-sidebar` 两条规则，前者只用于代码块与拖放圆点），竖栏实际露出的底色取决于外层窗口框，
+快照无法离线判定。这里沿用用户/鸿蒙口径 `#F0F0F0`/`#161616`；若平板横屏仍见色缝，再按真机像素复核。
+
 ## 5. 迁移状态
 
 | 项 | 状态 |

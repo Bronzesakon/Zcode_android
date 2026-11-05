@@ -3242,13 +3242,25 @@
     //                             `:root` neutral-50/900 fallback) and themed
     //                             (the same colour as the status pages). The
     //                             shell's mere presence cannot tell those apart;
-    //   * `.bg-background-win-alt` the control view's root;
-    //   * `(max-width: 767px)`    the page's own breakpoint for the phone shell.
-    //                             Narrow means the page's own title bar sits
-    //                             directly under the status bar (bg-header), wide
-    //                             means the shell area does (win-alt).
-    // Hence four names: 'boot-shell' (unthemed shell), 'boot' (themed shell and
-    // status pages), 'main-header', 'main-surface'.
+    //   * `.bg-sidebar`           the web-remote shell's own navigation surface:
+    //                             on narrow the sidebar panel is laid out as a
+    //                             full-width top bar (`max-md:bg-sidebar`), on wide
+    //                             it stays the left rail. Either way it is the
+    //                             layer directly under the status bar, so it wins
+    //                             over anything inside the content column — the
+    //                             settings page, the workspace home and the chat
+    //                             page all sit below it (3.17.1 快照实证：
+    //                             WorkspaceShellLayout，2026-11-05);
+    //   * `.bg-header`            the page's own title bar; in 3.17.1 it only
+    //                             exists inside the narrow mobile shell, i.e. *below*
+    //                             that navigation bar;
+    //   * `.bg-background-win-alt` the desktop window frame. In the web-remote
+    //                             route it is usually absent or zero-height, so it
+    //                             is only the last geometric fallback.
+    // Hence four names: 'boot-shell' (unthemed shell), 'boot' (themed shell, status
+    // pages and any content surface that is plain `--color-background`),
+    // 'main-header' (bg-header on top), 'main-surface' (the navigation surface /
+    // left rail, i.e. `--color-sidebar`, on top).
     //
     // Theme: the page stamps `data-zcode-browser-theme-surface` on <html> when it
     // resolves its theme (inline bootstrap in index.html, `syncBrowserThemeSurface`),
@@ -3287,6 +3299,31 @@
         }
     }
 
+    /**
+     * 是否存在「贴顶且真有面积」的某个表面类。
+     *
+     * `top <= 8` 是留给窗口圆角/1px 描边的容差；`height > 8` 顺手排除挂在别处的
+     * 小装饰件（例如项目列表里 8px 的拖放圆点也带 bg-sidebar）。零样式读取，
+     * 只用布局矩形——与鸿蒙那条判据同一思路。
+     */
+    function topSurfaceVisible(selector) {
+        try {
+            if (!document.querySelectorAll) {
+                return false;
+            }
+            var nodes = document.querySelectorAll(selector);
+            for (var i = 0; i < nodes.length; i++) {
+                var rect = nodes[i].getBoundingClientRect();
+                if (rect.height > 8 && rect.width > 0 && rect.top <= 8 && rect.bottom > 0) {
+                    return true;
+                }
+            }
+        } catch (e) {
+            // rect 读不到就不猜：宁可落回整页背景色。
+        }
+        return false;
+    }
+
     function pageStateName() {
         try {
             if (!document.documentElement) {
@@ -3298,26 +3335,22 @@
                 // same colour as every status page, so those two share one name.
                 return hasZaiTheme() ? 'boot' : 'boot-shell';
             }
-            // 顶部判据照鸿蒙 computeState（2026-11-05 用户报概览页色差）：
-            // 看「实际可见且贴顶」的表面，而不是只按宽窄二分——窄屏首页/任务列表/
-            // 设置页**没有**贴顶标题栏，状态栏正下方是整页 bg-background（暗 #161616），
-            // 按 main-header 给 #202020 就是一条色缝。
-            var topHeaderVisible = false;
-            try {
-                if (document.querySelectorAll) {
-                    var headers = document.querySelectorAll('.bg-header');
-                    for (var hi = 0; hi < headers.length; hi++) {
-                        var hr = headers[hi].getBoundingClientRect();
-                        if (hr.height > 0 && hr.top <= 8 && hr.bottom > 0) {
-                            topHeaderVisible = true;
-                            break;
-                        }
-                    }
-                }
-            } catch (e) {
-                // rect 读不到就不猜 header：宁可落回整页背景色。
+            // 顶部判据照鸿蒙 computeState（2026-11-05 用户报概览页色差），并按 3.17.1
+            // 快照补齐「导航面」：web 远控外壳在窄屏把侧栏面板横置成贴顶导航条
+            // （`div[data-workspace-sidebar-panel]` + `max-md:bg-sidebar`，高
+            // --web-remote-navigation-height），宽屏保留为左侧竖栏。两者都是
+            // --color-sidebar，且都压在状态栏正下方——设置页、工作区主页、对话页的
+            // 顶部都是它，内容区自己的标题栏在它**下面**，所以导航面必须先判
+            // （用户 2026-11-05 指正：设置页对齐左列背景色）。
+            // 判据用面板的数据属性（语义锚点，跨版本稳）＋ .bg-sidebar 兜底；
+            // 注意横向导航条的类名是 `max-md:bg-sidebar`，**不**等于 `.bg-sidebar`。
+            if (topSurfaceVisible('[data-workspace-sidebar-panel]') ||
+                topSurfaceVisible('.bg-sidebar')) {
+                return 'main-surface';
             }
-            if (topHeaderVisible) {
+            // 其次才是页面自己的标题栏：只有导航面不在顶部（侧栏折叠）时，
+            // 窄屏对话页的 bg-header 才会直接贴顶。
+            if (topSurfaceVisible('.bg-header')) {
                 return 'main-header';
             }
             var winAlt = document.querySelector
@@ -3332,9 +3365,10 @@
             if (winAltVisible && !mediaMatches(NARROW_QUERY)) {
                 return 'main-surface';
             }
-            // 其余（窄屏首页/任务列表/设置/引导）：整页 bg-background，与状态页同色。
-            // 未挂主题类的极早窗口沿用 :root 兜底色（boot-shell），与旧口径一致。
-            return hasZaiTheme() ? 'boot' : 'boot-shell';
+            // 其余（窄屏首页/任务列表/设置/引导/React 状态页）：整页 bg-background，
+            // 与状态页同色。无壳又未挂主题类的极早窗口也按整页背景处理（与鸿蒙
+            // computeState 的兜底一致：那里同样返回 boot）。
+            return 'boot';
         } catch (e) {
             return '';
         }

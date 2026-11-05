@@ -18,8 +18,8 @@ package com.zcode.remote.core
  * | -------------- | --------- | --------- | --------------------------- |
  * | `boot-shell`   | `#fafafa` | `#171717` | pre-rendered shell before the page stamps its theme class |
  * | `boot`         | `#f8f8f8` | `#161616` | themed shell, status pages, **and the narrow home/task-list/settings pages**（它们的顶部是整页 `--color-background`，不是标题栏） |
- * | `main-surface` | `#f0f0f0` | `#161616` | wide layout: `--color-sidebar`（2026-10-26 鸿蒙修正：旧值 #ECECEE/#2B2B2B 是窗口外框 `--color-background-win-alt`，不是状态栏正下方的可见层） |
- * | `main-header`  | `#ffffff` | `#202020` | 有「可见且贴顶」标题栏（`--color-header`）时的窄屏对话页 |
+ * | `main-surface` | `#f0f0f0` | `#161616` | 网页外壳自己的**导航面**（`--color-sidebar`）贴在状态栏下：宽屏是左侧竖栏，窄屏是横置的顶部导航条（3.17.1 `max-md:bg-sidebar`）。设置页/工作区主页/对话页的顶部都是它，内容区标题栏在它下面 |
+ * | `main-header`  | `#ffffff` | `#202020` | 导航面不在顶部（侧栏折叠）时，窄屏对话页自己的标题栏贴顶（`--color-header`） |
  *
  * Light/dark is not taken from the system: the page has its own theme setting,
  * so the reported theme wins and the system's night mode is only the fallback.
@@ -52,7 +52,7 @@ enum class PageBarState(
     /** Control view, narrow: the page's own header sits directly under the bar. */
     MAIN_HEADER("main-header"),
 
-    /** Control view, wide: the shell area sits directly under the bar. */
+    /** Control view: the page's own navigation surface (left rail wide, top bar narrow). */
     MAIN_SURFACE("main-surface"),
 
     // ---------------------------------------------------------- login (D4)
@@ -123,6 +123,7 @@ object PageBarColor {
     private const val MAIN_HEADER_DARK = 0xFF202020.toInt()
     // 2026-11-05 校正：对齐鸿蒙 2026-10-26 的修正与 3.17.1 CSS（--color-sidebar）。
     // 旧值 #ECECEE/#2B2B2B 是 --color-background-win-alt（窗口外框），不是状态栏正下方的层。
+    // 同一色也覆盖窄屏：web 远控外壳把侧栏面板横置成贴顶导航条（max-md:bg-sidebar）。
     private const val MAIN_SURFACE_LIGHT = 0xFFF0F0F0.toInt()
     private const val MAIN_SURFACE_DARK = 0xFF161616.toInt()
 
