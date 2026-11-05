@@ -160,6 +160,14 @@ object NativeRelayClient {
     private const val HEARTBEAT_INTERVAL_MS = 5_000L
 
     /**
+     * 握手超时：3.17.1 页面新增了同一常量（快照 validation @152,196-152,218、@154,596，
+     * 见 `docs/android/web-3.17.1-vs-docs-diff-audit.md` 发现 2）——`auth_init` 发出后
+     * 15s 内没等到 `auth_ack{matched}` 就断线重连。没有它，"连上了但永远不配对"会占着
+     * socket 干等：心跳/ack 看门狗都只看**配对后**的帧，罩不住握手期。
+     */
+    private const val HANDSHAKE_TIMEOUT_MS = 15_000L
+
+    /**
      * 关闭确认的等待上限（TODO §2.3 的 300ms 交还预算）。**100ms，不是 250ms**：
      * 常态路径是 close 确认回调（本机 `cancel()` 通常在一个事件循环内就回调
      * `onFailure`，远早于超时），这个值只是防"对端不回 FIN"把回前台卡死；
@@ -237,6 +245,9 @@ object NativeRelayClient {
     private var coverageTimer: java.util.Timer? = null
 
     private var heartbeatTimer: java.util.Timer? = null
+
+    /** 握手超时计时器（见 [HANDSHAKE_TIMEOUT_MS]）。 */
+    private var handshakeTimer: java.util.Timer? = null
     private var reconnectTimer: java.util.Timer? = null
 
     @Volatile
@@ -461,6 +472,48 @@ object NativeRelayClient {
     private fun isCurrent(token: Long, webSocket: WebSocket): Boolean =
         lifetime.isCurrent(token) && !stopping && phase != Phase.CLOSED && socket === webSocket
 
+    /**
+     * 握手看门狗：`onOpen`（auth_init 已发）后 [HANDSHAKE_TIMEOUT_MS] 内没转 [Phase.PAIRED]
+     * 就断线重连。配对成功、socket 死亡、[stop] 三处都会取消它。
+     * 调用方持有 lifecycleLock。
+     */
+    private fun scheduleHandshakeTimeout(token: Long, webSocket: WebSocket) {
+        cancelHandshakeTimeout()
+        handshakeTimer = java.util.Timer(true).apply {
+            schedule(
+                object : java.util.TimerTask() {
+                    override fun run() {
+                        val reconnect: Boolean
+                        synchronized(lifecycleLock) {
+                            if (!lifetime.active || !isCurrent(token, webSocket)) return
+                            if (phase == Phase.PAIRED) return
+                            val wasPhase = phase
+                            phase = Phase.CLOSED
+                            reconnect = true
+                            Diagnostics.log(
+                                "warn",
+                                "承载: ${HANDSHAKE_TIMEOUT_MS / 1000}s 握手超时（auth_ack 未到，" +
+                                    "phase=$wasPhase）——断线重连",
+                            )
+                            try {
+                                webSocket.close(1000, "handshake timeout")
+                            } catch (e: Exception) {
+                                Diagnostics.log("debug", "承载: 握手超时关闭异常 ${e.message}")
+                            }
+                        }
+                        if (reconnect) scheduleReconnect(token)
+                    }
+                },
+                HANDSHAKE_TIMEOUT_MS,
+            )
+        }
+    }
+
+    private fun cancelHandshakeTimeout() {
+        handshakeTimer?.cancel()
+        handshakeTimer = null
+    }
+
     /** Caller holds lifecycleLock, so a stop cannot race the connection publication. */
     private fun connectNow(token: Long) {
         if (!lifetime.isCurrent(token)) return
@@ -576,6 +629,7 @@ object NativeRelayClient {
             durationTimer = null
             bootstrapTimer?.cancel()
             bootstrapTimer = null
+            cancelHandshakeTimeout()
             stopCoverageRefresh()
             heartbeatTimer?.cancel()
             heartbeatTimer = null
@@ -1058,6 +1112,7 @@ object NativeRelayClient {
                 phase = Phase.AUTHENTICATING
                 val c = creds ?: return
                 webSocket.send(authInitFrame(c, System.currentTimeMillis()).toString())
+                scheduleHandshakeTimeout(token, webSocket)
                 Diagnostics.log(
                     "warn",
                     "承载: 已连接，auth_init 已发（${if (c.tokenMode) "token 模式" else "legacy HMAC"}，等待配对）",
@@ -1124,6 +1179,7 @@ object NativeRelayClient {
                                 return
                             }
                             phase = Phase.PAIRED
+                            cancelHandshakeTimeout()
                             onPaired?.invoke()
                             if (persistent) {
                                 Diagnostics.log(
@@ -1181,6 +1237,7 @@ object NativeRelayClient {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED
                 socket = null
+                cancelHandshakeTimeout()
                 Diagnostics.log("warn", "承载: 连接失败 ${t.javaClass.simpleName}: ${t.message?.take(120)}")
                 scheduleReconnect(token)
             }
@@ -1192,6 +1249,7 @@ object NativeRelayClient {
                 if (!isCurrent(token, webSocket)) return
                 phase = Phase.CLOSED
                 socket = null
+                cancelHandshakeTimeout()
                 Diagnostics.log("warn", "承载: 对端关闭 code=$code reason=${reason.take(60)}")
                 scheduleReconnect(token)
             }

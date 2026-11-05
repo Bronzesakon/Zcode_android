@@ -159,6 +159,30 @@
 - [ ] 顺带：URL 白名单参数已含 `app_version`（`Xnr=new Set(['app_version','sid','mid','name'])`），
       加分参数不会破坏页面契约。
 
+### 3.4 快照差异审计新增事实（2026-11-05，`web-3.17.1-vs-docs-diff-audit.md`，222 条断言）
+
+**已被现有代码覆盖（审计反证批次 1 的移植正确）**：
+
+- relay 已重写为 **V2 token 传输**：`/api/v1/remote/ws2` 同源连接、短 token 走 `?token=`、
+  `auth_challenge`/HMAC proof 整族消失、`auth_init` 无 `role`、`client_ts` 秒——
+  `NativeRelayClient` 的 token 模式（批次 1）与此一致。
+- 心跳 **5s**、ack 看门狗 **15s**——`HEARTBEAT_INTERVAL_MS` 已是 5s/15s。
+
+**本轮已补**：
+
+- [x] **15s 握手超时**（页面新增同款常量）：`auth_init` 发出后 15s 未 `auth_ack{matched}`
+      ⇒ 断线重连（`NativeRelayClient.scheduleHandshakeTimeout`；配对/socket 死亡/stop 三处取消）。
+
+**待办 / 待真机**：
+
+- [ ] **发现链在 3.17.1 的回落**：`tasks[]` 已从 bootstrap 与 workspace-list **双双删除**
+      （16 键字段表失效，任务态只剩 sessions-index）。多工作区开关打开时的发现链会回落到
+      "按在跑任务取前 N"（生产默认路径不受影响）——并行订阅实验（§2.4）时一并重设计。
+- [ ] **页内登录+设备选择前置链**（主包 @6,919,4xx）：无 JWT 先登录、`admit()` 改写 `sid/mid/name`、
+      `device-not-owned` 自动换设备、新 localStorage 三键与 `oauth_pending_logins`。
+      **真机验证项**：冷启动用旧持久化 URL（admit 改写前的）页面行为；登录链与 D1–D9 的交互。
+- [ ] 锚点审计的 4 处修正已就地改写（#13 偏移、#16 字面量计数、§4.2 kicked 表述、本节传输结论）。
+
 ### 3.2 KICKED 语义
 
 → 已并入 §2.3（归因策略替换旧 `KICKED_HEAL_CAP=2` 计数）。

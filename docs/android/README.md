@@ -16,6 +16,8 @@
 | 功能域 | `29`–`34`（通知/诊断/多工作区/运行态/TaskStore/看门狗） |
 | 分区审计 | `35`–`47`（relay-core、shell-runtime、carrier、activities、notify、core-state、inject-js a–d、protocol-js、resources、tests） |
 | 性能 | `安卓壳-快速交接与性能收窄.md` |
+| 快照差异审计 | `web-3.17.1-vs-docs-diff-audit.md`（222 条断言对照 3.17.1 快照；**13/16/24/49 的线规格结论已部分过时，以该审计为准**） |
+| 上机前审查 | `pre-device-review{,2}-{kotlin,inject}.md`（四份，两轮对抗审查） |
 | 鸿蒙对照（移出鸿蒙） | `09-harmony-replication-comparison.md` |
 | 迁移文档（移出鸿蒙） | `harmony-migration.md`（原 `安卓薄壳迁移文档.md`） |
 
@@ -33,6 +35,8 @@
 ## 与网页/协议文档的关系
 
 remote-v4 的 13 篇网页/协议文档已在 `archive/pre-3.16.1-auth/docs/remote-v4/`；
+**其中 13/16/24/49 的握手与线规格断言已被 3.17.1 推翻**（relay V2 token 传输、心跳 5s/ack 15s、
+协议帧族 19→30），以 `web-3.17.1-vs-docs-diff-audit.md` 为准；
 3.17.1 的逆向规格在 `docs/web-reverse/`。本目录只放 Android 宿主侧材料。
 
 ## 术语（2026-11-04 更名，代码与文档已全量替换）
