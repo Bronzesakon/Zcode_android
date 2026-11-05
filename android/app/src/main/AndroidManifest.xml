@@ -79,6 +79,15 @@
             android:parentActivityName=".MainActivity"
             android:theme="@style/Theme.ZcodeRemote.Miuix" />
 
+        <!-- zxing-android-embedded 把 CaptureActivity 声明为 `sensorLandscape`（库默认
+             "横持相机扫描"）。本应用是竖屏壳，扫码页必须竖屏——用 tools:replace 覆盖
+             库清单里的方向（2026-11-05 用户报"扫码界面默认横屏"；配合 ScanOptions
+             的 setOrientationLocked(false)，最终方向以这里为准）。 -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="portrait"
+            tools:replace="android:screenOrientation" />
+
         <!-- Keeps the process (and therefore the WebView + its relay socket)
              alive while backgrounded, and owns the ongoing "running tasks"
              notification (§5.5). specialUse is deliberate: dataSync is capped
