@@ -3335,21 +3335,24 @@
                 // same colour as every status page, so those two share one name.
                 return hasZaiTheme() ? 'boot' : 'boot-shell';
             }
-            // 顶部判据照鸿蒙 computeState（2026-11-05 用户报概览页色差），并按 3.17.1
-            // 快照补齐「导航面」：web 远控外壳在窄屏把侧栏面板横置成贴顶导航条
-            // （`div[data-workspace-sidebar-panel]` + `max-md:bg-sidebar`，高
-            // --web-remote-navigation-height），宽屏保留为左侧竖栏。两者都是
-            // --color-sidebar，且都压在状态栏正下方——设置页、工作区主页、对话页的
-            // 顶部都是它，内容区自己的标题栏在它**下面**，所以导航面必须先判
-            // （用户 2026-11-05 指正：设置页对齐左列背景色）。
-            // 判据用面板的数据属性（语义锚点，跨版本稳）＋ .bg-sidebar 兜底；
-            // 注意横向导航条的类名是 `max-md:bg-sidebar`，**不**等于 `.bg-sidebar`。
+            // 状态栏正下方是谁，就报谁——取左上角（状态栏覆盖的最左一列）命中链，
+            // 从命中元素往上找第一个「真正画了底色」的表面类：
+            //   * `.bg-header`            页面自己的标题栏（窄屏对话页）→ main-header
+            //   * `.bg-background-win-alt` 桌面窗口外框。设置页左列（68px 图标栏）
+            //                             自身全透明，露出来的就是它 —— 用户 2026-11-05
+            //                             口径：设置页条带对齐「左侧较暗背景」；
+            //   * `.bg-sidebar` / 侧栏面板 data 属性 → main-surface（导航面）；
+            //   * `.bg-background`        整页背景 → boot。
+            // 这一条同时消灭了「按宽窄二分」在首页/设置页上的误判：命中链是几何事实，
+            // 不是布局猜测。旧 WebView 若没有 elementFromPoint，再退回下面的矩形判据。
+            var surface = topLeftSurfaceName();
+            if (surface) {
+                return surface;
+            }
             if (topSurfaceVisible('[data-workspace-sidebar-panel]') ||
                 topSurfaceVisible('.bg-sidebar')) {
                 return 'main-surface';
             }
-            // 其次才是页面自己的标题栏：只有导航面不在顶部（侧栏折叠）时，
-            // 窄屏对话页的 bg-header 才会直接贴顶。
             if (topSurfaceVisible('.bg-header')) {
                 return 'main-header';
             }
@@ -3365,13 +3368,54 @@
             if (winAltVisible && !mediaMatches(NARROW_QUERY)) {
                 return 'main-surface';
             }
-            // 其余（窄屏首页/任务列表/设置/引导/React 状态页）：整页 bg-background，
-            // 与状态页同色。无壳又未挂主题类的极早窗口也按整页背景处理（与鸿蒙
-            // computeState 的兜底一致：那里同样返回 boot）。
+            // 其余（窄屏首页/任务列表/引导/React 状态页）：整页 bg-background。
             return 'boot';
         } catch (e) {
             return '';
         }
+    }
+
+    /** 类名 token 判断（class 属性按空白切分，避免 `bg-background` 命中 `bg-background-win-alt`）。 */
+    function classHas(el, token) {
+        try {
+            var cls = el && el.getAttribute ? String(el.getAttribute('class') || '') : '';
+            return cls !== '' && (' ' + cls + ' ').indexOf(' ' + token + ' ') >= 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * 左上角那一点真正露出来的表面，映射成状态名；认不出返回 ''。
+     *
+     * 从 `elementFromPoint(4, 6)` 起向上走：状态栏覆盖的第一列（x≈4）在设置页是
+     * 透明图标栏，会一路走到窗口外框；在对话页第一个命中的就是 bg-header；在首页
+     * 是整页 bg-background。子元素自己画了别的东西时也自然由最近的表面类先命中。
+     */
+    function topLeftSurfaceName() {
+        var el = null;
+        try {
+            if (typeof document.elementFromPoint === 'function') {
+                el = document.elementFromPoint(4, 6);
+            }
+        } catch (e) {
+            el = null;
+        }
+        for (var depth = 0; el && depth < 40; depth++, el = el.parentElement) {
+            if (classHas(el, 'bg-header')) {
+                return 'main-header';
+            }
+            if (classHas(el, 'bg-background-win-alt')) {
+                return 'main-frame';
+            }
+            if (classHas(el, 'bg-sidebar') || el.getAttribute('data-workspace-sidebar-panel') !== null) {
+                return 'main-surface';
+            }
+            if (classHas(el, 'bg-background')) {
+                return 'boot';
+            }
+        }
+        return '';
     }
 
     function pageThemeName() {

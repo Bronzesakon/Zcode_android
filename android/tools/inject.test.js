@@ -1489,6 +1489,38 @@ test('状态判定：宽屏左栏与标题栏同时贴顶时按左列（main-sur
     }
 });
 
+test('状态判定：设置页左列（透明图标栏）露出窗口外框 → main-frame', async () => {
+    // 用户 2026-11-05 口径：设置页条带对齐"左侧较暗背景"。真机实测那层是
+    // --color-background-win-alt（#ECECEE / #2B2B2B）：设置页左列 68px 图标栏
+    // 自身全透明，命中的是窗口外框。判据用左上角命中链，不猜宽窄。
+    const page = setupPage({pageState: true, media: {[NARROW_QUERY]: true}});
+    try {
+        page.dom.setZaiTheme('theme-zai-light');
+        page.dom.setTheme('light');
+        const frame = new FakeElement('div');
+        frame.setAttribute('class', 'flex h-dvh flex-col overflow-hidden bg-background-win-alt');
+        const rail = new FakeElement('div');
+        rail.setAttribute('class', 'h-12 [app-region:drag]');
+        frame.appendChild(rail);
+        document.elementFromPoint = () => rail;
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts), ['main-frame/light'],
+            'the frame behind the transparent settings rail owns the strip');
+
+        // 对话页：左上角第一个命中 bg-header → 标题栏色。
+        page.dom.set('bg-header', true);
+        const header = document.getElementsByClassName('bg-header')[0];
+        header.appendChild(new FakeElement('button'));
+        document.elementFromPoint = () => header.children[0];
+        FakeMutationObserver.fire();
+        await flush();
+        assert.deepStrictEqual(pageStates(page.posts).slice(-1), ['main-header/light']);
+    } finally {
+        page.teardown();
+    }
+});
+
 test('crossing the page\'s breakpoint without a DOM change is still reported', async () => {
     // Rotation, split screen and foldables change the layout without mutating the
     // DOM, so the media query has to be watched in its own right.

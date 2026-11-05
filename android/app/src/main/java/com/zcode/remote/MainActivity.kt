@@ -136,8 +136,14 @@ class MainActivity : AppCompatActivity() {
      * this same WebView (they must, or the callback cannot read the
      * sessionStorage nonce), so the bridge is detached for them and reattached
      * before the remote page's document-start script runs.
+     *
+     * **必须从 `false` 起步**：新 WebView 里没有任何 `addJavascriptInterface`。
+     * 这里若写 `true`，冷启动第一次 `setBridgeAttached(true)` 会因"状态未变"早退，
+     * 桥永远挂不上 —— 注入层照常跑（DOM 注入都生效），但所有 `post()` 静默丢帧：
+     * 状态栏条带停在 boot-shell #FAFAFA、通知/诊断全无，且**只有**先经过一次
+     * 登录页（detach 把值改成 false）再回来才会自愈（2026-11-05 真机 CDP 实证）。
      */
-    private var bridgeAttached = true
+    private var bridgeAttached = false
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val contents = result.contents
@@ -716,6 +722,7 @@ class MainActivity : AppCompatActivity() {
             webView.removeJavascriptInterface(BRIDGE_NAME)
         }
         bridgeAttached = attached
+        Diagnostics.info("页面桥: ${if (attached) "已挂载" else "已摘除"}")
     }
 
     private fun injectStable(view: WebView, url: String) {
@@ -744,6 +751,10 @@ class MainActivity : AppCompatActivity() {
         hideError()
         // document-start 注册跨重载保留；加载开始/完成的补注仍兜住引擎失效。
         installInjection()
+        // 桥必须在 loadUrl **之前**挂：addJavascriptInterface 只有在文档的 JS 上下文
+        // 建立时在场，才能保证 document-start 的注入层第一次 post() 就找得到它。
+        // 只靠 onPageStarted 对齐时，冷启动首份文档会整段丢失（2026-11-05 真机实证）。
+        setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
         ShellRuntime.ensureServiceRunning(this)
         webView.loadUrl(DesktopVersion.withAppVersion(url))
     }
@@ -752,6 +763,8 @@ class MainActivity : AppCompatActivity() {
         val url = prefs.remoteUrl ?: return showSetup()
         hideError()
         installInjection()
+        // 同 applyUrl：重载是一次新文档，桥应当在 loadUrl 前就在位。
+        setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
         webView.loadUrl(DesktopVersion.withAppVersion(url))
     }
 

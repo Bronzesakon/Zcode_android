@@ -282,20 +282,22 @@
 | --- | --- | --- | --- | --- |
 | 预渲染加载壳（主题类未挂） | `.zcode-boot-loading` → `:root` 的 background | boot-shell | #FAFAFA | #171717 |
 | 加载壳已着主题 / React 状态页 / 配对等待 | bg-background | boot | #F8F8F8 | #161616 |
-| 工作区主页（窄/宽） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
-| 设置页（窄/宽） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
-| 对话详情（窄，导航条在顶） | 导航面 bg-sidebar | main-surface | #F0F0F0 | #161616 |
-| 对话详情（导航面折叠，无贴顶导航） | 手机壳标题栏 bg-header | main-header | #FFFFFF | #202020 |
+| 工作区主页（手机，实测） | bg-background（无贴顶 header） | boot | #F8F8F8 | #161616 |
+| 对话详情（手机，实测） | 手机壳标题栏 `div.bg-header`（h-11） | main-header | #FFFFFF | #202020 |
+| 设置页左列（真机实测 2026-11-05） | 68px 透明图标栏 → 露出窗口外框 `bg-background-win-alt` | main-frame | #ECECEE | #2B2B2B |
 
-落地：`inject.js pageStateName()` 新增「导航面」判据——`div[data-workspace-sidebar-panel]`
-（或 `.bg-sidebar`）贴顶（top≤8、height>8、width>0）→ `main-surface`，**判在 `.bg-header` 之前**
-（用户口径：对齐左列背景色）；无表面可判时兜底回到 `boot`（与鸿蒙 `computeState` 一致）。
-注意横向导航条的类名是 `max-md:bg-sidebar`，**不等于** `.bg-sidebar`，所以判据锚在数据属性上。
-JS 测试 +2（118/118）。
+判定（2026-11-05 真机 CDP 校正）：**左上角命中链**——`elementFromPoint(4,6)` 向上找第一个
+真正画了底色的表面类（`bg-header` / `bg-background-win-alt` / `bg-sidebar` / `bg-background`），
+按命中项报状态名；`elementFromPoint` 不可用时才退回矩形判据。命中链是几何事实，不猜宽窄。
+设置页左列自身全透明，命中的是窗口外框 ⇒ `main-frame`（用户口径：对齐左列较暗背景）。
 
-**未验证**：宽屏（≥768px）时侧栏面板自身没有背景类（快照实证：全包只有 `.bg-sidebar` /
-`max-md:bg-sidebar` 两条规则，前者只用于代码块与拖放圆点），竖栏实际露出的底色取决于外层窗口框，
-快照无法离线判定。这里沿用用户/鸿蒙口径 `#F0F0F0`/`#161616`；若平板横屏仍见色缝，再按真机像素复核。
+**同日发现的阻断级 bug（已修）**：`MainActivity.bridgeAttached` 初值为 `true`，而新 WebView
+里并没有 `addJavascriptInterface` ⇒ 冷启动第一次 `setBridgeAttached(true)` 早退，桥永远挂不上。
+注入层照常跑（DOM 注入生效），但 `post()` 全部静默丢弃：状态栏永远停在 `boot-shell #FAFAFA`、
+通知/诊断/承载凭证全无。只有先经过一次登录页（detach 把值改成 false）再回来才自愈
+（真机 CDP：`window.__zcodeShellInstalled=true` 而 `window.ZCodeShell` 为 undefined）。
+修法：初值改 `false`，并在 `applyUrl`/`reloadPage` 的 `loadUrl()` **之前**挂桥，`onPageStarted`
+只做对齐；`setBridgeAttached` 变更时记一行诊断。
 
 ## 5. 迁移状态
 

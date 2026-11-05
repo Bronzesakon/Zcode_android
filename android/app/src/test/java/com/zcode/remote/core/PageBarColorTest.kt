@@ -32,6 +32,9 @@ class PageBarColorTest {
     private val HEADER_DARK = 0xFF202020.toInt()
     private val SURFACE_LIGHT = 0xFFF0F0F0.toInt()
     private val SURFACE_DARK = 0xFF161616.toInt()
+    // 设置页左列：窗口外框（--color-background-win-alt），真机像素 #ECECEE。
+    private val FRAME_LIGHT = 0xFFECECEE.toInt()
+    private val FRAME_DARK = 0xFF2B2B2B.toInt()
     // D4：登录/授权面的专用表（照鸿蒙现值，用户已确认观感无问题）。
     private val AUTH_BIGMODEL = 0xFFF7F8FA.toInt()
     private val AUTH_CONSENT_LIGHT = 0xFFF8F8F8.toInt()
@@ -50,6 +53,8 @@ class PageBarColorTest {
         assertEquals(HEADER_DARK, PageBarColor.resolve(PageBarState.MAIN_HEADER, dark = true))
         assertEquals(SURFACE_LIGHT, PageBarColor.resolve(PageBarState.MAIN_SURFACE, dark = false))
         assertEquals(SURFACE_DARK, PageBarColor.resolve(PageBarState.MAIN_SURFACE, dark = true))
+        assertEquals(FRAME_LIGHT, PageBarColor.resolve(PageBarState.MAIN_FRAME, dark = false))
+        assertEquals(FRAME_DARK, PageBarColor.resolve(PageBarState.MAIN_FRAME, dark = true))
     }
 
     @Test
@@ -60,6 +65,7 @@ class PageBarColorTest {
         assertEquals("boot", PageBarState.BOOT.token)
         assertEquals("main-header", PageBarState.MAIN_HEADER.token)
         assertEquals("main-surface", PageBarState.MAIN_SURFACE.token)
+        assertEquals("main-frame", PageBarState.MAIN_FRAME.token)
         assertEquals("light", PageTheme.LIGHT.token)
         assertEquals("dark", PageTheme.DARK.token)
     }
