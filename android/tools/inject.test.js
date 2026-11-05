@@ -2798,20 +2798,30 @@ test('闸门①：没有记忆时不动 history.state（不把用户拽进对话
     }
 });
 
-test('承载凭证：3.16.1+ 没有 hash 时用 ws2 的 token 移交（否则 3.17.1 上永不拨号）', () => {
+test('承载凭证：移交 JWT（不复用页面那枚一次性 token），url 去掉凭证查询串', () => {
+    // 2026-11-05 真机 CDP：relay token 一次性——复用页面那枚第二次连接直接 1006。
+    // 原生必须拿 JWT 自己现铸；页面 token 绝不外流。
+    globalThis.localStorage = {
+        getItem: (k) => (k === 'zcodejwttoken' ? 'jwt-abc' : null),
+        setItem: () => {},
+        removeItem: () => {},
+    };
     const page = setupPage();
     try {
         const socket = new globalThis.WebSocket(
             'wss://zcode.z.ai/api/v1/remote/ws2?token=tok-abc&mid=mid-1');
         socket.send(JSON.stringify({type: 'auth_init', device_sid: 'sid-1'}));
         const creds = findPost(page.posts, 'relaycreds').at(-1);
-        assert.ok(creds, 'the credentials must be handed over without a legacy hash');
+        assert.ok(creds, 'JWT must be handed over');
         assert.strictEqual(creds.data.deviceSid, 'redacted', 'sid comes from the page URL');
-        assert.strictEqual(creds.data.authToken, 'tok-abc');
-        assert.strictEqual(creds.data.passHash, '');
-        assert.ok(!JSON.stringify(findPost(page.posts, 'diag')).includes('tok-abc'),
-            'the token must never reach the diagnostic log');
+        assert.strictEqual(creds.data.jwt, 'jwt-abc');
+        assert.ok(!('authToken' in creds.data), 'the page token must never be reused');
+        assert.ok(!String(creds.data.url).includes('token='),
+            'url must be stripped of credential query params');
+        assert.ok(!JSON.stringify(findPost(page.posts, 'diag')).includes('jwt-abc'),
+            'the JWT must never reach the diagnostic log');
     } finally {
+        delete globalThis.localStorage;
         page.teardown();
     }
 });

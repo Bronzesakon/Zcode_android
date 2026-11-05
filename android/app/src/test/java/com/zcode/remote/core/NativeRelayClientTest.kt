@@ -42,7 +42,7 @@ class NativeRelayClientTest {
         deviceSid = "sid-1",
         passHash = "",
         deviceMid = "<MID>",
-        authToken = "<TOKEN>",
+        jwt = "<JWT>",
     )
 
     private fun legacyCreds() = RelayCreds(
@@ -57,7 +57,7 @@ class NativeRelayClientTest {
         assertTrue(tokenCreds().tokenMode)
         assertFalse(legacyCreds().tokenMode)
         // 空串 token 不算 token 模式（页面没带 token 时不要误判）。
-        assertFalse(legacyCreds().copy(authToken = "").tokenMode)
+        assertFalse(legacyCreds().copy(jwt = "").tokenMode)
     }
 
     @Test
@@ -105,6 +105,21 @@ class NativeRelayClientTest {
         assertEquals("web", unknown.getJSONObject("meta").getString("version"))
         val blank = authInitFrame(tokenCreds(), nowMs = 1L, appVersion = "  ")
         assertEquals("web", blank.getJSONObject("meta").getString("version"))
+    }
+
+    @Test
+    fun carrierUrlDropsThePagesTokenAndUsesAFreshOne() {
+        // 页面移交的 wsUrl 可能带着它自己那枚一次性 token：原样复用会 1006。
+        // 原生只保留 host/path，token 每次现铸、mid 重新拼。
+        val base = "wss://zcode.z.ai/api/v1/remote/ws2?token=page-token&mid=page-mid"
+        assertEquals(
+            "wss://zcode.z.ai/api/v1/remote/ws2?token=fresh-token&mid=mid-1",
+            carrierWsUrl(base, "fresh-token", "mid-1"),
+        )
+        assertEquals(
+            "wss://zcode.z.ai/api/v1/remote/ws2",
+            carrierWsUrl(base, null, null),
+        )
     }
 
     @Test

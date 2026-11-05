@@ -1,7 +1,9 @@
 package com.zcode.remote.core
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
@@ -27,6 +29,9 @@ import javax.crypto.spec.SecretKeySpec
  * 抽成顶层纯函数是为了能在 JVM 单测里把两条分支的形状钉住——真机上一次握手要扫码，
  * 而这里错一个字段就是"配对永远不 matched"。
  */
+private val JSON_MEDIA_TYPE: okhttp3.MediaType =
+    "application/json; charset=utf-8".toMediaType()
+
 internal fun authInitFrame(
     creds: RelayCreds,
     nowMs: Long,
@@ -60,6 +65,27 @@ internal fun dataEnvelope(payload: JSONObject, nowMs: Long): JSONObject = JSONOb
     .put("payload", payload)
     .put("client_ts", nowMs / 1000)
 
+/**
+ * 原生承载的拨号 URL：**只用** host/path，token 与 mid 一律重新拼。
+ *
+ * 页面移交的 wsUrl 可能带着它自己那枚一次性 token；原样复用会拿到 1006
+ * （2026-11-05 真机 CDP 实证）。这里把查询串丢掉，换成原生现铸的 token。
+ */
+internal fun carrierWsUrl(base: String, relayToken: String?, deviceMid: String?): String {
+    val out = StringBuilder(base.substringBefore('?'))
+    val params = ArrayList<String>(2)
+    if (!relayToken.isNullOrBlank()) {
+        params.add("token=" + java.net.URLEncoder.encode(relayToken, "UTF-8"))
+    }
+    if (!deviceMid.isNullOrBlank()) {
+        params.add("mid=" + java.net.URLEncoder.encode(deviceMid, "UTF-8"))
+    }
+    if (params.isNotEmpty()) {
+        out.append('?').append(params.joinToString("&"))
+    }
+    return out.toString()
+}
+
 internal fun relayProof(passHash: String, nonce: String, role: String, deviceSid: String): String {
     val mac = Mac.getInstance("HmacSHA256")
     mac.init(SecretKeySpec(passHash.toByteArray(Charsets.UTF_8), "HmacSHA256"))
@@ -75,14 +101,15 @@ data class RelayCreds(
     val passHash: String,
     val deviceMid: String?,
     /**
-     * 3.16.1+ 的 OAuth 短 token（页面自己那份 `ws2?token=…` 里的值）。非空即 token
-     * 模式：`auth_init` 不带 `role`、`client_ts` 用秒、`auth_challenge` 直接忽略。
+     * 页面移交的 ZCode JWT（仅内存）。**relay token 是一次性的**（2026-11-05 真机
+     * CDP 实证：同一枚第二次连接直接 1006），所以原生不能复用页面那枚 token，而是
+     * 每次连接前用它现铸一枚：`POST /api/v1/remote/token {"role":"terminal"}`。
      * 与 `passHash` 一样是凭证，**绝不进日志**。
      */
-    val authToken: String? = null,
+    val jwt: String? = null,
 ) {
-    /** 3.17.1 只发 token；legacy 回退留给带 `hash` 的旧链接（Rust 侧同样兼容）。 */
-    val tokenMode: Boolean get() = !authToken.isNullOrEmpty()
+    /** 有 JWT 即 token 模式；legacy 回退留给带 `hash` 的旧链接。 */
+    val tokenMode: Boolean get() = !jwt.isNullOrBlank()
 }
 
 /**
@@ -542,16 +569,76 @@ object NativeRelayClient {
         if (!mayAuthenticate(token)) return
         val c = creds ?: return
         phase = Phase.CONNECTING
-        val url = buildString {
-            append(c.wsUrl)
-            if (!c.deviceMid.isNullOrBlank()) {
-                append(if (c.wsUrl.contains('?')) "&" else "?")
-                append("mid=").append(java.net.URLEncoder.encode(c.deviceMid, "UTF-8"))
+        if (!c.tokenMode) {
+            openSocket(token, c, null)
+            return
+        }
+        // token 一次性：每次连接/重连都现铸一枚。铸取不能占主线程（start() 由
+        // mainHandler 调进来），放到单线程 executor，结果回来再在锁内建 socket。
+        mintExecutor.execute {
+            val minted = try {
+                mintRelayToken(c)
+            } catch (e: Exception) {
+                null
+            }
+            synchronized(lifecycleLock) {
+                if (!lifetime.isCurrent(token) || phase == Phase.CLOSED) return@execute
+                if (minted == null) {
+                    Diagnostics.log("warn", "承载: relay token 铸造失败，10s 后重试")
+                    scheduleReconnect(token)
+                    return@execute
+                }
+                if (!mayAuthenticate(token)) return@execute
+                openSocket(token, c, minted)
             }
         }
+    }
+
+    /** Build the ws URL from the host/path only, with the freshly minted token and mid. */
+    private fun openSocket(token: Long, c: RelayCreds, relayToken: String?) {
+        val url = carrierWsUrl(c.wsUrl, relayToken, c.deviceMid)
         val request = Request.Builder().url(url).build()
         socket = client.newWebSocket(request, createListener(token, carrierPaired, carrierKicked))
     }
+
+    /**
+     * Mint a one-shot relay token with the page's JWT.
+     *
+     * 服务端 `POST /api/v1/remote/token`，body `{"role":"terminal"}`，返回
+     * `{code:0,data:{token}}`（3.17.2 页面同款调用，见 3.17.2-relay-audit.md）。
+     * 失败只记状态码，绝不记 JWT/token 内容。
+     */
+    private fun mintRelayToken(c: RelayCreds): String? {
+        val jwt = c.jwt ?: return null
+        val origin = try {
+            val uri = java.net.URI(c.wsUrl)
+            val scheme = if (uri.scheme == "wss") "https" else "http"
+            "$scheme://${uri.host}${if (uri.port > 0) ":${uri.port}" else ""}"
+        } catch (e: Exception) {
+            Diagnostics.log("warn", "承载: 无法从 wsUrl 推导 origin")
+            return null
+        }
+        val body = "{\"role\":\"terminal\"}".toRequestBody(JSON_MEDIA_TYPE)
+        val request = Request.Builder()
+            .url("$origin/api/v1/remote/token")
+            .header("Authorization", "Bearer $jwt")
+            .post(body)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                Diagnostics.log("warn", "承载: token 接口 HTTP ${response.code}")
+                return null
+            }
+            val text = response.body?.string() ?: return null
+            val data = JSONObject(text).optJSONObject("data") ?: return null
+            return data.optString("token").takeIf { it.isNotBlank() }
+        }
+    }
+
+    private val mintExecutor: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "zcode-carrier-token").apply { isDaemon = true }
+        }
 
     /** Authentication sends must not proceed after an early foreground signal. */
     private fun mayAuthenticate(token: Long): Boolean {

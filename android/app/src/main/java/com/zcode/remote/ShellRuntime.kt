@@ -678,8 +678,11 @@ object ShellRuntime {
             // 期间开的 socket"当成"刚刚在重拨"（那会白等 20s，见 maybeStartNativeCarrier）。
             lastSocketMarkForStall = -1L
             lastSocketChangeAt = 0L
-            val restoreAfterCarrier = NativeRelayClient.isRunning() || carrierHandedBack || carrierRanThisStint
-            val reloadNeeded = reloadExistingPage && (restoreAfterCarrier || pageReloadExpected)
+            // 2026-11-05：原生承载改用**自己铸的 token**，页面那条 socket 从未被碰过，
+            // 回前台不需要为了"换新 token"而重载（那正是"连接中断"闪屏的来源）。
+            // 只有宿主明确要求（pageReloadExpected）才重载；页面自己若卡住，注入层的
+            // 握手失败自愈会在 2 次失败后重载一次。
+            val reloadNeeded = reloadExistingPage && pageReloadExpected
             // 必须在 stop() 之前取证：stop 一返回 isRunning() 就是 false，用它做分支会把
             // "等关闭确认"那条路和"立刻重载"那条路同时走一遍（pageReloadEpoch 谁先到谁赢）。
             val carrierWasRunning = NativeRelayClient.isRunning()
@@ -758,13 +761,9 @@ object ShellRuntime {
             // 「dial 之前回前台 → 取消不踢页面」不靠计时器：`HandoffState` 的 epoch 与
             // `NativeRelayClient.mayAuthenticate` 的前台复查都会把这一枪打空。
             val hasRunning = store.runningTaskRefs().isNotEmpty() || store.staleGateHold().holds
-            // 2026-11-05 稳定性优先：不再 0ms 拨号。快速切后台/回前台（回一条微信）会让
-            // 承载抢走页面正在用的短 token，页面回来就卡在"连接中断，正在重连"（真机反复
-            // 复现）。统一等 15s：短切换根本不触发承载，长后台照常接管。
-            val startDelay = maxOf(
-                if (hasRunning) 0L else CARRIER_IDLE_START_DELAY_MS,
-                CARRIER_MIN_BACKGROUND_DELAY_MS,
-            )
+            // 触发时机（TODO §2.3）：有在跑任务 → 0ms；没有 → 30s 后看是否满足。
+            // 2026-11-05 起承载用**自铸 token**，与页面那条连接互不影响，0ms 不再踢页面。
+            val startDelay = if (hasRunning) 0L else CARRIER_IDLE_START_DELAY_MS
             mainHandler.postDelayed({ maybeStartHandoffCarrier(epoch) }, startDelay)
             val snapshot = liveness
             backgroundFrameBase = snapshot?.inboundFrames ?: 0
@@ -1168,14 +1167,6 @@ object ShellRuntime {
      * 路线存在的理由，代价（每次退后台都会踢页面 ⇒ 回前台一次受控重载）用户已接受。
      */
     private const val CARRIER_IDLE_START_DELAY_MS = 30_000L
-
-    /**
-     * 后台最短静默期：不足 15s 的切后台一律不启动承载。
-     *
-     * 快速切走再回来（回一条微信）如果拨了号，承载会拿走页面正在使用的短 token，
-     * 页面回来就卡在"连接中断，正在重连"——页面自己的重连不会重新铸 token。
-     */
-    private const val CARRIER_MIN_BACKGROUND_DELAY_MS = 15_000L
 
     /** 页面刚动过 socket（重拨中）后的静默期：见 [lastSocketMarkForStall]。 */
     private const val CARRIER_REQUIET_AFTER_SOCKET_MS = 20_000L
@@ -1869,6 +1860,14 @@ object ShellRuntime {
             // WebView 远程调试（CDP）开关：验收"造流"要用它——adb 的 input text 进不了
             // WebView 的输入框（真机实测两次），而 CDP 的 Input.insertText 是渲染器认的
             // 真实输入。这是**测试通道**，用完记得关（设置页里也有同一个开关）。
+            "core_on" -> {
+                setNativeCoreEnabled(true)
+                return true
+            }
+            "core_off" -> {
+                setNativeCoreEnabled(false)
+                return true
+            }
             "wvdebug_on" -> {
                 try {
                     prefs.webViewDebugging = true
@@ -1996,12 +1995,6 @@ object ShellRuntime {
 
     private fun maybeStartHandoffCarrier(epoch: Long) {
         if (!prefs.nativeCore) return
-        // 后台不足 15s 一律不接管（任何触发点，包括 relaycreds / pump 的早触发）。
-        if (backgroundStartedAt <= 0L ||
-            SystemClock.elapsedRealtime() - backgroundStartedAt < CARRIER_MIN_BACKGROUND_DELAY_MS
-        ) {
-            return
-        }
         if (!handoff.isCurrent(epoch, true) || !userIsAway() || !carrierEnabled) return
         // 页面还可见时绝不拨号：同一 token 的第二条连接会被服务端判成互斥，先把页面踢掉，
         // 用户看到的就是"连接中断，正在重连"（2026-11-05 真机反复出现）。
@@ -2495,9 +2488,10 @@ object ShellRuntime {
                     val passHash = data.optString("passHash")
                     // 3.16.1+：链接里没有 `hash`，认证改由 `ws2?token=…` 承担。两者留一即可，
                     // 少了这一条 token 模式永远进不来（旧代码只认 passHash）。
-                    val authToken = data.optString("authToken").ifBlank { null }
+                    // 2026-11-05：页面移交的是 JWT（token 一次性，原生每次连接现铸）。
+                    val jwt = data.optString("jwt").ifBlank { null }
                     if (wsUrl.isEmpty() || deviceSid.isEmpty() ||
-                        (passHash.isEmpty() && authToken == null)
+                        (passHash.isEmpty() && jwt == null)
                     ) {
                         Diagnostics.log("warn", "承载: relaycreds 字段不全，忽略")
                         return
@@ -2511,13 +2505,13 @@ object ShellRuntime {
                         deviceSid = deviceSid,
                         passHash = passHash,
                         deviceMid = data.optString("deviceMid").ifBlank { null },
-                        authToken = authToken,
+                        jwt = jwt,
                     )
                     NativeRelayClient.sessionsSink = { update -> acceptNativeSessions(update) }
                     mainHandler.post { maybeStartHandoffCarrier(handoff.epoch) }
                     Diagnostics.log(
                         "info",
-                        "承载: relay 凭证已接收（仅内存，${if (authToken != null) "token" else "legacy"} 模式）",
+                        "承载: relay 凭证已接收（仅内存，${if (jwt != null) "jwt" else "legacy"} 模式）",
                     )
                 }
                 "pagestate" -> {

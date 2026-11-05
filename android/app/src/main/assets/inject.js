@@ -354,28 +354,43 @@
         var sid = query.get('sid') || '';
         var hash = query.get('hash') || '';
         var mid = query.get('mid') || '';
-        // 3.16.1+ 的链接**没有 `hash`**：认证由 `ws2?token=…` 承担，token 就在页面
-        // 打开 socket 用的那条 URL 上（`lastRelayUrl`）。只认 passHash 的话，这条移交
-        // 永远发不出去，原生承载在 3.17.1 上根本无法拨号（TODO §2.2 的唯一硬缺口）。
-        var token = '';
+        // 2026-11-05 真机实证（CDP）：relay token 是**一次性**的——同一枚第二次连接
+        // 直接 1006；而拿 JWT 现铸一枚新 token 可以并存，页面自己的 socket 不受影响。
+        // 所以交给原生的**不是**页面那枚已消费的 token，而是 JWT：原生每次连接前
+        // 自己 POST /api/v1/remote/token 铸新的。页面完全自洽，壳不再抢它的凭证。
+        var jwt = '';
         try {
-            token = new URL(lastRelayUrl).searchParams.get('token') || '';
+            jwt = G.localStorage ? (G.localStorage.getItem('zcodejwttoken') || '') : '';
         } catch (e) {
-            token = '';
+            jwt = '';
         }
-        if (!sid || (!hash && !token)) {
+        if (!sid || (!hash && !jwt)) {
             return;
         }
         relayCredsPosted = true;
         post('relaycreds', {
-            url: lastRelayUrl,
+            url: stripCredentialQuery(lastRelayUrl),
             deviceSid: sid,
             passHash: hash,
             deviceMid: mid,
             // 凭证级内容：只走内存，任何日志路径都不带它。
-            authToken: token
+            jwt: jwt
         });
-        diag('info', '承载: relay 凭证已移交原生（仅内存，不落日志）');
+        diag('info', '承载: JWT 已移交原生（仅内存，不落日志；原生自行铸 token）');
+    }
+
+    /** 去掉 WS URL 上的凭证类查询参数；原生只拿 host/path 作为拨号基址。 */
+    function stripCredentialQuery(raw) {
+        try {
+            var u = new URL(raw);
+            ['token', 'hash', 't', 'sid', 'mid', 'name'].forEach(function (k) {
+                u.searchParams.delete(k);
+            });
+            u.search = '';
+            return u.toString();
+        } catch (e) {
+            return raw;
+        }
     }
 
     function installWebSocketHook() {
