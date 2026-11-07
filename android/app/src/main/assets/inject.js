@@ -1867,7 +1867,14 @@
             if (workspaceKey && sessionId) {
                 G.localStorage.setItem('zcode-v4-last-session:v1:' + workspaceKey, sessionId);
             }
-            pinChatRoute();
+            // 钉路由前先看后退栈（见 canPinChatRoute）：通知把应用冷启动起来时
+            // history.length==1，钉了就是又一个"返回键无处可退"。跳过钉——任务槽位
+            // 已经写好，页面自己的恢复逻辑接手；宁可落在首页，也不废掉返回键。
+            if (canPinChatRoute()) {
+                pinChatRoute();
+            } else {
+                diag('info', '无历史条目可返回，预设任务不钉路由（避免返回键失效）');
+            }
             diag('info', '已预设下次加载要打开的任务: ' + workspaceKey + ' / ' + sessionId);
             return true;
         } catch (e) {
@@ -1908,8 +1915,9 @@
      * （所以要写 workspaceKey/sessionId）；这条是**把用户放回他自己离开的地方**，
      * 因此**完全不写任务槽位**——少一个写入面，也少一份"跳错任务"的风险。
      *
-     * **不做的事**：不关页面 socket、不轻推、不动 DOM。两个动作分别是一次
-     * `history.replaceState` 与一次 `location.reload`。
+     * **不做的事**：不关页面 socket、不轻推、不动 DOM。动作是一次
+     * `history.replaceState`（仅当有可返回的历史条目，见 `canPinChatRoute`）
+     * 与一次 `location.reload`。
      *
      * ⚠️ **限流不在这里**（真机 16:28 实测踩到）：本层能用的两个计数
      * （`sessionStorage` 与内存变量）在**进程被杀**后都会归零，而 S3 的定义恰恰是
@@ -1929,10 +1937,16 @@
                 return false;
             }
             var detail = String(reason || '');
-            // 钉路由状态：保留原有字段（页面可能往 state 里放别的东西），
-            // 只把 zcodeMobilePage 置成 chat。幂等——已是 chat 就不动。
-            pinChatRoute();
-            diag('warn', '对话恢复：钉住路由状态后重载一次 · 判据=' + detail);
+            // 钉路由前先看后退栈（见 canPinChatRoute）：S3 治的恰恰是"进程被杀"，
+            // 而进程被杀后的冷启动 history.length==1——此时钉住就是把用户钉死在
+            // 对话页（返回键无处可退，2026-11-07 用户指认的残留场景）。放弃钉、
+            // 只重载：落回首页能用，好过回不去。
+            if (canPinChatRoute()) {
+                pinChatRoute();
+                diag('warn', '对话恢复：钉住路由状态后重载一次 · 判据=' + detail);
+            } else {
+                diag('warn', '对话恢复：无历史条目可返回，不钉路由只重载 · 判据=' + detail);
+            }
             G.location.reload();
             return true;
         } catch (e) {

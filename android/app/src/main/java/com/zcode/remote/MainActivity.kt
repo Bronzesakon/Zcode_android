@@ -767,7 +767,20 @@ class MainActivity : AppCompatActivity() {
         installInjection()
         // 同 applyUrl：重载是一次新文档，桥应当在 loadUrl 前就在位。
         setBridgeAttached(RemoteUrl.isAllowed(Uri.parse(url)))
-        webView.loadUrl(DesktopVersion.withAppVersion(url))
+        // 已经在远程页上时走 reload() 而不是 loadUrl：loadUrl 会垫一条**同 URL、
+        // state 为空**的新历史条目，后台交还自愈后用户按返回键，第一下会落回垫层
+        // 下面那条旧 chat 条目——页面重新进对话，看起来就是"返回键无效"
+        // （用户 2026-11-07 指认的残留场景）。reload() 原地刷新：history.state
+        // 保留（页面自己回到对话），后退栈不被污染。
+        val current = webView.url
+        val onRemotePage = current != null &&
+            RemoteUrl.isAllowed(Uri.parse(current)) &&
+            RemoteUrl.authSurfaceOf(Uri.parse(current)) == null
+        if (onRemotePage) {
+            webView.reload()
+        } else {
+            webView.loadUrl(DesktopVersion.withAppVersion(url))
+        }
     }
 
     private fun showSetup() {

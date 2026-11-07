@@ -2484,6 +2484,7 @@ test('档3：钉住路由状态并重载一次（两个动作都发生）', asyn
         const replaced = [];
         globalThis.history = {
             state: {zcodeMobilePage: 'home', keepMe: 1},
+            length: 2,
             replaceState: (st) => replaced.push(st)
         };
 
@@ -2514,6 +2515,7 @@ test('档3：版本闸门阻断时不重载（同一个 modal 只会再来一次
         const replaced = [];
         globalThis.history = {
             state: {zcodeMobilePage: 'home'},
+            length: 2,
             replaceState: (st) => replaced.push(st)
         };
         assert.strictEqual(globalThis.__zcodeShellRecoverConversation('S3 成立但闸门挡路'), false,
@@ -2528,6 +2530,30 @@ test('档3：版本闸门阻断时不重载（同一个 modal 只会再来一次
     }
 });
 
+test('档3：无后退栈（进程被杀后的冷启动）不钉路由，但重载照做', async () => {
+    // S3 治的恰恰是"进程被杀"，而冷启动 history.length==1：此时钉 chat 就是把
+    // 返回键废掉（页面 back 按钮的 history.back() 无处可退）。放弃钉、只重载。
+    const page = setupPage();
+    const {reloads, restore} = stubReload();
+    try {
+        const replaced = [];
+        globalThis.history = {
+            state: null,
+            replaceState: (st) => replaced.push(st)
+        };
+        assert.strictEqual(globalThis.__zcodeShellRecoverConversation('进程被杀 + 回前台'), true,
+            'recovery must still reload');
+        assert.strictEqual(replaced.length, 0,
+            'no back entry: pinning chat would break the page back button');
+        await wait(400);
+        assert.strictEqual(reloads.length, 1, 'reload happens without the pin');
+    } finally {
+        restore();
+        delete globalThis.history;
+        page.teardown();
+    }
+});
+
 test('档3：已是 chat 时不重复 replaceState，但仍重载（幂等）', async () => {
     const page = setupPage();
     const {reloads, restore} = stubReload();
@@ -2535,6 +2561,7 @@ test('档3：已是 chat 时不重复 replaceState，但仍重载（幂等）', 
         const replaced = [];
         globalThis.history = {
             state: {zcodeMobilePage: 'chat'},
+            length: 2,
             replaceState: (st) => replaced.push(st)
         };
         assert.strictEqual(globalThis.__zcodeShellRecoverConversation('x'), true);
