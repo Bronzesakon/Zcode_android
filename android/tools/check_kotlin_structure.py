@@ -131,10 +131,16 @@ def main() -> int:
             expected = os.path.dirname(f).split('java' + os.sep, 1)[1].replace(os.sep, '.')
             if m.group(1) != expected:
                 problems.append(f'{f}: package {m.group(1)} != directory {expected}')
-        names = re.findall(
-            r'^\s*(?:private |internal |public )?(?:fun|class|object|data class|enum class|interface)\s+(\w+)',
+        # 重复判定按「名字 + 参数列表」：重载（同名不同参）是合法 Kotlin，
+        # 真正要抓的是手改事故里那种连参数都一模一样的复制粘贴重复。
+        # 括号前的空白用 [ \t]*（不许跨行）——\s* 会吃掉换行和下一行缩进，
+        # 让后面那条声明的 ^ 行首断言失配、整条漏检。
+        decls = re.findall(
+            r'^\s*(?:private |internal |public )?(?:fun|class|object|data class|enum class|interface)'
+            r'\s+(\w+)[ \t]*(?:\(([^)]*)\))?',
             src, re.M)
-        dupes = sorted({n for n in names if names.count(n) > 1})
+        sigs = [name + '(' + (params or '') + ')' for name, params in decls]
+        dupes = sorted({sig.rsplit('(', 1)[0] for sig in sigs if sigs.count(sig) > 1})
         if dupes:
             problems.append(f'{f}: duplicate declaration(s) {dupes}')
         # Leftovers from editing that would be a compile error or a silent hole.
